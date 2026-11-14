@@ -845,7 +845,7 @@ questions, and the deciding one is what the relation KNOWS.
 |---|---|---|
 | Endpoints | two document types, fixed at compile time | `NodeRef`s — any collection, any mix, resolved at runtime |
 | The relation's name | the collection: one table per relation | every edge carries a `predicate`, resolved through the graph's vocabulary |
-| Identity | the endpoint pair — at most one row of that table between two nodes | `(src, dst, predicate, edge_id)` — parallel edges are distinct facts |
+| Identity | the endpoint pair — at most one row of that table between two nodes | `(src, predicate, dst)` — the tuple IS the row, and re-asserting it rewrites that row |
 | Payload | ordinary fields: defaults, codec placement, indexes | a dynamic value with no declared schema |
 | Reverse read | the declared index over the scanned column | the graph's `0x06`/`0x07` faces, both materialised |
 | Cost | a table: one ns, one declared index | a graph: four faces, a predicate vocabulary, ref decoding |
@@ -863,7 +863,7 @@ they live in different namespaces.
 
 ## Graph edges: the third relation carrier
 
-A relation table binds its many-to-many to **compile-time endpoint types**. A knowledge graph breaks that binding: one graph connects nodes of several types, the edge **predicate** is runtime data, parallel edges are distinct facts, and an edge carries attributes. The graph edge is the third relation carrier (ADR-0017) — independent identity, attributes, parallel edges, open endpoints, and a declaration that **is** the graph.
+A relation table binds its many-to-many to **compile-time endpoint types**. A knowledge graph breaks that binding: one graph connects nodes of several types, the edge **predicate** is runtime data, parallel edges are distinct facts, and an edge carries attributes. The graph edge is the third relation carrier (ADR-0017) — identity that is nothing but the tuple `(src, predicate, dst)` (ADR-0067), attributes, parallel edges, open endpoints, and a declaration that **is** the graph.
 
 Nodes are ordinary document collections. When the type set is closed at compile time, a node's "type" is its collection (the ns is the type marker); when kind only arrives at runtime, kind is an indexed field inside one collection (the k10r case below). In both forms node-kind and attribute filtering go through that collection's own declared indexes and vocabularies — zero layout difference from any document collection. Everything new sits on the edge side:
 
@@ -874,7 +874,8 @@ use okm_core::{Graph, GraphEncode, NodeRef, NodeSet};
 /// one ns, the edge's own payload (an ordinary document payload: hot/cold
 /// placement, codecs generated in both directions), the attribute faces it
 /// **declares explicitly**, and the node set it admits. Endpoints are not
-/// declared one by one — a reference is self-describing (`[ns 2B][len][pkey]`) —
+/// declared one by one: a reference is `[ns 2B][pkey]`, its width read from the
+/// member table's own declaration —
 /// but "which collections may be nodes" is.
 #[derive(GraphEncode, Clone, Default)]
 #[ok_ns(100)]
@@ -895,32 +896,33 @@ struct Employment {
 // edge declaration.
 
 let mut g: Graph<_, Employment> = Graph::new(store);
-let attrs = Employment { since_year: 2020, weight: 7 };
-g.link(&EdgeHead {
+let mut x = Fragment::<Employment>::new([Decl::edge(EdgeHead {
     src: NodeRef::new(&10u16.to_be_bytes(), &1u64.to_be_bytes()),
     dst: NodeRef::new(&11u16.to_be_bytes(), &9u64.to_be_bytes()),
     predicate: "employs".into(),   // the edge's type: a head segment + the graph's own vocabulary
-}, &attrs, 1).unwrap();            // the payload encodes itself from the declaration (ADR-0017 §3)
+})]);
+x.on_edge_conflict(|_stored, _declared| Employment { since_year: 2020, weight: 7 });
+let report = g.incorporate(x).unwrap();   // report.edges: one EdgeKey per declaration
 
 g.typed_out("employs", &user1);   // face 0x08: predicate-filtered traversal
 use __OkmIndex_Employment_by_since as BySince;   // the face type the declaration generated
 g.by_attr_face(<BySince as KvIndex>::SLOT, &2020u16.to_be_bytes());
 ```
 
-- **An endpoint reference** is `[ns 2B][len varint][pkey]` — the ns acts as the type marker, and the pkey width lives inside the reference as a one-byte varint. A document of any collection joins without a declaration: the same node is the same bytes (a traversal face hits an exact prefix), different pkey widths coexist, and there is no registry to declare, maintain or fail on. The graph edge retires the `Ref` discipline — the reference carries its own width, and its ns knowledge with it. The member set is the only thing declared, as a list of **tables** (`#[ok_nodes(User, Org)]`); the derive generates the `XxxNode` enum and the `NodeSet` impl from it, each ns read off that table's own declaration and applied as one check at write and one at decode. Width is still wire data; membership is a declaration.
-- **Faces**: one `link` writes the primary table (fixed face 0x00, `edge_id` u64) + out/in traversal (0x06/0x07) + predicate-qualified traversal (0x08/0x09) + one face per **declared** `#[ok_index]` (counting family 0x3nnn), in one batch. Every traversal entry carries **both** endpoints (`[src][dst][edge_id]`, predicate first when qualified), so "this pair" is addressable and asserting identity is one seek; **there is no separate predicate index** — 0x08's bare `[predicate]` prefix is it. `unlink` decodes the edge body and deletes exactly those entries (declared faces are re-derived from the decoded payload, no prefix sweep); the all-dynamic form writes open attributes into the dynamic segment (fixed face 0x01, one entry per edge). Predicate names go through the **graph's own predicate vocabulary** (fixed faces 0x04/0x05, first sight gets the number) — separate from the payload's field-name vocabulary (0x02/0x03) and from any node field's vocabulary, so "list this graph's predicates" is one 0x04 prefix scan and never inferred by walking the index faces.
+- **An endpoint reference** is `[ns 2B][pkey]` — the ns marks the collection and the pkey is that collection's own key encoding, with **no length in front**. The width is a fact of the declaration: `#[ok_nodes(User, Org)]` is a closed set of member tables, `KeyEncode` fixes each one's key width, so the graph parses `[src][pred][dst]` by width alone, sorts by value and spends nothing per hop. The same node is the same bytes (a traversal face hits an exact prefix), and a table that wants to be a member must have a fixed-width key — a variable-width identity is refused at declaration. The declaration is also the check: an endpoint whose ns is not a member is `Error::ForeignEndpoint` at write time, and a pkey of the wrong width is `Error::Corrupt`. The derive generates the `XxxNode` enum and the `NodeSet` impl from that list, each ns read off the table's own `#[ok_ns]`.
+- **Faces**: `0x06` IS the edge — `[ns][0x06][src][pred][dst] -> payload` — and one `incorporate` writes it plus the three derived, empty faces (0x07 in-edges, 0x08/0x09 predicate-qualified) plus one entry per **declared** `#[ok_index]` (counting family 0x3nnn), in one batch. No `0x00` row is written: with no edge number there is nothing for a primary row to hold that the tuple does not. Every face carries **both** endpoints and the predicate (`[src][pred][dst]`, predicate first on 0x08/0x09), so "is this fact already here" is one seek on the tuple and a hop knows its predicate; **there is no separate predicate index** — 0x08's bare `[pred]` prefix is it. A retract reads the 0x06 row to re-derive its declared-face entries and deletes exactly those (no prefix sweep); the all-dynamic form writes open attributes into the dynamic segment (fixed face 0x01, keyed by the same tuple). Predicate names go through the **graph's own predicate vocabulary** (fixed faces 0x04/0x05, first sight gets the number) — separate from the payload's field-name vocabulary (0x02/0x03) and from any node field's vocabulary, so "list this graph's predicates" is one 0x04 prefix scan and never inferred by walking the index faces.
 - **The handle declares nothing.** `Graph<S, E>` binds one engine instance and its per-instance state (the predicate vocabulary cache); the ns comes from the declaration and the member set from `E::Nodes` — the same shape as `Collection<S, K, R>`, which also takes only the engine.
-- **Parallel edges** are separate edges: every link carries a caller-chosen `edge_id`, and `link` refuses a live id. Rewriting one edge in place is the only exception, and it has exactly one entry point: `unlink_into` + `link_into` fold the delete and the write of the same id into one batch, so at commit the edge was never absent and a second id is never born — k10r's functional arbitration and its counter write-back both go this way (ADR-0010's owed item). A deleted id is never reused.
+- **Parallel edges** are separate edges when their predicates differ: two facts between the same pair with different predicates are two tuples, hence two rows. The same tuple asserted twice is the SAME edge — writing it again re-asserts the row, and `on_edge_conflict` decides the payload, so an update and a create are one verb. A repeated assertion of one relation is therefore multiplicity in the payload (a `Variant` holds an array, replaced atomically), not a second row — k10r's functional arbitration and its counter write-back both go this way (ADR-0010's owed item).
 - **Filtering**: walk the most selective face first and converge the ids in memory — no composite face is declared by default (`(*)-[predicate]->(:node kind)` = an 0x08 scan intersected with the node-kind face's pkey set).
 
-The dividing line: `Refs` = one-to-many; a relation table = many-to-many, fixed endpoints, attributes the relation owns; **a graph edge** = independent identity, attributes, parallel edges, open endpoints.
+The dividing line: `Refs` = one-to-many; a relation table = many-to-many, fixed endpoints, attributes the relation owns; **a graph edge** = identity that IS the tuple, attributes, parallel edges, open endpoints.
 
 ### Traversal: one hop per iteration
 
-A traversal is a lazy ordered stream, not a materialized neighbour list. `graph.out(node)` and `graph.inn(node)` answer the SAME type — an `EdgeStream` over face 0x06 or 0x07, with the direction as a field — and each `next()` reads one entry and yields one `EdgeStep { edge_id, far, head }`. The two directions composing as one type is the point: `chain`, `zip` and `flat_map` work across them without the consumer matching on a shape.
+A traversal is a lazy ordered stream, not a materialized neighbour list. `graph.out(node)` and `graph.inn(node)` answer the SAME type — an `EdgeStream` over face 0x06 or 0x07, with the direction as a field — and each `next()` reads one entry and yields one `EdgeStep { far, head }`, where `head` is the tuple `HopHead { src, dst, predicate }` and `.key()` assembles the `EdgeKey`. The two directions composing as one type is the point: `chain`, `zip` and `flat_map` work across them without the consumer matching on a shape.
 
-- **The far endpoint comes from the entry, not from a row.** Every traversal entry carries both endpoints (`[src][dst][edge_id]`), so a hop's destination is already in the key. A walk fetches no primary rows at all; the eager `out_nodes` shape (scan the face, then read each edge) is one read per hop that this does not pay.
-- **What the step can state is what the entry states.** Endpoints and the id always; the predicate's id only when the scan went through 0x08/0x09, because 0x06/0x07 do not carry one. `HopHead::predicate` is `None` for "this entry did not say", never for "the edge has no predicate".
+- **The far endpoint comes from the entry, not from a row.** Every traversal entry carries both endpoints (`[src][pred][dst]`), so a hop's destination is already in the key. A walk fetches no primary rows at all; the eager `out_nodes` shape (scan the face, then read each edge) is one read per hop that this does not pay.
+- **What the step can state is what the entry states.** Both endpoints and the predicate, on every face: the predicate's `u16` vocabulary id sits in the key of 0x06–0x09 alike, and `predicate_vocab_name` resolves it to the name. A hop therefore never reads a row and never guesses a predicate.
 - **Predicate filtering is pushed down, not filtered after.** `.by("employs")` reopens the SAME stream type on the predicate-qualified face — one scan of that predicate's entries for the node, instead of the node's whole face with discards. On a hub whose out-degree is mostly one predicate, that is the difference between reading the edges you asked for and reading every edge and throwing most of them away. A predicate nobody ever interned answers an empty stream without opening a scan: no edge can carry it.
 - **Short-circuiting is free**, because nothing is collected: `find`, `take`, `take_while` and `try_fold` read only the entries up to the answer, and dropping the stream stops the scan where it stands. (The cursor keeps the item on top — a position has to exist before it can be read — so a stream may read at most one entry ahead of what it handed out.)
 - **Both directions are `Seekable` over their entry key**, so the repositioning operators in `okm-query` work on them unchanged: `intersect_seek`, `difference` and `union` over two walks are ordinary one-pass alignments, and a seek forward skips a range instead of stepping through it.
@@ -929,7 +931,7 @@ A traversal is a lazy ordered stream, not a materialized neighbour list. `graph.
 ```rust
 // one hop, lazily; the predicate is a face, not a filter
 for step in graph.out(&user).by("employs")? {
-    println!("{} -> {:?}", step.edge_id, step.far);
+    println!("{:?} -> {:?}", step.key(), step.far);
 }
 // two hops: no API for it, just flat_map
 let colleagues = graph.walk(&user).flat_map(|step| graph.walk(&step.far));
@@ -944,19 +946,21 @@ The relation's name lives in the edge's **head**, beside the endpoints — `Edge
 - **Adding a relation is not a migration.** No per-predicate declaration, no code change, no ns per relation: one edge collection holds `employs`, `reports_to` and `blocked_by` at once. The id space is partitioned per graph, so a predicate can never collide with a node kind, a field name, or another graph's predicate.
 - **A predicate is a relation, not an attribute.** Making `is_admin` a predicate that points at a `true` literal node is the classic failure shape; that flag is a field on the row. A predicate answers "how are these two things related"; "what is this node" belongs to the node's own declaration.
 - **A node's KIND is a field, not the predicate vocabulary.** Kind is a categorical value in the payload — `kind: Vocab<u16>`, indexed by `by_kind` (ADR-0032) — the label set belongs to that field, the width is the declaration, and no further rule is needed. Predicate = the edge's type in the **head**; kind = the node's type in the **payload**. The field is named `kind`, not `kind_id`: under `Vocab<N>` the value **is** the label and the id is only its encoding, so an `_id` suffix would claim the caller is handling numbers.
-- **Direction is part of the assertion.** `link` writes src → dst; the reverse relation is another predicate (or the same predicate with the endpoints swapped), and the library never derives it. Two edges over the same pair are two distinct assertions, told apart by their predicates and `edge_id` — which is what parallel edges are for.
+- **Direction is part of the assertion.** A write asserts src → dst; the reverse relation is another predicate (or the same predicate with the endpoints swapped), and the library never derives it. Two edges over the same pair are two distinct assertions when their predicates differ — the predicate is in the key, so the tuple keeps them apart. The same predicate over the same pair is the same fact, and a second assertion of it is a payload write.
 
-**Why a `Vocab` field cannot replace it.** A `Vocab<N>` field interns a label, its faces are only the ones `#[ok_index]` declares, and it lives in the **payload**, behind the payload's own frames. A predicate cannot move there: the traversal faces are keyed by it (`[predicate_id][src NodeRef][edge_id]`, `[predicate_id][dst …]`), and the endpoints are **head** bytes rather than payload fields, so no payload index can produce those entries; the id also has to sit at an offset computable in the edge body, so `unlink` can delete an edge without decoding the payload first; and each edge has exactly one predicate, which is what lets it go straight into the key with no existence check. What the two share is the mechanism underneath — the same intern-style label ↔ id protocol (append-only, first sight gets the number, two faces) — so this is one primitive in two positions, not two mechanisms: a vocabulary owned by the graph's **key** versus one owned by a payload **field**.
+**Why a `Vocab` field cannot replace it.** A `Vocab<N>` field interns a label, its faces are only the ones `#[ok_index]` declares, and it lives in the **payload**, behind the payload's own frames. A predicate cannot move there: the traversal faces are keyed by it (`[pred][src NodeRef][dst NodeRef]`, `[pred][dst …]`), and the endpoints are **key** bytes rather than payload fields, so no payload index can produce those entries; the predicate also has to be addressable before the row is read, because it is part of the identity; and each edge has exactly one predicate, which is what lets it go straight into the key with no existence check. What the two share is the mechanism underneath — the same intern-style label ↔ id protocol (append-only, first sight gets the number, two faces) — so this is one primitive in two positions, not two mechanisms: a vocabulary owned by the graph's **key** versus one owned by a payload **field**.
 
 ### Clusters: a set of edges, kept as a membership table
 
 A graph has a third way to organise itself: several edges declared as one thing — an event's whole evidence, a community, a subgraph, a permission boundary. That is a cluster, and it sits on four fixed faces:
 
 ```
-0x0A  [ns][0x0A][kind][hyper_id]            → [parent_id u64 BE][payload]
-0x0B  [ns][0x0B][kind][hyper_id][edge_id]   → empty
-0x0C  [ns][0x0C][kind][parent][hyper_id]    → empty (derived, rebuilt from 0x0A)
-0x0D  [ns][0x0D][edge_id][kind][hyper_id]   → empty (derived, rebuilt from 0x0B)
+0x0A  [ns][0x0A][kind][hyper_id]                  → [parent_id u64 BE][payload]
+0x0B  [ns][0x0B][kind][hyper_id][src][pred][dst]  → empty (authority)
+0x0C  [ns][0x0C][kind][parent][hyper_id]          → empty (derived, rebuilt from 0x0A)
+0x0D  [ns][0x0D][src][pred][dst][kind][hyper_id]  → empty (derived, rebuilt from 0x0B)
+
+A member is an edge, and an edge is its tuple, so a member row carries `(src, pred, dst)` where an older shape carried a number. The tuple's widths come from the graph's `#[ok_nodes]` declaration, so a member row parses by width exactly as a traversal entry does.
 ```
 
 Members are edges; nodes are not members. The participants are the endpoints of the member edges, and the deduplication happens on the reading side — inserting into a sorted list is log n, a HashMap is not needed, and node kinds are heterogeneous enough that mirroring them into a face costs more to maintain than it saves. The `0x0A` value starts with a fixed-width `parent_id`, `0` meaning no parent, so nesting costs no extra face. A cluster's members, a kind's clusters and a cluster's children are each a clean prefix scan (`[ns][0x0B][kind][hyper_id]`, `[ns][0x0A][kind]`, `[ns][0x0C][kind][parent]`): the face bytes differ, so no length test is needed.
@@ -981,13 +985,13 @@ graph.incorporate(Fragment::new([Decl::Node(G::Nodes::User, key)]));
 
 `Decl` has exactly two variants; node kinds come from the enum `#[ok_nodes(..)]` generates. `None` creates and returns the id, `Some` incorporates into an existing cluster, membership is idempotent, and the three conflict hooks run in the same commit — which is how a cluster's member count and weight are maintained, with no second read-modify-write. Each hook takes the STORED payload and the DECLARED one and answers the row to write, so "keep what is there", "overwrite", "take the larger stamp" are one expression each instead of a mutation of a row the callback never sees. The other operations ride the same rows: `remove`, `incorporate(sources, into)`, `split`, `reassign`, `lookup`, `members`, `children`, `diff`.
 
-`0x0D` is the same membership read backwards: `0x0B` answers "who is in this cluster", `0x0D` answers "which clusters is this edge in". Without it the second question is a suffix scan of every member row of the kind — fine once per retract, wrong once per traversal hop — and with `edge_id` leading, its entries are in the order an edge-id stream already has, so "the member edges of C that these nodes point at" is one intersection of two ordered streams (`graph.clusters_of` against a member cursor) instead of a set built on the caller's side. `member_of(kind, cluster, edge)` is the same face's exact key, one point read, which is what lets a membership test be a `.filter` inside a traversal. Its cost is stated where it is paid: one extra entry per member row on every write, and the node form of `clusters_of` is one scan per incident edge — the price of keying the face by edge.
+`0x0D` is the same membership read backwards: `0x0B` answers "who is in this cluster", `0x0D` answers "which clusters is this edge in". Without it the second question is a suffix scan of every member row of the kind — fine once per retract, wrong once per traversal hop — and with the tuple leading, its entries are in the order a traversal already has (both lead with `src`), so "the member edges of C that these nodes point at" is one intersection of two ordered streams (`graph.clusters_of(&key)` against a member cursor) instead of a set built on the caller's side. `member_of(kind, cluster, &key)` is the same face's exact key, one point read, which is what lets a membership test be a `.filter` inside a traversal (`&step.key()` is the tuple the step just yielded). Its cost is stated where it is paid: one extra entry per member row on every write, and the node form of `clusters_of(&node)` is one scan per incident edge — the price of keying the face by the tuple.
 
 A cluster is an assertion, so `0x0A`/`0x0B` are Truth in the changelog and `0x0C`/`0x0D` are Derived and rebuildable. Deleting an edge deletes its membership rows in the same batch; a cluster below two members disappears — a node exists only as an endpoint, a cluster only with members — and those two write-time rules are what make "every member has an edge" true without a defensive shape.
 
 ### The same clusters when the schema is data
 
-`okm-dynamic` is the form a store without declared Rust types uses: the schema arrives as data (`CollectionSchema`), an endpoint is a `NodeRef` and every payload is a `Dict`. It carries the **same** cluster faces — `0x0A` the cluster row with its `[parent_id u64 BE][payload]` head, `0x0B` the member edges, `0x0C` the derived child index, `0x0D` the derived edge → cluster index — because the keys are built by the same functions and the vocabulary is the same one: a cluster is still addressed by `(kind, hyper_id)`. What changes is only what this form always changes: no `#[ok_nodes]` member set to check, no declared payload type, and no node declarations at all — on this form a node IS an endpoint, so a `NodeRef` (ns + bare key bytes) is the whole address.
+`okm-dynamic` is the form a store without declared Rust types uses: the schema arrives as data (`CollectionSchema`), an endpoint is a `NodeRef` and every payload is a `Dict`. It carries the **same** cluster faces — `0x0A` the cluster row with its `[parent_id u64 BE][payload]` head, `0x0B` the member edges (keyed by the tuple), `0x0C` the derived child index, `0x0D` the derived edge → cluster index (tuple first) — because the keys are built by the same functions and the vocabulary is the same one: a cluster is still addressed by `(kind, hyper_id)`. What changes is only what this form always changes: no `#[ok_nodes]` member set to check, no declared payload type, and no node declarations at all — on this form a node IS an endpoint, so a `NodeRef` (ns + bare key bytes) is the whole address.
 
 ```rust
 let mut fragment = okm_dynamic::DynFragment::new([
@@ -1002,11 +1006,11 @@ graph.incorporate(fragment)?;                       // edges + clusters + hooks,
 graph.retract(fragment)?;                           // delete_node / delete_edge / delete(cluster)
 ```
 
-The two delete rules are the static form's, unchanged: deleting a **node** takes every edge incident to it — both traversal faces, the predicate faces, the payload row, the dynamic segment and those edges' membership rows — and deleting an **edge** leaves both endpoints alone, even when they are then connected to nothing. A cluster below two members stops existing, so its remaining membership rows leave too. Membership is idempotent in the same way (`(kind, cluster, edge)` twice is one row), and a re-asserted edge updates only its frames: the declaration carries a `Dict`, the reduce folds over it — on a live id it folds over the STORED map, which is what makes an update `incorporate` with a reduce instead of a verb.
+The two delete rules are the static form's, unchanged: deleting a **node** takes every edge incident to it — the 0x06 row, the other three traversal faces, the dynamic segment and those edges' membership rows — and deleting an **edge** (`.delete_edge(head)`, the head being the identity) leaves both endpoints alone, even when they are then connected to nothing. A cluster below two members stops existing, so its remaining membership rows leave too. Membership is idempotent in the same way (`(kind, cluster, edge)` twice is one row), and a re-asserted edge updates only its frames: the declaration carries a `Dict`, the reduce folds over it — on a live id it folds over the STORED map, which is what makes an update `incorporate` with a reduce instead of a verb.
 
-The reads are the same shapes, so a schema-as-data store answers the same questions: `member_of(kind, cluster, edge)` is the derived face's exact key (one point read, and therefore a `.filter` on a hop), `members(kind, cluster)` is one scan of `0x0B`, `children(kind, parent)` one scan of `0x0C`, `lookup(kind, id)` one point read of the row, and `rebuild_derived(chunk)` rebuilds `0x0C` from the cluster rows and `0x0D` from the member rows alone.
+The reads are the same shapes, so a schema-as-data store answers the same questions: `member_of(kind, cluster, &key)` is the derived face's exact key (one point read, and therefore a `.filter` on a hop), `members(kind, cluster)` is one scan of `0x0B`, `children(kind, parent)` one scan of `0x0C`, `lookup(kind, id)` one point read of the row, and `rebuild_derived(chunk)` rebuilds `0x0C` from the cluster rows and `0x0D` from the member rows alone.
 
-Traversal is the same stream, one type for both directions: `out` / `inn` / `walk` answer a `DynEdgeStream` yielding `EdgeStep { edge_id, far, head }`, the far endpoint taken from the entry's key (no row is read to make a hop), `.by("predicate")` pushed down onto the `0x08`/`0x09` prefix rather than filtered afterwards, and `find` / `take` / `take_while` reading only up to the answer. The stream implements the same `Seekable` contract over its raw entry key, so `okm-query`'s `intersect_seek`, `difference` and `union` apply unchanged. The point for a schema-as-data store is that the **query shapes do not fork**: "which of this node's edges are in cluster C" is the same alignment of two ordered streams — a walk and a member set — whether the payloads are declared types or `Dict`s.
+Traversal is the same stream, one type for both directions: `out` / `inn` / `walk` answer a `DynEdgeStream` yielding `EdgeStep { far, head }`, the far endpoint taken from the entry's key (no row is read to make a hop), `.by("predicate")` pushed down onto the `0x08`/`0x09` prefix rather than filtered afterwards, and `find` / `take` / `take_while` reading only up to the answer. The stream implements the same `Seekable` contract over its raw entry key, so `okm-query`'s `intersect_seek`, `difference` and `union` apply unchanged. The point for a schema-as-data store is that the **query shapes do not fork**: "which of this node's edges are in cluster C" is the same alignment of two ordered streams — a walk and a member set — whether the payloads are declared types or `Dict`s.
 
 ### What belongs in a graph
 
@@ -1014,7 +1018,7 @@ Three modeling judgements sit on top of the mechanism — open endpoints make "p
 
 - **One graph = one trust domain plus semantically related relations, merged rather than split.** A graph's boundary is its ns: one edge collection per graph (ADR-0017), **not** a global implicit edge pool (SurrealDB's `RELATE`, where every `RELATE` quietly joins one database-wide graph). PGQ's "merge, don't split" test carries over unchanged: same trust domain, semantically related relations = one graph; split into two only when the semantic domains are truly separate and never queried across. Predicates inside a graph are runtime data — one edge collection carries many relation types, which is PGQ's "one graph, many relations" position without its per-pair declaration cost.
 - **Type and state apart: high-churn instance state does not enter the graph.** A task's template, preconditions and references are graph nodes (slow variables, worth traversing); its instance rows (`items`, `claimed_at`, short-lived, queried by exact enumeration) are an ordinary document collection. Approximate traversal is not the right carrier for exact enumeration — "search a memory" must not be mixed into "count a state". Application aggregate state that must be listed or counted exactly is a collection with an access method, not a node.
-- **Across graphs: compose through `NodeRef`, not graph syntax.** A `NodeRef` is self-describing, so one document collection can take part in several graphs at once (PGQ's "a table belongs to several graphs", here several edge collections referencing the same nodes). Genuinely separate domains reach each other by collecting `NodeRef`s from one graph and probing another's faces, or by falling back to ordinary document reads — there is no cross-graph match syntax, and none is needed.
+- **Across graphs: compose through `NodeRef`, not graph syntax.** A `NodeRef` carries its own ns, so one document collection can take part in several graphs at once (PGQ's "a table belongs to several graphs", here several edge collections referencing the same nodes). Genuinely separate domains reach each other by collecting `NodeRef`s from one graph and probing another's faces, or by falling back to ordinary document reads — there is no cross-graph match syntax, and none is needed.
 
 #### Case: a tag forest is rows plus a relation table, not a graph
 
@@ -1107,17 +1111,17 @@ struct Facts { /* scope, since, confidence, weight, three counters, two clocks, 
 
 **A relation is the edge's predicate, so adding one is adding a name.** Ingestion hands over the relation's name (`PREFERS`, `RUNS`, `BLOCKED_BY`) and the graph interns it into a predicate id — no field, no enum, no declaration, no migration. One edge collection thus holds every relation this memory can express, and "which relations did this corpus use" is one scan of the graph's predicate vocabulary, not a walk over the edges. The twin on the node side is `kind`: the same label, the same interning, but it is a `Vocab` field in the node's payload — kind types the **node**, a predicate types the **assertion**.
 
-**Attributes are the reason the edge exists.** A fact carries its own assertional context: `since` (the caller's clock), `confidence`, and the three counters and two access clocks the weighting system folds into `weight`; the relation's open props (cause, condition, strength, a per-assertion `functional` marker) land in the edge's dynamic segment. A relation table has no identity of its own, and none of this would have a place to sit.
+**Attributes are the reason the edge exists.** A fact carries its own assertional context: `since` (the caller's clock), `confidence`, and the three counters and two access clocks the weighting system folds into `weight`; the relation's open props (cause, condition, strength, a per-assertion `functional` marker) land in the edge's dynamic segment. A relation table has no per-assertion payload, and none of this would have a place to sit.
 
 **Recent access lives in a fixed-length ring, not in a counter.** A count answers "how many times" and two clocks answer "how recently", and neither answers "what shape does this distribution have" — while the decay bill is decided by exactly that distribution. So the row gains `recent: Vector<u32>` at its tail: 8 slots, second offsets from 2026-01-01, ascending, `0` meaning unused, shifted one position right on write, and an older row missing this frame is filled to 8 slots by the declared default. Why not `Offset`, not `Bytes`, not a cursor and not a wrapper is the case under "Homogeneous lists".
 
-**Parallel edges are facts.** Two assertions between the same pair are two truths — different sources, different clocks, different confidence — so multi-valued is the default and each takes its own `edge_id`. A single-source-per-value relation is declared by **each assertion itself** (the `functional` prop), because dropping a fact is a net loss while an extra edge can be reclaimed. The arbitration is the mechanism's in-place rewrite: incumbent and challenger judge each other (`since >`, or `confidence >=`), and the winner's row is written with `unlink_into` + `link_into` in the same batch, along the **same** id — at commit the edge was never absent. Counter write-back goes the same way.
+**Parallel edges are facts.** Two assertions between the same pair are two truths — different sources, different clocks, different confidence. When they name different relations they are two edges, because the predicate is in the key. When they name the same relation they are ONE edge: multiplicity lives in the payload (`Variant` holds an array, replaced and appended to atomically), and a single-source-per-value relation is declared by **each assertion itself** (the `functional` prop), because dropping a fact is a net loss while an extra edge can be reclaimed. The arbitration is the conflict hook: incumbent and challenger judge each other (`since >`, or `confidence >=`), and the winner's payload lands on the **same** tuple in one batch — at commit the edge was never absent, and no identity was minted or lost. Counter write-back goes the same way.
 
 **Which side of the fact an attribute lands on is decided by what it describes.** Props describing the **relation** land on the edge; props describing the **entity** land in the node row's dynamic segment and merge — a prop of the same name takes the newer value, the rest survive. An attribute shared by several facts about one entity therefore has exactly one home.
 
 **A tenant is not the graph's boundary.** `scope` (one user's corpus) leads the node key — `[scope 8B][node_id 8B]` — while the edge key carries no scope at all, because the edge collection builds its own keys. Scope rides on the **endpoint**: an entity's primary key carries it, and a traversal that starts at a scoped node stays inside that scope. The edge row keeps a redundant `scope` field for one reason only: a sort face can only be probed by what it encodes. The user node is the one endpoint **without** a scope (a channel belongs to one scope, so a member row is store-global), and it is the edge row's own copy that keeps such a fact inside the scope it was written in. One semantic domain = one graph; a partition **inside** a domain is a key prefix plus endpoints, never a second graph — splitting ns per tenant would copy the declarations, the predicate vocabulary and the code paths once per user.
 
-**Not every relation is an edge.** A fact can name another fact's id in a prop's `ref` — one id, or a list — when that fact is not central enough to deserve a seat in the head. Nothing is validated: the reader decides whether to follow (`fact_in_scope`, one id), and a dangling link is the reader's 404. A pointer available on demand, never a subtree the writer forces in.
+**Not every relation is an edge.** A fact can name another fact — its `(src, predicate, dst)` tuple — in a prop's `ref`: one tuple, or a list, when that fact is not central enough to deserve a seat in the head. Nothing is validated: the reader decides whether to follow (`fact_in_scope`, one tuple), and a dangling link is the reader's 404. A pointer available on demand, never a subtree the writer forces in.
 
 **Derived things do not enter the graph.** `embedding` is a `Vector<f32>` with no declared face — a vector has no key order — so search is okm-vector's `ExactIndex`: a derived index rebuilt from the table the vectors live in, invalidated by a write and rebuilt as a block, never maintained entry by entry (its home is a side table, see "A field too large", so a write of the primary table does not invalidate it). A face is declared only when there is a reader: two on the edge, `by_since` and `by_scope_weight`, each naming its scanning side. A face with no scanner is a write paid on every touch for nothing.
 
@@ -1451,7 +1455,7 @@ okm splits it explicitly: **step one is plain set algebra** (intersect, differen
 Every cluster (hyperedge) operation lands in step one, and the fetch is always the same primitive:
 
 ```
-a cluster's members        {edge_ids}                → fetch
+a cluster's members        {edge tuples}            → fetch
 two clusters intersected   H₁.edges ∩ H₂.edges       → fetch
 child closure              union of key sets (walk parent) → fetch
 complement / residual      all_edges ∖ H.edges       → fetch
@@ -1580,6 +1584,32 @@ user
 Reads by the org dimension go through the index: `#[ok_index(by_org { fields(org_id, ...) })]` answers them with one prefix scan, and identity stays singular.
 
 Ownership questions like "does the data a user produces belong to the company or to the person" work the same way — they are business questions, and when the answer changes (a data migration, a change of ownership) the identity should not. That is the row model's payload-not-identity rule (ADR-0006), landed as a modeling discipline.
+
+## Multiplicity belongs in the payload, not in parallel edges
+
+When one pair of endpoints and one predicate occur many times (five contracts between a person and a company, five clicks on one link), the values go into the edge's payload as an array: **one edge, one payload, an array of events** — not two edges, not five.
+
+That is a consequence of the key, not a style preference. An edge's identity is `(src, predicate, dst)`, so writing the same head again is not a second row — it **is** the same row. Parallel edges cannot be written, which means the two shapes ("one edge with an array" and "several edges with one head") can never coexist in one dataset: an audit that asks how many contracts this person has with this company has exactly one shape to handle, and a reader never has to guess whether the number is the array's length or the number of edges.
+
+The cost comparison is just as plain: every parallel edge takes a row and, historically, an identity; the array pays for its payload once, and reading, replacing and appending are atomic on one value.
+
+```rust
+#[derive(GraphEncode, Clone, Default)]
+#[ok_ns(100)]
+#[ok_nodes(Person, Company)]
+pub struct Employment {
+    pub since_year: u16,
+    /// Every contract term on this pair of endpoints, ascending by start year.
+    pub terms: Vector<u16>,
+}
+
+// Appending is stated by the conflict hook — it sees both sides.
+graph.incorporate(
+    Fragment::<Employment>::new([Decl::edge(head).with(Employment { terms: Vector::new([2024]), .. })]),
+)?;
+```
+
+**Where the array stops being the right answer.** When an occurrence is a heterogeneous record — a contract with parties, amounts and dates, each needing its own index and its own deletion — the honest model is to reify it as a node and connect it with a participation edge. An edge payload is a single declared type and cannot hold heterogeneous records; a node is a document with its own faces and its own indexes. The test is whether the occurrence has to be queried by its own fields.
 
 ## Decisions land at declaration time
 

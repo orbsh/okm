@@ -68,12 +68,12 @@ assembles a key writes a slot the same way.
 0x03  field-name vocabulary        [ns][0x03][name]                            → field-id
 0x04  predicate vocabulary         [ns][0x04][predicate_id]                    → name
 0x05  predicate vocabulary         [ns][0x05][name]                            → predicate_id
-0x06  graph out                    [ns][0x06][src ref][dst ref][edge_id]
-0x07  graph in                     [ns][0x07][dst ref][src ref][edge_id]
-0x08  graph predicate+out          [ns][0x08][predicate_id][src ref][dst ref][edge_id]
-0x09  graph predicate+in           [ns][0x09][predicate_id][dst ref][src ref][edge_id]
+0x06  graph out (the edge)         [ns][0x06][src ref][pred][dst ref]          (value = the edge payload; ADR-0067)
+0x07  graph in                     [ns][0x07][dst ref][pred][src ref]          (empty, derived)
+0x08  graph predicate+out          [ns][0x08][pred][src ref][dst ref]          (empty, derived)
+0x09  graph predicate+in           [ns][0x09][pred][dst ref][src ref]          (empty, derived)
 0x0A  cluster                   [ns][0x0A][kind][hyper_id]           (value = parent_id + payload; ADR-0066)
-0x0B  edge member               [ns][0x0B][kind][hyper_id][edge_id]  (ADR-0066)
+0x0B  edge member               [ns][0x0B][kind][hyper_id][src][pred][dst]  (ADR-0066/0067)
 0x0C  child cluster index       [ns][0x0C][kind][parent][child]    (derived, rebuildable)
 0x0E  Extension                [ns][0x0E][subkind]…      each subkind owns its contract (0x01 = vector snapshot)
 0x0F  table meta                   [ns][0x0F]                   → name → bytes map (ADR-0043)
@@ -82,7 +82,10 @@ assembles a key writes a slot the same way.
 Rows are grouped by ROLE — a vocabulary precedes the faces that read its
 ids; the NUMBERS are the mechanism. 0x0F is the highest face on purpose:
 `slot <= 0x0F` is the one-byte/two-byte delimiter, so the meta sits on the
-boundary and no face added later can squeeze it out.
+boundary and no face added later can squeeze it out. Numbering follows the
+two-ended rule at the end of this ADR — core grows up from `0x00`, metadata sits
+at `0xFF`, Extension grows down from `0xFE` — and the numbers above are the ones
+in use when that rule was written.
 
 **The PREDICATE VOCABULARY holds its own pair (0x04/0x05).** A collection's
 token vocabulary beyond field names — a graph's predicates, a node
@@ -152,7 +155,8 @@ byte, no counter, nothing to enumerate.
 - **A fixed face carries no counter.** If a family that is one face today
   ever needs instances, it becomes a counting family (take a segment from
   0x6–0x0F) — it does not reuse its fixed-face number for sub-kinds. New
-  single-face kinds take the next free fixed-face number (one left, 0x0D).
+  single-face kinds take the next free number on their own side of the
+  two-ended allocation described at the end of this ADR.
 - **One counter width, 12 bits.** There is no per-family counter width;
   the family byte's low nibble belongs to the counter.
 - **Declared indexes and reduces are 4095 per collection** (the counter's
@@ -210,3 +214,15 @@ of its own, which is what this ADR's "no bands" rule exists to prevent.
   for the counting families.
 - docs/internals/key-layout and slot-mechanism carry the layout tables;
   the mechanism text there is the pair of this decision.
+
+## Allocation runs from both ends
+
+The one-byte slot space is allocated from both ends instead of being carved into fixed bands:
+
+    0x00 -> upward      core structure (primary, dynamic segment, vocabularies, graph faces, cluster faces)
+    0xFF                metadata
+    0xFE -> downward    Extension: one number per row type, each owning its own contract
+
+Core and Extension grow towards each other and only meet if their combined count approaches 254, so a band that needs more than its original share simply takes the next number on its side. The previous rule (a fixed core band plus a single Extension number whose subkinds lived in a second byte) rationed numbers that were never scarce: 240 of them were free while Extension subkinds queued behind one byte. Position still says which kind of row this is — low numbers are core, high numbers are Extension, `0xFF` is metadata — so a key dump stays readable without a table lookup.
+
+A row type that is core but belongs to a subsystem (the graph's handle faces, for instance) takes the next core number rather than a subkind: one number per row type was the rule the rest of the band already followed, and the subkind byte existed only to save numbers.

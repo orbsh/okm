@@ -57,11 +57,17 @@ counting family   first byte high nibble != 0   slot = 2 bytes   [ns][0x1n][nn]
                                                                  counter = (n << 8) | nn
 ```
 
-**Fixed faces** (1 byte, 16 numbers, all 16 in use: `0x00`–`0x0D` core, `0x0E`
-Extension, `0x0F` meta) — a family that is a single face, with nothing to
+**Fixed faces** (1 byte) — a family that is a single face, with nothing to
 enumerate. Big-endian is why the high nibble leads,
 and why the rule holds: 0x00–0x0F can never equal a counting family's first
 byte (≥ 0x10).
+
+The one-byte space is allocated from **both ends** (ADR-0030): core structure
+grows upward from `0x00`, metadata sits at `0xFF`, Extension grows downward from
+`0xFE` with one number per row type. A second subkind byte is no longer how a
+new Extension row type is added. The numbers below are still today's (core
+through `0x0E`, meta at `0x0F`); the renumbering is what moves Extension to the
+top.
 
 ```text
 0x00  primary                      [ns][0x00][pkey]                            value = TLV payload
@@ -70,15 +76,15 @@ byte (≥ 0x10).
 0x03  field-name vocabulary        [ns][0x03][name]                            → field-id
 0x04  predicate vocabulary         [ns][0x04][predicate_id]                    → name
 0x05  predicate vocabulary         [ns][0x05][name]                            → predicate_id
-0x06  graph out                    [ns][0x06][src ref][dst ref][edge_id]
-0x07  graph in                     [ns][0x07][dst ref][src ref][edge_id]
-0x08  graph predicate+out          [ns][0x08][predicate_id][src ref][dst ref][edge_id]
-0x09  graph predicate+in           [ns][0x09][predicate_id][dst ref][src ref][edge_id]
-0x0A  cluster              [ns][0x0A][kind][hyper_id]           → [parent_id u64][dynamic payload]
-0x0B  edge member          [ns][0x0B][kind][hyper_id][edge_id]  → empty
-0x0C  child cluster index  [ns][0x0C][kind][parent][child]      → empty, derived (ADR-0066)
-0x0D  edge → cluster index  [ns][0x0D][edge_id][kind][hyper_id]  → empty, derived (ADR-0066)
-0x0E  Extension                [ns][0x0E][subkind]…          each subkind owns its contract: 0x01 = vector snapshot (droppable)
+0x06  graph out (the edge)     [ns][0x06][src ref][pred][dst ref]          value = the edge payload
+0x07  graph in                 [ns][0x07][dst ref][pred][src ref]          → empty, derived from 0x06
+0x08  graph predicate+out      [ns][0x08][pred][src ref][dst ref]          → empty, derived from 0x06
+0x09  graph predicate+in       [ns][0x09][pred][dst ref][src ref]          → empty, derived from 0x06
+0x0A  cluster row              [ns][0x0A][kind][hyper_id]                  → [parent_id u64][dynamic payload]
+0x0B  edge member              [ns][0x0B][kind][hyper_id][src][pred][dst]  → empty
+0x0C  child cluster index      [ns][0x0C][kind][parent][child]             → empty, derived (ADR-0066)
+0x0D  edge → cluster index     [ns][0x0D][src][pred][dst][kind][hyper_id]  → empty, derived (ADR-0066)
+0x0E  Extension (today's number)  [ns][0x0E][subkind]…          each subkind owns its contract: 0x01 = vector snapshot (droppable)
 0x0F  table meta                    [ns][0x0F]                  → name → bytes map (ADR-0043)
 (rows are grouped by ROLE: the two vocabularies first, then the graph faces
 that read their ids — a vocabulary leads the faces it serves; the NUMBERS
@@ -86,6 +92,18 @@ are the mechanism. 0x0F is the HIGHEST face on purpose: `slot <= 0x0F` is the
 one-byte/two-byte delimiter, so the meta sits on the boundary and no face added
 later can squeeze it out.)
 ```
+
+An endpoint inside a graph key is a reference `[ns 2B][pkey]` — **no length**.
+The width comes from the declaration: `#[ok_nodes(..)]` is a closed set of
+member tables and `KeyEncode` fixes each one's key width, so `[src][pred][dst]`
+parses by width alone, sorts by value and costs no bytes per hop. An endpoint
+whose ns the graph does not declare is `Error::ForeignEndpoint` at write time.
+
+An edge has **no number** (ADR-0067). Its identity is the tuple
+`(src, predicate, dst)`, `0x06` IS the edge row — its value is the payload — and
+an edge writes **no** `0x00` row. `0x07`/`0x08`/`0x09` are the mirrored, empty
+faces derived from it, and the predicate (two bytes) sits in all four, which is
+why `0x08`'s bare `[pred]` prefix is the predicate index.
 
 **Counting families** (2 bytes, 12-bit counter, numbers unchanged) — a family
 whose instances are enumerated by declaration order or by a discriminator:
@@ -138,8 +156,7 @@ resolves to the wrong name.
 
 The width rule is a fact about the byte (`b & 0xF0 == 0` reads one slot byte,
 anything else reads two), not a lookup in a maintained table — the same
-posture as the ns escape byte below and the self-describing endpoint
-references (ADR-0017 §2). A family-prefix scan is therefore exact without
+posture as the ns escape byte below. A family-prefix scan is therefore exact without
 consulting anything: `[ns][0x07]` cannot match a counting family, and
 `[ns][0x1n][nn]` cannot match a fixed face. Iteration needs no bound of its
 own either: a prefix scan ends at the prefix's byte-order successor, so it
@@ -216,7 +233,7 @@ for this document: fixed faces 0x00–0x03 (primary, dynamic segment, both
 field-name vocabulary directions), then the counting families 0x1 vocabularies, 0x3 indexes, 0x4
 reduces. A graph (edge collection) adds its own fixed faces:
 the predicate vocabulary 0x04/0x05 (its predicates) and 0x06–0x09 (out/in edges and
-the two predicate-qualified faces, each carrying BOTH endpoints — the predicate index
-is the bare-prefix scan of 0x08, not a face of its own). A document collection that carries kind
+the two predicate-qualified faces, each carrying BOTH endpoints — `0x06` is the
+edge row itself, and the predicate index is the bare-prefix scan of 0x08, not a face of its own). A document collection that carries kind
 tokens declares the same vocabulary pair — one rule, whichever collection
 needs it. Mechanism in [reduce mechanism](reduce-mechanism.md).

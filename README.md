@@ -311,6 +311,8 @@ okm-core = { version = "0.1", features = ["fjall"] }    # or "redb"; the async e
 
 A graph's declaration is the whole graph: `#[ok_ns]` sets the trust domain, `#[ok_nodes(User, Org)]` lists the member **tables** (the derive generates the enum and its `NodeSet` from them, one variant per collection), and `#[ok_index]` declares faces explicitly.
 
+An edge has no number (ADR-0067): its identity is the tuple `(src, predicate, dst)`, so `0x06` IS the edge row (`[ns][0x06][src][pred][dst] -> payload`) and writing the same tuple twice rewrites that row instead of minting a second one.
+
 ```rust
 #[derive(GraphEncode, Clone, Default)]
 #[ok_ns(100)]
@@ -345,7 +347,7 @@ Each hook is handed the STORED payload and the DECLARED one and answers the row 
 Deletion is the reverse verb, and its two rules differ: deleting a node deletes every edge of it (an edge cannot be missing an endpoint), deleting an edge keeps both endpoints (afterwards they may connect no edge at all — "a node exists only when it becomes an endpoint" is a write premise, not an invariant after deletion).
 
 ```rust
-graph.retract(Fragment::new([]).delete_node(user_key).delete_edge(7))?;
+graph.retract(Fragment::new([]).delete_node(user_key).delete_edge(head))?;
 ```
 
 Traversal is an ordered stream, one `next()` per hop: `out` and `inn` yield the same `EdgeStep` (direction is an argument, not two APIs), predicate filters push down to the `0x08`/`0x09` prefixes, `find`/`take_while` short-circuit naturally, and dropping the stream stops it. The streams implement `Seekable`, so `intersect`/`difference`/`union` share one implementation with set algebra and with cluster-member streams.
@@ -357,9 +359,9 @@ Clusters (hyperedges) land in three fixed faces: `0x0A` the cluster row (value =
 `Fragment` is the carrier of a cross-table write: the nodes, edges, member rows and conflict hooks of one batch commit together or not at all. There is no cross-table transaction language and no cascade mechanism — consistency rests on "one fragment = one commit", and on the two premises the write entry point enforces (a node must be an endpoint of some edge, a cluster needs at least two members).
 
 ```rust
-let mut x = Fragment::<Employment>::new([Decl::edge_at(head, 7)]);  // restating the same id = in-place update
+let mut x = Fragment::<Employment>::new([Decl::edge(head)]);        // restating the same tuple = the same row
 x.on_edge_conflict(|_stored, _declared| new_payload.clone());
-graph.incorporate(x)?;                                              // id, face and member rows stay put
+graph.incorporate(x)?;                                              // row, faces and member rows stay put
 ```
 
 Different carriers are separate commits: an edge's payload lives on the graph, its open attributes live in the document's dynamic segment (`0x01`), and the two belong to two write paths; when both must land together, the caller puts them in one higher-level flow rather than asking the engine to guess.

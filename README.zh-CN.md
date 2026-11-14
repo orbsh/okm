@@ -319,6 +319,8 @@ okm-core = { version = "0.1", features = ["fjall"] }    # 或 "redb"；异步引
 
 一张图的声明就是它的全部：`#[ok_ns]` 定信任域，`#[ok_nodes(User, Org)]` 列出成员**表**（派生宏据此生成枚举与 `NodeSet`，一个变体一个集合），`#[ok_index]` 是显式声明的面。
 
+边没有号（ADR-0067）：身份就是元组 `(src, predicate, dst)`，所以 `0x06` **就是**边这一行（`[ns][0x06][src][pred][dst] -> 载荷`），同一个元组写两次是改写那一行，而不是多出一行。
+
 ```rust
 #[derive(GraphEncode, Clone, Default)]
 #[ok_ns(100)]
@@ -353,7 +355,7 @@ graph.incorporate(x)?;                                   // 一批落地：端�
 删除是反向动词，两条规则不同：删节点连带删它的所有边（一条边不能缺一端），删边保留两端（之后它们可能不再连任何边——"节点只在成为端点时存在"是写入前提，不是删除后的不变量）。
 
 ```rust
-graph.retract(Fragment::new([]).delete_node(user_key).delete_edge(7))?;
+graph.retract(Fragment::new([]).delete_node(user_key).delete_edge(head))?;
 ```
 
 遍历是有序流，一跳一次 `next()`：`out` 与 `inn` 产出同一个 `EdgeStep`（方向是参数不是两套 API），谓词过滤下推到 `0x08`/`0x09` 前缀，`find`/`take_while` 天然短路，drop 即停。流实现 `Seekable`，于是 `intersect`/`difference`/`union` 与集合运算、簇成员流共用同一套实现。
@@ -365,9 +367,9 @@ graph.retract(Fragment::new([]).delete_node(user_key).delete_edge(7))?;
 `Fragment` 就是跨表写的载体：同一批里的节点、边、成员行、冲突钩子一起提交或一起不提交。没有跨表事务语言、也没有级联机制——一致性靠"一个碎片 = 一次提交"，以及写入口强制的两条前提（节点必须是某条边的端点，簇至少两个成员）。
 
 ```rust
-let mut x = Fragment::<Employment>::new([Decl::edge_at(head, 7)]);  // 同一 id 重述 = 就地更新
+let mut x = Fragment::<Employment>::new([Decl::edge(head)]);        // 同一元组重述 = 同一行
 x.on_edge_conflict(|_stored, _declared| new_payload.clone());
-graph.incorporate(x)?;                                              // id、面、成员行都不动
+graph.incorporate(x)?;                                              // 行、面、成员行都不动
 ```
 
 不同载体是各自的一次提交：一条边的载荷在图上，它的开放属性在文档的动态段（`0x01`），两者属于两个写路径；需要两者同批时，由调用方把它们放进同一个上层流程，而不是让引擎去猜。

@@ -1,7 +1,7 @@
 # ADR-0017: Graph Edge — the third relation carrier
 
 Date: 2026-09-19
-Status: Accepted (2026-09-20). The declaration is a GRAPH declaration (`GraphEncode`): one ns, the edge's own payload (the document codec), the attribute faces it declares explicitly, and a compile-time node-type enum. `#[ok_nodes]` lists the member TABLES by type (`#[ok_nodes(EntityRow, MemberRow)]`) and the derive writes the member-set enum plus its `NodeSet` impl, each ns read off the table's own `#[ok_ns]`. The predicate vocabulary sits at 0x04/0x05, the graph's faces at 0x06–0x09; `Graph<S, E>` is a runtime handle that declares nothing, `Graph::new(store)` binds an engine instance, and `unlink` deletes precisely by decoding the edge body. okm-dynamic's handle takes the ns + schema pair (`CollectionSchema::ns_prefix`, `members`).
+Status: Accepted (2026-09-20); **the identity clause is superseded by ADR-0067** (2026-11-14) — an edge has no number, its identity is the tuple `(src, predicate, dst)`, and the decision below is stated in that form. The declaration is a GRAPH declaration (`GraphEncode`): one ns, the edge's own payload (the document codec), the attribute faces it declares explicitly, and a compile-time node-type enum. `#[ok_nodes]` lists the member TABLES by type (`#[ok_nodes(EntityRow, MemberRow)]`) and the derive writes the member-set enum plus its `NodeSet` impl, each ns read off the table's own `#[ok_ns]`. The predicate vocabulary sits at 0x04/0x05, the graph's faces at 0x06–0x09; `Graph<S, E>` is a runtime handle that declares nothing, `Graph::new(store)` binds an engine instance, and a delete reads the edge row (0x06) and deletes its declared-face entries precisely. okm-dynamic's handle takes the ns + schema pair (`CollectionSchema::ns_prefix`, `members`).
 Related: ADR-0015 (relation taxonomy), ADR-0016 (4-byte head, segment-numbered slots), ADR-0002 (namespace vocabulary)
 
 ## Context
@@ -33,10 +33,11 @@ written property graph has:
   collection, an entities collection, a users collection) and never
   collections created on the fly; a node "type" inside one collection is a
   payload field. Same for node kinds in the fully dynamic form.
-- **Edge identity and attributes** — parallel edges exist (two "has"
-  facts between the same nodes are two facts), and edges carry dynamic
-  attributes. Neither carrier supports this: a Junction's identity IS
-  the endpoint pair, and neither has per-edge payload.
+- **Parallel facts and attributes** — two "has" facts between the same
+  nodes are two assertions, and edges carry dynamic attributes. Neither
+  carrier supports this: a Junction's identity IS the endpoint pair and it has
+  no per-edge payload, so a second fact about the same pair has nowhere to
+  live.
 - **Independent existence** — edges outlive or precede their endpoint
   documents' presence in query scope; the edge set is a first-class
   collection, not a derived view.
@@ -48,18 +49,21 @@ relation carrier**.
 
 ## Decision
 
-### 1. Edge = a first-class collection, one ns per graph
+### 1. The edge SET is a first-class collection, one ns per graph
 
 A graph's edges live in their own Edge collection — one ns for the
 edge set of one graph, allocated through the normal ns vocabulary
 (ADR-0002, "the vocabulary is code"), symmetric with any document
-collection. No new namespace mechanism: not a per-predicate ns
+collection. The collection is first-class; an edge inside it is a row whose
+identity is nothing but its tuple (ADR-0067), so there is no registry of
+edges to keep, no number to allocate and nothing to preserve across a
+restore. No new namespace mechanism: not a per-predicate ns
 (predicates are runtime data in the dynamic form), not a global edge pool (a graph
 isolates at the ns layer), not residency (edges exist independently of
 endpoint documents).
 
 The same ns hosts every entry type of the edge set, dispatched by the
-segment-numbered slots of ADR-0016.
+fixed-face slots of ADR-0030.
 
 **The member node set is a declaration, not a registry.** A graph declares
 which collections may appear as its nodes
@@ -73,42 +77,49 @@ field — one ns holding many runtime types — which is strictly cheaper
 than an ns per emergent type, and the only reading that keeps the ns
 vocabulary closed (PGQ's own rule: tables are declared, not conjured).
 
-### 2. Self-describing endpoint references
+### 2. Endpoint references: ns in the ref, width from the declaration
 
 Endpoints are **not compile-time typed**. A reference is
-`[ns 2B BE][len varint][pkey]` — any collection's document, any key shape.
+`[ns 2B BE][pkey]` — any member collection's document, no length in front.
 The ns acts as the type marker: decoding a reference routes by ns to the
 owning collection, so node type is unrestricted.
 
-The pkey width is **wire data, not a schema fact at the decode site**. The
-shared varint codec encodes widths (4–16 bytes) in one byte, so a reference
-pays about 1 byte — ~5% on traversal-face keys — and traversal faces still
-prefix-match exactly (same node = same bytes), while both forms need zero
-endpoint declaration. ns knowledge lives in the ref itself, not at a
-declaration point: no cross-collection width registry exists.
+The pkey width is **not wire data**: it comes from the graph's declaration.
+`#[ok_nodes(..)]` is a closed, compile-time known set of member tables and
+`KeyEncode` emits one fixed byte count per declaration, so the graph knows every
+member's key width up front. A reference therefore pays nothing for its width,
+`[src][pred][dst]` parses by width alone, ordering is value order, and a hop
+costs zero extra bytes (ADR-0067). ns knowledge still lives in the ref itself:
+no cross-collection width registry exists.
 
-The declaration's member set is a CHECK, not a width source. It is applied at
-decode (ns → variant; out-of-range = error, never silent) and at write time
-(the endpoint's collection must be declared). Width lookup and TYPE restriction
-are separate facts: the first is wire data, the second is a declaration — and a
-script or LLM writer needs no `Node` enum to write a ref.
+The declaration's member set is thus BOTH the width source and the CHECK. It is
+applied at write time (an endpoint whose ns is not a member is
+`Error::ForeignEndpoint`; a pkey of the wrong width is `Error::Corrupt`) and at
+decode (ns → variant; out-of-range = error, never silent). The corollary is a
+constraint: a table that wants to appear in a graph must have a fixed-width key.
+Variable-width fields may still be indexed inside a collection; they are
+refused as member identities. Where a variable key genuinely must participate,
+the honest options are to pad it to a declared width or to accept a hash
+identity with its collision check — not to smuggle a length into every key.
 
 ### 3. Slot allocation (fixed faces and counting families, within the Edge ns)
 
 ```text
-0x00  primary                [edge_id]
-0x01  dynamic segment        (the edge's open attributes)
+0x00  primary                (an edge writes no row here — 0x06 IS the edge)
+0x01  dynamic segment        [src][pred][dst]   (the edge's open attributes)
 0x02/0x03  field-name vocabulary  (the payload's own names ↔ ids)
 0x04/0x05  predicate vocabulary   [predicate name ↔ predicate_id]
-0x06  out-edges              [src NodeRef][dst NodeRef][edge_id]
-0x07  in-edges               [dst NodeRef][src NodeRef][edge_id]
-0x08  predicate+out          [predicate_id][src NodeRef][dst NodeRef][edge_id]
-0x09  predicate+in           [predicate_id][dst NodeRef][src NodeRef][edge_id]
+0x06  out / the edge itself  [src NodeRef][pred][dst NodeRef]  → the edge payload
+0x07  in-edges               [dst NodeRef][pred][src NodeRef]  → empty
+0x08  predicate+out          [pred][src NodeRef][dst NodeRef]  → empty
+0x09  predicate+in           [pred][dst NodeRef][src NodeRef]  → empty
 ```
-(Every index carries BOTH endpoints (ADR-0041): `(src, dst)` is addressable on
-0x06, `(predicate, src, dst)` on 0x08. The graph's faces are fixed-face
+(Every face carries BOTH endpoints AND the predicate (ADR-0041, ADR-0067):
+`(src, predicate, dst)` is addressable on 0x06, `(predicate, src, dst)` on 0x08.
+A ref in one of these keys is `[ns 2B][pkey]` with no length — the width is the
+declaration's (§2). The graph's faces are fixed-face
 numbers — one byte each, ADR-0030; the declared attribute faces below are
-counting family 0x1. Rows are grouped by ROLE — the two vocabularies first,
+ordinary declared indexes, counting family 0x3nnn. Rows are grouped by ROLE — the two vocabularies first,
 then the faces that read their ids: a vocabulary leads the faces it serves.
 The NUMBERS stay the mechanism.)
 
@@ -140,9 +151,9 @@ rule, whichever collection needs it.
 "Kind" carries no more information than "type" and, in prose, cannot be told
 apart from a NODE's kind (a payload field). The edge's type is its
 PREDICATE: `predicate_id` on the wire, the predicate vocabulary at
-0x04/0x05, the predicate faces at 0x08/0x09. `edge_id` names the edge's own identity (the primary key); using it
-for the third head segment would make `[src][dst][edge_id][payload]` read
-as if it named the edge.
+0x04/0x05, the predicate faces at 0x08/0x09. An edge has no number of its own (ADR-0067), so the head is exactly
+`[src][pred][dst]` — the predicate is a key dimension because it is the edge's
+type, and the identity is the whole tuple.
 
 **Slot layout versus ordinary documents** — stated
 explicitly, though not identical-by-construction:
@@ -157,50 +168,48 @@ explicitly, though not identical-by-construction:
   from any document collection; "one field is the kind" is a modeling
   convention, not a layout fact.
 - **Edge collection = the entry types above, a different collection
-  shape written in the SAME slot vocabulary.** 0x00/0x01/0x02/0x03 keep
-  their document-side meanings (primary, dynamic segment, vocabulary);
+  shape written in the SAME slot vocabulary.** 0x01/0x02/0x03 keep their
+  document-side meanings (dynamic segment, vocabulary) and 0x00 is unused (the
+  tuple identifies an edge, so there is no primary row);
   0x06–0x09 are the graph's own faces and 0x04/0x05 its own predicate
   vocabulary, all inside the fixed-face range — no new KIND of slot is
   introduced. The value side
   is not a second encoding either: the edge's payload IS an obj
   (ADR-0012). What makes this collection an Edge rather than a
-  document collection is the graph's faces and the self-describing
-  endpoints, not a payload format of its own.
+  document collection is the graph's faces and the endpoints whose width the
+  declaration fixes, not a payload format of its own.
 
-- **Primary (0x00)**: the edge body — `[src NodeRef][dst NodeRef]
-  [predicate_id][obj payload]`, where `predicate_id` is the PREDICATE
-  (the edge's type) carried as a key dimension: 2 bytes from the graph's
-  own predicate vocabulary (0x04/0x05), read back by name through it. The
-  trailing region is an ordinary obj
-  payload (ADR-0012): `[hot segment][cold
-  TLV]`, the encoding every document row uses. `src` / `dst` /
-  `predicate_id` are the graph's own head, and the payload starts at a
-  computable offset because refs are self-describing and `predicate_id`
-  is fixed width.
+- **The edge row (0x06)**: `[ns][0x06][src][pred][dst] -> payload`. The tuple
+  is the key and the payload is the value, where `pred` is the PREDICATE (the
+  edge's type) as 2 bytes from the graph's own predicate vocabulary (0x04/0x05),
+  read back by name through it. The value is an ordinary obj payload
+  (ADR-0012): `[hot segment][cold TLV]`, the encoding every document row uses.
+  This is the row that traversal already had to read — with no edge number,
+  the index entry and the row are one entry.
 - **Declared attribute fields — declared EXPLICITLY**: a static field beyond src/dst/predicate is an ordinary
   declared field with an explicit access-method declaration
   (`#[ok_index(name { fields(…) })]`, the same vocabulary a document
   declares): hot/cold placement, a generated encoder AND decoder, and
-  that face (`[field value][edge_id]`, counting family 0x1, `0x1001+n` in
+  that face (`[field value][src][pred][dst]`, counting family 0x3nnn in
   declaration order). No face is generated per field automatically — a
   field nobody scans is paid for by every record, and the node side
   already settled that (a face with no scanner lands with the read path
   that consumes it). One declaration, one codec, both directions, the
   widths living in the declaration instead of in every consumer. The
-  edge's identity for those entries is its own key (`[edge_id u64]`, a
-  `KeyEncode` newtype), so index entries tail with the edge id exactly as
-  the attr faces did, and the same `index_entries` path maintains them.
-  Filtering runs as an index scan over that face, decoded back to the
-  primary, instead of fetching every edge and decoding; field values are
+  edge's identity for those entries is the tuple itself, so an index entry
+  tails with `[src][pred][dst]` — the same bytes as the edge's own key — and the
+  same `index_entries` path maintains them.
+  Filtering runs as an index scan over that face, whose tail is the tuple,
+  instead of fetching every edge and decoding; field values are
   the edge's own data (no NodeRef) and never touch endpoint widths. No
   composite faces (`predicate+field`, `field+endpoint`) are built by
   default —
-  filter by the most selective face and converge edge_ids in memory, the
+  filter by the most selective face and converge tuples in memory, the
   same stance as document indexes; a composite face is added only when a
-  proven access pattern demands it. Each declared index grows link/unlink
-  by one entry — write amplification the declarer opts into.
+  proven access pattern demands it. Each declared index grows a write and a
+  delete by one entry — write amplification the declarer opts into.
 - **Dynamic attributes (fixed face 0x01)**: the edge's open attributes are the
-  obj's dynamic segment — ONE entry per edge, `[ns][0x01][edge_id]`, nTLV
+  obj's dynamic segment — ONE entry per edge, `[ns][0x01][src][pred][dst]`, nTLV
   frames whose field names are vocabulary numbers (ADR-0012) — i.e.
   the same entry, codec and `replace_into`/`attrs` surface any
   document row has. The graph assembly owns that entry (callers stop
@@ -229,30 +238,30 @@ explicitly, though not identical-by-construction:
   one convergence (no triple-composite face is built for it).
 - **No separate predicate index**: `[predicate_id]` is a bare prefix of 0x08,
   so scanning it returns every edge of one predicate — the
-  `MATCH ()-[r:has]->()` entry point — with the id in the trailing position.
+  `MATCH ()-[r:has]->()` entry point — with the tuple in the trailing position.
   `predicate_id` comes from the PREDICATE vocabulary (0x04/0x05): write-time
   name → id, so every key segment stays fixed-width and sortable. The
   vocabulary is also the LISTING surface: scanning 0x04 enumerates a graph's
   predicates exactly, with no walk over the traversal faces to infer them.
 - **Traversal (0x06/0x07)**: all out-edges / in-edges of one node. The
-  traversed endpoint's NodeRef leads so the scan prefix matches, the other
-  endpoint follows, and `edge_id` trails — parallel edges (two facts between
-  the same nodes) each get their own entry, and the trailing id decodes back
-  to the primary.
+  traversed endpoint's NodeRef leads so the scan prefix matches, the predicate
+  sits in the middle and the far endpoint follows — so a hop knows where it goes
+  AND what the edge is without reading a row, and `(src, dst)` is addressable
+  on 0x06.
 - **Predicate-filtered traversal (0x08/0x09)**: the `(*)-[predicate]->(*)`
   face — the predicate leads because it is the filter dimension here, and
   it cannot be a trailing segment on this face.
-- **Write protocol**: `link` = primary + one counting-family 0x1 entry per
-  DECLARED index + 0x06 + 0x07 + 0x08 + 0x09 in one batch; the
-  obj's dynamic entry (fixed face 0x01) rides the same batch when the
-  caller wrote fields. **`unlink` deletes precisely**:
-  it decodes the edge body, reads the declared field values out of it, and
-  deletes those exact entries — no prefix sweep over the attribute faces.
-  The cost is a read before the delete, paid only where a decoder exists:
-  the dynamic form needs its schema (its own declaration as data) to read
-  the values back, and degrades to the prefix sweep where there is none.
-  Symmetric with a relation table's double-write obligation, scaled to the
-  face count.
+- **Write protocol**: one write = 0x06 (payload included) + 0x07 + 0x08 +
+  0x09 + one counting-family 0x3nnn entry per DECLARED index, in one batch;
+  the obj's dynamic entry (fixed face 0x01) rides the same batch when the
+  caller wrote fields. Back to back, that is one entry per face and no primary
+  row. **A delete deletes precisely**: it reads the 0x06 row, re-derives the
+  declared-face entries from the payload it holds, and deletes those exact
+  entries — no prefix sweep over the attribute faces. The cost is a read before
+  the delete, paid only where a decoder exists: the dynamic form needs its
+  schema (its own declaration as data) to read the values back, and degrades to
+  the prefix sweep where there is none. Symmetric with a relation table's
+  double-write obligation, scaled to the face count.
 
 ### 4. One declaration, and a handle that declares nothing
 
@@ -310,8 +319,8 @@ declaration.
 binds an engine INSTANCE (the same declaration mounts on a mock, on
 Fjall, or on a remote store — ADR-0025's one keyspace) and the
 per-instance state that cannot live in a type: the vocabulary cache (the
-single-writer discipline over predicate ids) and the edge_id allocation
-position. It carries no ns parameter (the ns comes from `E::NS_PREFIX`),
+single-writer discipline over predicate ids). There is no allocation position,
+because there is no identity to allocate. It carries no ns parameter (the ns comes from `E::NS_PREFIX`),
 no node list and no schema: the assembly point has zero declaration content.
 
 - **Fixed ontology**: the declaration above is written in Rust; the node
@@ -324,7 +333,7 @@ no node list and no schema: the assembly point has zero declaration content.
   dynamic segment (declaring `props: Variant` would put it in slot 0
   — the static regime, not what a dynamic graph wants). Predicates and
   free attributes are vocabulary data either way; endpoints are
-  self-describing refs (§2); traversal faces are built through the dynamic
+  refs whose width the declaration fixes (§2); traversal faces are built through the dynamic
   layer's `AccessMethod` construction. The handle takes the ns and the
   schema the declaration yielded as a PAIR, never a bare ns invented at the
   call site; where the ns is still a separate argument (today's
@@ -353,12 +362,13 @@ both directions     Junction                     Graph Edge
 ```
 
 Graph Edge differs from Junction structurally in exactly two ways,
-both forced by the open-endpoint requirement: endpoints are
-self-describing references (`[ns 2B][len varint][pkey]`) instead of
-compile-time typed keys, and the trailing `edge_id` (instead of the
-peer identity) because parallel edges exist. Everything else — the
-double-write obligation, the entry-face design, the ns discipline —
-carries over. Semantically both are relations; the graph's connection
+both forced by the open-endpoint requirement: endpoints are references
+(`[ns 2B][pkey]`) whose width the declaration fixes instead of
+compile-time typed keys, and the identity is the tuple
+`(src, predicate, dst)` instead of the pair, so parallel facts are told apart by
+their predicate and multiplicity inside one predicate lives in the payload
+(ADR-0067). Everything else — the double-write obligation, the entry-face
+design, the ns discipline — carries over. Semantically both are relations; the graph's connection
 differs in carrying ATTRIBUTES (its document half) and a DIRECTION, and
 in existing independently of the endpoints it names.
 
@@ -367,9 +377,8 @@ in existing independently of the endpoints it names.
 - The declaration is a GRAPH declaration (`GraphEncode`): one ns, the
   edge's own payload (the document codec — no second payload encoding),
   the attribute faces it declares explicitly, and a `Node` enum. The
-  graph's own faces and the six-entry write protocol live in the
-  `Graph<S, E>` handle, which declares nothing — it is an engine instance
-  plus per-instance state.
+  graph's own faces and the write protocol live in the `Graph<S, E>` handle,
+  which declares nothing — it is an engine instance plus per-instance state.
 - The member node set is compile-time (a `Node` enum): no slot, no
   registry, no runtime `register()`. Adding a node collection costs a code
   change — the price of the closed ns vocabulary (ADR-0002), and the
@@ -382,9 +391,10 @@ in existing independently of the endpoints it names.
 - `unlink` reads the edge body and deletes its declared-field entries
   exactly; the dynamic form needs its schema for that, and otherwise falls
   back to the prefix sweep.
-- Endpoint refs are self-describing (`[ns 2B][len varint][pkey]`), so
-  there is no cross-collection width registry; the endpoint TYPE
-  restriction is the declared `Node` enum, applied as a check (§2).
+- Endpoint refs are `[ns 2B][pkey]` with the width taken from the declared
+  member table, so there is no cross-collection width registry and no length in
+  a key; the endpoint TYPE restriction is the declared `Node` enum, applied as a
+  check at write time (§2).
 - No change to ADR-0016's slot allocation: 0x06–0x09 are the graph's
   fixed faces inside the Edge collection's ns (ADR-0030).
 - No consumer exists yet.
