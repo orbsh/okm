@@ -23,15 +23,23 @@ use okm_core::engine::storage::{Batch, VirtualStorage, scan_suffix_kv};
 use crate::codec::{Codec, Reader, put_u16};
 use crate::hnsw::{Hnsw, HnswParams};
 
-/// Fixed face 0x0E holds the built graph per shard:
-/// `[ns 2B][0x0E][shard u16 BE] → blob`.
-///
-/// It is a cache entry, not a row-derived one: nothing in the corpus points at
-/// it, and discarding every blob loses only rebuild time. The fixed band is
-/// laid out core-first: 0x00–0x09 is structure, 0x0A–0x0D are free for the next
-/// row kinds, and the cache takes 0x0E — as far from the core as the band
-/// allows, one below the meta face that sits on the one/two-byte delimiter.
+/// Fixed face 0x0E — Extension (ADR-0066 §8): the one band left once the core
+/// faces were assigned, and the band whose sub-kinds each own their own
+/// durability contract. Every entry under it is `[ns 2B][0x0E][sub-kind]…`.
 pub const VECTOR_INDEX_SLOT: u8 = 0x0E;
+
+/// Sub-kind 0x01 of face 0x0E: the built graph per shard, one blob each —
+/// `[ns 2B][0x0E][0x01][shard u16 BE] → blob`.
+///
+/// The sub-kind is what makes a cache droppable without guessing: the whole
+/// contract of `0x0E/0x01` is "rebuildable from the corpus", so a reader that
+/// finds no blob rebuilds, and `wipe` reclaims every blob of a namespace by
+/// sweeping this one prefix. A future extension kind (a schema, a checkpoint
+/// sidecar) lands on its own sub-kind and inherits none of that.
+///
+/// A cache entry, not a row-derived one: nothing in the corpus points at it,
+/// and discarding every blob loses only rebuild time.
+pub const VECTOR_SNAPSHOT_SUBKIND: u8 = 0x01;
 
 const MAGIC: &[u8; 8] = b"OKMVEC1\0";
 const VERSION: u16 = 1;
@@ -161,9 +169,7 @@ impl VectorIndex {
         let mut removed = 0;
         let mut batch = Batch::default();
         {
-            let mut prefix = Vec::with_capacity(3);
-            prefix.extend_from_slice(&ns);
-            prefix.push(VECTOR_INDEX_SLOT);
+            let prefix = Self::snapshot_prefix(ns);
             let blobs = scan_suffix_kv(&*store, &prefix).map_err(|e| e.to_string())?;
             for (suffix, _) in &blobs {
                 let mut key = prefix.clone();
@@ -183,15 +189,23 @@ impl VectorIndex {
         slot_key(self.ns, shard)
     }
 
+    /// The prefix every snapshot blob of `ns` sits under: the whole address of
+    /// sub-kind `0x01`, so one range covers the blob set.
+    pub fn snapshot_prefix(ns: [u8; 2]) -> Vec<u8> {
+        let mut k = Vec::with_capacity(4);
+        k.extend_from_slice(&ns);
+        k.push(VECTOR_INDEX_SLOT);
+        k.push(VECTOR_SNAPSHOT_SUBKIND);
+        k
+    }
+
     fn shard_of(&self, key: &[u8]) -> usize {
         (fnv1a64(key) % self.shards.len() as u64) as usize
     }
 }
 
 fn slot_key(ns: [u8; 2], shard: usize) -> Vec<u8> {
-    let mut k = Vec::with_capacity(5);
-    k.extend_from_slice(&ns);
-    k.push(VECTOR_INDEX_SLOT);
+    let mut k = VectorIndex::snapshot_prefix(ns);
     k.extend_from_slice(&(shard as u16).to_be_bytes());
     k
 }

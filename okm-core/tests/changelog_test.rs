@@ -509,10 +509,13 @@ fn every_slot_is_classified_and_only_the_truth_half_is_carried() {
     let slots = SlotMap::standard();
 
     // The fixed faces an export carries, by number: primary row, dynamic
-    // segment, field-name vocabulary both ways, predicate vocabulary both ways.
-    // Everything else in 0x00–0x0F is derived — the graph's traversal faces
-    // (0x06–0x09), the vector snapshot (0x0E), the table meta row (0x0F).
-    let fixed_truth = [0x00u16, 0x01, 0x02, 0x03, 0x04, 0x05];
+    // segment, field-name vocabulary both ways, predicate vocabulary both ways,
+    // and the cluster band's authority half — the cluster row (0x0A) and its
+    // edge members (0x0B), which are assertions the edge rows cannot reproduce
+    // (ADR-0066). Everything else in 0x00–0x0F is derived — the graph's
+    // traversal faces (0x06–0x09), the cluster's node members and child index
+    // (0x0C/0x0D), the vector snapshot (0x0E), the table meta row (0x0F).
+    let fixed_truth = [0x00u16, 0x01, 0x02, 0x03, 0x04, 0x05, 0x0A, 0x0B];
     for slot in 0u16..=0x0F {
         let want = if fixed_truth.contains(&slot) {
             Side::Truth

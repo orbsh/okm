@@ -507,8 +507,7 @@ field-name vocabulary; `Index(u32)` — an array position (data: never interned,
 (a wildcard is the ABSENCE of `Index`), a path ending at an array fans out over its scalar leaves, and an `Index` pins exactly one element. A missing name, an out-of-range index, or a path ending at an object resolves to nothing.
 - **The value type is declared** (`FieldType`): an entry segment is
 byte-ordered and a path has no schema field to consult. Unsigned kinds also accept the widened form the dynamic read path produces (a `U32` written value reads back as `U64`), which is what keeps an entry's bytes a function of the stored value — the overwrite sweep recomputes exactly the keys the write built, so no entry survives a changed value.
-- **Maintenance rides the whole-document write path** (`merge` / `replace` /
-`purge`). The primary document path skips path declarations by construction: a depth-1 path over the primary document is what a plain index already is, and one entry set has exactly one maintainer.
+- **Maintenance rides the whole-document write path** (`put` with a whole-document payload, or `purge`). `merge` and `replace` are not public verbs — they are the two internal dispatch arms of `WritePayload` in `write.rs`, `pub(crate)`. The primary document path skips path declarations by construction: a depth-1 path over the primary document is what a plain index already is, and one entry set has exactly one maintainer.
 - A value whose variant does not match the declared type produces no entry
 and no error — the "absent attribute values are empty results" rule.
 - **Queries** are the ordinary leftmost-prefix scans (`scan(slot, prefix)`),

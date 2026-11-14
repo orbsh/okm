@@ -160,6 +160,13 @@ pub fn expand(input: syn::DeriveInput) -> syn::Result<TS2> {
 
         impl ::okm_core::NodeSet for #set_ident {
             const NS_VALUES: &'static [u16] = &[#(#ns_items),*];
+
+            /// The variant's position in `NS_VALUES` — the same order, so a
+            /// write path handed a variant can name its collection. The enum is
+            /// fieldless, so the discriminant IS the position.
+            fn index(self) -> usize {
+                self as usize
+            }
         }
 
         impl ::okm_core::GraphEncode for #name {

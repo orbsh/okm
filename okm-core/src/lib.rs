@@ -83,6 +83,11 @@ pub use engine::storage::{
 pub use model::document::{Collection, SeekScan};
 pub use model::field::{FieldDesc, FieldType};
 pub use model::graph::{EdgeBody, EdgeHead, EdgeKey, Graph, GraphEncode, NodeRef, NodeSet};
+pub use model::hyper::{
+    CHILD_SLOT, CLUSTER_SLOT, ClusterDiff, ClusterRef, ClusterRow, Decl, DeclSet, DerivedReport,
+    EDGE_MEMBER_SLOT, HyperEdge, Hyperedges, Kind, MEMBER_COUNT, NODE_COUNT, NODE_MEMBER_SLOT,
+    WriteReport, WriteSet,
+};
 pub use model::index::{
     DecodeIndexFields, Document, IndexFuncResult, KvIndex, LEAD_SLOT_BASE, META_SLOT, PRIMARY_SLOT,
     RawFields, RawHit, result_segments, scan_index, scan_index_exact, scan_raw, slot_len,

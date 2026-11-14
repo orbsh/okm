@@ -69,9 +69,11 @@ use crate::model::schema::SlotMap;
 /// Which side of the capture rule a slot falls on (ADR-0056 §2).
 ///
 /// `Truth` is what the log keeps: the primary row, the dynamic segment, the four
-/// vocabulary directions and both categorical families. `Derived` is everything a
-/// reader can rebuild by replaying the truth through a write path — declared
-/// indexes, reduce accumulators, lead faces, the graph's traversal faces, the
+/// vocabulary directions, both categorical families, and a cluster's own row and
+/// its edge members (ADR-0066 — a grouping is an assertion, not a derivation).
+/// `Derived` is everything a reader can rebuild by replaying the truth through a
+/// write path — declared indexes, reduce accumulators, lead faces, the graph's
+/// traversal faces, the cluster's node members and child index, the
 /// vector snapshot, the table meta row.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Side {
@@ -95,6 +97,14 @@ pub fn side_of(slots: &SlotMap, slot: u16) -> Side {
         || slot == slots.predicate_vocab_id
         || slot == slots.predicate_vocab_name
     {
+        return Side::Truth;
+    }
+    // The cluster band (ADR-0066): the cluster row and its edge members are
+    // ASSERTIONS — a grouping is written, not derived, and no replay of the edge
+    // rows produces it (two sets over the same edges are different sets). The
+    // node members (0x0C) and the child index (0x0D) are the derived halves, so
+    // they stay off the log: they rebuild from 0x0B plus the edge rows.
+    if slot == crate::model::hyper::CLUSTER_SLOT || slot == crate::model::hyper::EDGE_MEMBER_SLOT {
         return Side::Truth;
     }
     // Counting families: the two categorical-vocabulary directions are truth (the

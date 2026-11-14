@@ -128,6 +128,40 @@ fn snapshot_roundtrip_over_storage() {
 }
 
 #[test]
+fn snapshot_keys_live_under_the_extension_subkind() {
+    // The address is `[ns][0x0E][0x01][shard u16 BE]` and nothing else: 0x0E is
+    // the Extension face (ADR-0066 §8), 0x01 is the droppable vector snapshot.
+    // Built by hand here on purpose — the test states the bytes an outside
+    // reader (a backup tool, a host-side binding) has to reproduce.
+    let ns = [0x12u8, 0x34u8];
+    let mut idx = VectorIndex::new(ns, Codec::i8(8), HnswParams::default(), 2);
+    idx.add(b"row/one".to_vec(), &[0.5f32; 8]);
+    let mut store = MemStore::new();
+    idx.save(&mut store).expect("save");
+
+    for shard in 0..2u16 {
+        let mut key = vec![0x12, 0x34, 0x0E, 0x01];
+        key.extend_from_slice(&shard.to_be_bytes());
+        assert_eq!(
+            idx.slot_key(shard as usize),
+            key,
+            "slot_key spells the face"
+        );
+        assert!(
+            store.get(&key).unwrap().is_some(),
+            "shard {shard} landed under the sub-kind byte"
+        );
+    }
+    // The pre-sub-kind address is NOT the snapshot's: the face byte alone no
+    // longer addresses a shard, so a stale blob cannot be read as one.
+    let legacy = vec![0x12, 0x34, 0x0E, 0x00, 0x00];
+    assert!(store.get(&legacy).unwrap().is_none());
+    // …and the wipe sweeps exactly this sub-kind's blobs.
+    assert_eq!(VectorIndex::wipe(&mut store, ns).expect("wipe"), 2);
+    assert_eq!(VectorIndex::wipe(&mut store, ns).expect("wipe again"), 0);
+}
+
+#[test]
 fn shards_split_the_corpus_and_merge_results() {
     let ns = [1u8, 2u8];
     let rows = rng_rows(200, 16, 5);

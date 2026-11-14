@@ -92,6 +92,28 @@ pub enum Error {
         ns: u16,
         graph_ns: u16,
     },
+    /// A declared node that no edge in the same write set names as an endpoint
+    /// (ADR-0066 §3). A node exists only as an endpoint, so there is no
+    /// "create a bare node" path — the declaration is refused rather than
+    /// materializing a row nothing points at.
+    #[error(
+        "node {key} of ns {ns} is not an endpoint of any edge in this write — a node exists only as an endpoint (ADR-0066 §3)"
+    )]
+    BareNode { ns: u16, key: String },
+    /// A cluster with fewer than two members. Such a set is not a grouping of
+    /// anything, and the derivation of node membership is only total when the
+    /// cluster is (ADR-0066 §3).
+    #[error("a cluster needs two or more members; {kind}/{id} would have {members}")]
+    ClusterTooSmall { kind: u8, id: u64, members: usize },
+    /// `merge` / `split` / `reassign` named a cluster that no row holds and this
+    /// write set does not create.
+    #[error("cluster {kind}/{id} not found")]
+    ClusterNotFound { kind: u8, id: u64 },
+    /// `hyper_id` 0 named explicitly. The cluster row's parent head reserves `0`
+    /// for "no parent" (ADR-0066 §4), so no cluster may BE that number — the
+    /// runtime allocation starts at 1 for the same reason.
+    #[error("hyper_id 0 is reserved for \"no parent\" (ADR-0066 §4); cluster ids start at 1")]
+    ReservedClusterId,
     /// Stored bytes that the declaration says cannot exist (a primary entry
     /// shorter than its own key). The store is broken, not the caller — but a
     /// read verb reports it instead of aborting the process.
