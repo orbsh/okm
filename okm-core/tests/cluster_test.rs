@@ -19,7 +19,8 @@ use okm_async::TestStore;
 use okm_core::engine::storage::prefix_end;
 use okm_core::{
     Cluster, ClusterRef, Decl, Document, DocumentEncode, EdgeHead, EdgeKey, Error, Fragment, Graph,
-    GraphEncode, Hyperedges, KeyEncode, Kind, NodeRef, Seekable, VirtualStorage, edge_cluster_key,
+    GraphEncode, HandleKey, Hyperedges, KeyEncode, Kind, NodeRef, Seekable, VirtualStorage,
+    edge_cluster_key,
 };
 use okm_query::intersect_seek;
 use okm_value::{Dict, Variant};
@@ -142,6 +143,22 @@ fn head_of(g: &mut Graph<TestStore, Employment>, key: &EdgeKey) -> EdgeHead {
     }
 }
 
+/// The stored row identity of a caller's tuple — the handle registry read
+/// twice, which is what every face below is actually keyed by (ADR-0067). The
+/// test spells it out instead of trusting `hyper` to agree with itself.
+fn row_of(g: &Graph<TestStore, Employment>, key: &EdgeKey) -> HandleKey {
+    let registry = g.handles();
+    let src = registry
+        .handle_of(&key.src)
+        .expect("registry")
+        .expect("a written edge's source was issued a handle");
+    let dst = registry
+        .handle_of(&key.dst)
+        .expect("registry")
+        .expect("a written edge's destination was issued a handle");
+    HandleKey::new(src, key.predicate, dst)
+}
+
 // ---------------------------------------------------------------------------
 // 1. Every row kind, at the layout the ADR states
 // ---------------------------------------------------------------------------
@@ -200,12 +217,19 @@ fn every_row_kind_round_trips_at_the_layout_the_adr_states() {
             "{engine}: member count in the row"
         );
 
-        // 0x0B — one empty-valued row per member edge, the edge's whole identity
-        // after the cluster prefix (ADR-0067).
+        // 0x0B — one empty-valued row per member edge, the edge's stored handle
+        // row after the cluster prefix (ADR-0067): `[src_h 8][pred 2][dst_h 8]`,
+        // eighteen bytes whatever width the member tables' keys are.
         assert_eq!(members(&store, engine, cluster), report.edges);
         for edge in &report.edges {
+            let spelled = row_of(&g, edge);
             assert_eq!(
-                store.get(&key(0x0B, id, &edge.wire())).expect("read"),
+                spelled.wire().len(),
+                HandleKey::WIDTH,
+                "{engine}: a member row's tail is the fixed-width handle row"
+            );
+            assert_eq!(
+                store.get(&key(0x0B, id, &spelled.wire())).expect("read"),
                 Some(Vec::new()),
                 "{engine}: a member row carries no value — the edge does"
             );
@@ -1028,13 +1052,16 @@ fn deleting_an_edge_leaves_both_endpoints_alone() {
             "{engine}: the endpoint keeps its OTHER edges"
         );
 
-        // Both endpoints are still nodes of this graph: a new assertion between
-        // them lands without anything being re-created. That is the rule — "a
-        // node exists only as an endpoint" is about creation, and a delete may
-        // leave an endpoint connected to nothing.
+        // Both endpoints are still endpoints of this graph, and their handles
+        // are what the delete left alone: re-asserting the same tuple lands on
+        // the identity it already had, with no node row and no handle re-issued.
+        // That is the rule — "a node exists only as an endpoint" is about
+        // creation, and a delete may leave an endpoint connected to nothing.
         let again = g
             .incorporate(Fragment::new([edge(person(1), org(1))]))
-            .expect("the endpoints are still endpoints");
+            .expect(
+                "deleting an edge leaves both endpoints' node rows and their other edges intact",
+            );
         assert_eq!(
             g.in_edges(&org(1)).expect("in"),
             vec![again.edges[0].clone()],
@@ -1263,23 +1290,28 @@ fn an_update_is_a_reduce_folded_over_a_named_edge() {
 // ---------------------------------------------------------------------------
 
 /// A cluster's members rendered in the derived face's own key space, ascending
-/// by identity — the cursor that makes [`intersect_seek`] legal against
-/// `Graph::clusters_of`. Membership rows (`0x0B`) are keyed by cluster and
-/// therefore ascending by identity INSIDE one cluster, which is exactly the
+/// by the member ROW — the cursor that makes [`intersect_seek`] legal against
+/// `Graph::clusters_of`. Both faces are keyed by the edge's handle row, and
+/// 0x0B carries that same row after the cluster prefix, which is exactly the
 /// order this face stores; the test spells the keys with the public helper
 /// rather than reaching into the module.
+///
+/// The order is the ROW's, not the tuple's: handles are issued on first sight
+/// (ADR-0067), so a `Vec<EdgeKey>` sorted by reference is not the face's order
+/// and must be converted before it is sorted.
 struct MemberClusters {
     keys: Vec<Vec<u8>>,
     at: usize,
 }
 
 impl MemberClusters {
-    fn of(cluster: ClusterRef, mut edges: Vec<EdgeKey>) -> Self {
-        edges.sort();
+    fn of(g: &Graph<TestStore, Employment>, cluster: ClusterRef, edges: Vec<EdgeKey>) -> Self {
+        let mut rows: Vec<HandleKey> = edges.iter().map(|edge| row_of(g, edge)).collect();
+        rows.sort();
         Self {
-            keys: edges
+            keys: rows
                 .iter()
-                .map(|edge| edge_cluster_key(&NS.to_be_bytes(), edge, cluster))
+                .map(|row| edge_cluster_key(&NS.to_be_bytes(), row, cluster))
                 .collect(),
             at: 0,
         }
@@ -1327,11 +1359,11 @@ fn the_edge_index_answers_membership_and_leaves_with_the_member_rows() {
         let keys = report.edges.clone();
 
         // The layout the ADR states, byte for byte:
-        // `[ns][0x0D][src][pred][dst][kind][hyper]`.
+        // `[ns][0x0D][src_h][pred][dst_h][kind][hyper]`.
         let mut spelled = Vec::new();
         spelled.extend_from_slice(&NS.to_be_bytes());
         spelled.push(0x0D);
-        keys[0].write(&mut spelled);
+        row_of(&g, &keys[0]).write(&mut spelled);
         spelled.push(kind_byte());
         spelled.extend_from_slice(&id.to_be_bytes());
         assert_eq!(
@@ -1478,14 +1510,14 @@ fn traversal_and_membership_intersect_on_the_derived_face() {
 
         // The intersection of the two derived streams: the node's incident edges
         // in the face's key space, against the cluster's members in the same one.
-        let members_of_c = MemberClusters::of(cluster, report.edges.clone());
+        let members_of_c = MemberClusters::of(&g, cluster, report.edges.clone());
         let shared: Vec<Vec<u8>> = intersect_seek(g.clusters_of(person(1)), members_of_c).collect();
         assert_eq!(shared.len(), 1, "{engine}: one of p1's edges is in C");
         assert_eq!(
             shared,
             vec![edge_cluster_key(
                 &NS.to_be_bytes(),
-                &report.edges[0],
+                &row_of(&g, &report.edges[0]),
                 cluster
             )],
             "{engine}: and it is the edge that points at org 2"
@@ -1507,10 +1539,14 @@ fn traversal_and_membership_intersect_on_the_derived_face() {
         let filtered: Vec<EdgeKey> = g
             .out(&person(1))
             .filter(|step| {
-                g.member_of(Kind::COMMUNITY, id, &step.key())
-                    .unwrap_or(false)
+                g.member_of(
+                    Kind::COMMUNITY,
+                    id,
+                    &g.edge_key(step).expect("a step resolves"),
+                )
+                .unwrap_or(false)
             })
-            .map(|step| step.key())
+            .map(|step| g.edge_key(&step).expect("a step resolves"))
             .collect();
         assert_eq!(
             filtered,

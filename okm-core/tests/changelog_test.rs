@@ -564,6 +564,7 @@ fn every_slot_is_classified_and_only_the_truth_half_is_carried() {
 /// The table's declared name travels in the sidecar (ADR-0056 §7) — it is the
 /// only thing that can name a lake table, and the only thing a segment header
 /// can carry once the directory it was written in is gone.
+#[cfg(feature = "schema-serde")]
 #[test]
 fn the_sidecar_carries_the_tables_declared_name() {
     use okm_core::schema::CollectionSchema;

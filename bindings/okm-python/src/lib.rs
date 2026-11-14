@@ -20,7 +20,7 @@
 //! are ordinary input).
 pub mod pyo3_impl {
     use okm_core::storage::VirtualStorage;
-    use okm_core::{Direction, EdgeKey, Members, NodeRef};
+    use okm_core::{Direction, EdgeKey, Handle, Members, NodeRef};
     use okm_dynamic::{
         AccessMethod, AccessMethodKind, Cluster, ClusterRef, Decl, Dict, DynEdge, DynFragment,
         EdgeStep, Kind, ReduceLogic, RetractReport, Value, WriteReport,
@@ -1494,30 +1494,123 @@ pub mod pyo3_impl {
         })
     }
 
-    /// The step dict: the edge's HEAD (its identity — `{src, dst, predicate}`),
+    /// One handle's node, read through the graph's registry — ONE point read,
+    /// the boundary's unit operation. A handle an edge row names but the registry
+    /// does not hold is a corrupt graph, never a blank ref.
+    fn handle_node(store: &EngineBox, ns: u16, handle: Handle) -> Result<NodeRef, String> {
+        okm_core::Handles::new(store, ns.to_be_bytes())
+            .node(handle)
+            .map_err(|e| e.to_string())?
+            .ok_or_else(|| {
+                format!(
+                    "handle {} is named by an edge entry but the registry has no node for it",
+                    handle.id()
+                )
+            })
+    }
+
+    /// The BULK form: a sorted set of handles in ONE registry range scan — what a
+    /// materialisation of several steps pays, instead of one read per step.
+    fn handles_nodes(store: &EngineBox, ns: u16, handles: &[Handle]) -> Result<Vec<NodeRef>, String> {
+        let mut sorted: Vec<Handle> = handles.to_vec();
+        sorted.sort_unstable();
+        sorted.dedup();
+        let refs = okm_core::Handles::new(store, ns.to_be_bytes())
+            .nodes(&sorted)
+            .map_err(|e| e.to_string())?;
+        Ok(handles
+            .iter()
+            .map(|wanted| {
+                sorted
+                    .binary_search(wanted)
+                    .ok()
+                    .and_then(|at| refs.get(at).cloned())
+                    .ok_or_else(|| {
+                        format!(
+                            "handle {} is named by an edge entry but the registry has no node for it",
+                            wanted.id()
+                        )
+                    })
+            })
+            .collect::<Result<Vec<NodeRef>, String>>()?)
+    }
+
+    /// One step, RESOLVED at the boundary: the refs the Python dict names.
+    ///
+    /// A traversal entry states handles (ADR-0067) — the far endpoint and both
+    /// head handles — and a handle becomes a node in ONE registry point read.
+    /// That read happens HERE, once per step the boundary materialises, never
+    /// inside the walk: the entry key already carried everything but the ref.
+    #[derive(Clone, Debug)]
+    pub struct StepView {
+        /// The entry's raw face key — the position a [`KeySet`] takes.
+        pub key: Vec<u8>,
+        /// The far endpoint, read through the registry.
+        pub far: NodeRef,
+        /// The edge's source, as a ref.
+        pub src: NodeRef,
+        /// The edge's destination, as a ref.
+        pub dst: NodeRef,
+        /// The predicate's interned id (a name is one vocabulary read away).
+        pub predicate: u16,
+    }
+
+    impl StepView {
+        /// The identity the view states — the tuple as the faces key it. Read off
+        /// the resolved refs, so it costs nothing: a step that was materialised
+        /// already paid for its one resolution.
+        pub fn edge(&self) -> EdgeKey {
+            EdgeKey::new(self.src.clone(), self.predicate, self.dst.clone())
+        }
+        /// Pair a step with the node the walk started from — the near side is
+        /// already a ref (the cursor resolved it at its open), so only the FAR
+        /// handle costs a read, and which head handle is the near one is a
+        /// comparison, not a second lookup.
+        fn new(
+            key: Vec<u8>,
+            head: &okm_dynamic::HopHead,
+            near_handle: Handle,
+            near: &NodeRef,
+            far: NodeRef,
+        ) -> Self {
+            let (src, dst) = if head.src_handle == near_handle {
+                (near.clone(), far.clone())
+            } else {
+                (far.clone(), near.clone())
+            };
+            StepView {
+                key,
+                far,
+                src,
+                dst,
+                predicate: head.predicate,
+            }
+        }
+    }
+
+    /// One step dict: the edge's HEAD (its identity — `{src, dst, predicate}`),
     /// the FAR endpoint and the entry's own key — the last one because it is the
     /// position `okm-query`'s operators speak, so a walk can feed a [`KeySet`]
     /// directly.
     ///
     /// The predicate comes back by NAME: the entry carries the interned id, and
-    /// this is the one place a step spends a vocabulary point read on it (never
-    /// a row read — the identity is in the key, ADR-0067).
+    /// this is the one place a step spends a vocabulary point read on it. The
+    /// refs are the view's — resolved once, at the boundary.
     fn step_to_py(
         py: Python<'_>,
         store: &EngineBox,
         ns: u16,
-        key: &[u8],
-        step: &EdgeStep,
+        view: &StepView,
     ) -> PyResult<Py<PyAny>> {
         let dict = pyo3::types::PyDict::new(py);
-        dict.set_item("far", node_to_py(py, &step.far)?)?;
-        dict.set_item("key", key.to_vec())?;
+        dict.set_item("far", node_to_py(py, &view.far)?)?;
+        dict.set_item("key", view.key.clone())?;
         let head = pyo3::types::PyDict::new(py);
-        head.set_item("src", node_to_py(py, &step.head.src)?)?;
-        head.set_item("dst", node_to_py(py, &step.head.dst)?)?;
+        head.set_item("src", node_to_py(py, &view.src)?)?;
+        head.set_item("dst", node_to_py(py, &view.dst)?)?;
         head.set_item(
             "predicate",
-            predicate_name(store, ns, step.head.predicate).map_err(PyValueError::new_err)?,
+            predicate_name(store, ns, view.predicate).map_err(PyValueError::new_err)?,
         )?;
         dict.set_item("head", head)?;
         Ok(dict.into_any().unbind())
@@ -1903,8 +1996,10 @@ pub mod pyo3_impl {
         // ---- traversal: one hop, as a real iterator ----
 
         /// The out-edges of `node`, as a LAZY iterator: one entry per `next()`,
-        /// read straight off the face, no row fetched (the entry key names both
-        /// endpoints).
+        /// read straight off the face. The entry key states the predicate and the
+        /// far endpoint as a HANDLE; turning that into the `far` dict a caller
+        /// sees is ONE registry point read per step, at the boundary (ADR-0067) —
+        /// never a read of the walked face and never a per-hop walk of the graph.
         ///
         /// Dropping the stream stops the scan where it stands — that is what the
         /// laziness is for, and `pulled` reports how many entries the walk
@@ -2055,7 +2150,8 @@ pub mod pyo3_impl {
     /// - **One entry per step.** Construction puts the first entry on top and
     ///   each `next` hands it back and pulls at most one more, so a consumer
     ///   reads at most one entry ahead and dropping the cursor stops the scan.
-    /// - **Ordered by entry key** — the far endpoint's byte order, then the id.
+    /// - **Ordered by entry key** — the far endpoint's handle order, which is the
+    ///   face's own address order, not an insertion order.
     /// - **Cycle-unaware.** One node's edges and stop; a visited set would price
     ///   every walk for a question only the caller can ask.
     ///
@@ -2073,6 +2169,10 @@ pub mod pyo3_impl {
         members: Members,
         dir: Direction,
         node: NodeRef,
+        /// That node's HANDLE — the face prefix and the near side of every head
+        /// the cursor reports. Resolved ONCE, at the open; [`Handle::NONE`] means
+        /// the graph never saw the node as an endpoint (an empty walk).
+        handle: Handle,
         /// The pushed-down predicate id, or `None` for the untyped face.
         filter: Option<u16>,
         /// The face cursor; `None` means spent before its first item (a
@@ -2110,6 +2210,7 @@ pub mod pyo3_impl {
                 members,
                 dir,
                 node,
+                handle: Handle::NONE,
                 filter: None,
                 scan: None,
                 suffix_at: 0,
@@ -2119,7 +2220,18 @@ pub mod pyo3_impl {
                 pulled: 0,
                 steps: 0,
             };
-            stream.reopen(None);
+            // ONE resolution at the open: the face is keyed by the node's
+            // handle, so a node the graph never saw has no face at all (an empty
+            // walk, not a fault) — and the near side of every head this cursor
+            // reports is the ref it was opened on.
+            match okm_core::Handles::new(&stream.store, ns.to_be_bytes()).handle_of(&stream.node) {
+                Ok(Some(handle)) => {
+                    stream.handle = handle;
+                    stream.reopen(None);
+                }
+                Ok(None) => {}
+                Err(e) => stream.err = Some(e.to_string()),
+            }
             stream
         }
 
@@ -2128,7 +2240,7 @@ pub mod pyo3_impl {
                 self.ns.to_be_bytes(),
                 self.dir,
                 self.filter,
-                &self.node,
+                self.handle,
             )
         }
 
@@ -2166,13 +2278,15 @@ pub mod pyo3_impl {
                     }
                     Some(Ok((key, _))) => {
                         self.pulled += 1;
+                        // The entry's key states the predicate and the far handle;
+                        // nothing is resolved here (that is the boundary's job,
+                        // `next_view` / `views`).
                         if let Some(step) = okm_dynamic::edge_step(
                             &key,
                             self.suffix_at,
                             self.dir,
-                            &self.node,
+                            self.handle,
                             self.filter,
-                            &self.members,
                         ) {
                             self.cur = Some((key, step));
                             return;
@@ -2183,11 +2297,45 @@ pub mod pyo3_impl {
         }
 
         /// The next hop — its raw face key and the step it decodes to.
+        ///
+        /// Handles, not refs: the walk resolves nothing (see [`Self::next_view`]
+        /// for the boundary's one read).
         pub fn next_step(&mut self) -> Option<(Vec<u8>, EdgeStep)> {
             let entry = self.cur.take()?;
             self.fill();
             self.steps += 1;
             Some(entry)
+        }
+
+        /// The next hop, RESOLVED at the boundary: ONE registry point read for
+        /// the far endpoint (the near side is the node the cursor was opened on),
+        /// and the head read off the entry.
+        pub fn next_view(&mut self) -> Result<Option<StepView>, String> {
+            let Some((key, step)) = self.next_step() else {
+                return Ok(None);
+            };
+            Ok(Some(self.view(key, &step)?))
+        }
+
+        /// One materialised step: the far handle through the registry, once.
+        fn view(&self, key: Vec<u8>, step: &EdgeStep) -> Result<StepView, String> {
+            let far = handle_node(&self.store, self.ns, step.far_handle)?;
+            Ok(StepView::new(key, &step.head, self.handle, &self.node, far))
+        }
+
+        /// The boundary for SEVERAL steps at once: the whole run's far handles
+        /// through ONE registry range scan (the bulk resolver), instead of one
+        /// read per step. The same views `next_view` answers one at a time.
+        pub fn views(&self, steps: &[(Vec<u8>, EdgeStep)]) -> Result<Vec<StepView>, String> {
+            let handles: Vec<Handle> = steps.iter().map(|(_, step)| step.far_handle).collect();
+            let far = handles_nodes(&self.store, self.ns, &handles)?;
+            Ok(steps
+                .iter()
+                .zip(far)
+                .map(|((key, step), far)| {
+                    StepView::new(key.clone(), &step.head, self.handle, &self.node, far)
+                })
+                .collect())
         }
 
         /// The same hop narrowed to one predicate, PUSHED DOWN onto the
@@ -2211,6 +2359,7 @@ pub mod pyo3_impl {
                 members,
                 dir,
                 node,
+                handle: Handle::NONE,
                 filter,
                 scan: None,
                 suffix_at: 0,
@@ -2220,7 +2369,14 @@ pub mod pyo3_impl {
                 pulled: 0,
                 steps: 0,
             };
-            if let Some(id) = filter {
+            // One resolution at the open, like `open`: the face is the
+            // predicate's AND the node's handle, so an unknown predicate or a
+            // node the graph never saw is an empty cursor with no scan behind it.
+            let handle = okm_core::Handles::new(&stream.store, ns.to_be_bytes())
+                .handle_of(&stream.node)
+                .map_err(|e| e.to_string())?;
+            if let (Some(id), Some(handle)) = (filter, handle) {
+                stream.handle = handle;
                 stream.reopen(Some(id));
             }
             Ok(stream)
@@ -2263,26 +2419,33 @@ pub mod pyo3_impl {
         ///
         /// `head` is the edge's IDENTITY (ADR-0067), so it feeds straight back
         /// into `edge` / `member_of` / `clusters_of` / a `retract`. The predicate
-        /// is resolved to its name here (one vocabulary point read per step);
-        /// the endpoints and the face key are read off the entry itself.
+        /// is resolved to its name here (one vocabulary point read per step), and
+        /// the FAR endpoint costs ONE registry point read — the near one is the
+        /// node the walk started from, which the cursor resolved at its open.
+        /// The walk itself reads no row.
         ///
         /// A fault mid-walk RAISES `ValueError` rather than reading as "no more
         /// neighbours" (the distinction an iterator cannot draw, and the one a
         /// caller needs before it trusts an empty answer). It raises once;
         /// `error` keeps the text afterwards.
         fn __next__(&mut self) -> PyResult<Option<Py<PyAny>>> {
-            if let Some((key, step)) = self.next_step() {
-                return Python::attach(|py| {
-                    step_to_py(py, &self.store, self.ns, &key, &step).map(Some)
-                });
-            }
-            match (&self.err, self.err_raised) {
-                (Some(e), false) => {
-                    let message = format!("graph traversal: {e}");
-                    self.err_raised = true;
-                    Err(PyValueError::new_err(message))
+            match self.next_view() {
+                Ok(Some(view)) => {
+                    Python::attach(|py| step_to_py(py, &self.store, self.ns, &view).map(Some))
                 }
-                _ => Ok(None),
+                Ok(None) => match (&self.err, self.err_raised) {
+                    (Some(e), false) => {
+                        let message = format!("graph traversal: {e}");
+                        self.err_raised = true;
+                        Err(PyValueError::new_err(message))
+                    }
+                    _ => Ok(None),
+                },
+                Err(e) => {
+                    self.err = Some(e.clone());
+                    self.err_raised = true;
+                    Err(PyValueError::new_err(format!("graph traversal: {e}")))
+                }
             }
         }
 

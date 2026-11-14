@@ -41,7 +41,7 @@ use std::sync::{Arc, Mutex};
 
 use okm::pyo3_impl::{Collection, Engine, EngineBox, Graph, KeySet};
 use okm_core::schema::CollectionSchema;
-use okm_core::{Direction, EdgeKey, NodeRef};
+use okm_core::{Direction, EdgeKey, Handle, Handles, NodeRef};
 use okm_dynamic::{Cluster, ClusterRef, Decl, Dict, DynEdge, DynFragment, Kind, Value as Variant};
 
 /// The graph table's ns — a second table in the store, beside the collection's.
@@ -142,22 +142,25 @@ fn graph() -> Graph {
     .unwrap_or_else(|_| panic!("graph assembly over a fresh store"))
 }
 
-/// Every step of one walk, with the face key — the shape a set operator takes.
-fn walk(g: &Graph, node: &NodeRef) -> Vec<(Vec<u8>, okm_dynamic::EdgeStep)> {
+/// Every step of one walk, RESOLVED at the boundary: the bulk resolver reads the
+/// whole run's far handles in one registry scan.
+fn walk(g: &Graph, node: &NodeRef) -> Vec<okm::pyo3_impl::StepView> {
     drain(g.out_dyn(node))
 }
 
 /// The same, over the mirror face: the edges that END at `node`.
-fn walk_in(g: &Graph, node: &NodeRef) -> Vec<(Vec<u8>, okm_dynamic::EdgeStep)> {
+fn walk_in(g: &Graph, node: &NodeRef) -> Vec<okm::pyo3_impl::StepView> {
     drain(g.inn_dyn(node))
 }
 
-fn drain(mut stream: okm::pyo3_impl::EdgeStream) -> Vec<(Vec<u8>, okm_dynamic::EdgeStep)> {
-    let mut out = Vec::new();
+fn drain(mut stream: okm::pyo3_impl::EdgeStream) -> Vec<okm::pyo3_impl::StepView> {
+    let mut raw = Vec::new();
     while let Some(step) = stream.next_step() {
-        out.push(step);
+        raw.push(step);
     }
-    out
+    stream
+        .views(&raw)
+        .unwrap_or_else(|e| panic!("resolve the walk's handles: {e}"))
 }
 
 /// A default fragment with the builder calls already applied — `DynFragment`'s
@@ -366,36 +369,39 @@ fn a_write_is_visible_after_incorporate() {
     let steps = walk(&g, &person(1));
     assert_eq!(steps.len(), 1);
     assert_eq!(
-        steps[0].1.key(),
+        steps[0].edge(),
         report.edges[0],
         "the entry IS the identity — the write's tuple and the hop's tuple agree"
     );
     assert_eq!(
-        steps[0].1.far,
+        steps[0].far,
         org(9),
         "an out hop's far end is the destination"
     );
-    assert_eq!(steps[0].1.head.src, person(1));
+    assert_eq!(steps[0].src, person(1), "the near side is the edge's source");
     assert_eq!(
-        steps[0].1.head.predicate, report.edges[0].predicate,
+        steps[0].predicate, report.edges[0].predicate,
         "the untyped face carries the predicate id beside the endpoints"
     );
 
     // The mirror face: same head, mirrored far end.
-    let mut stream = g.inn_dyn(&org(9));
-    let mut incoming = Vec::new();
-    while let Some(step) = stream.next_step() {
-        incoming.push(step);
-    }
+    let incoming = walk_in(&g, &org(9));
     assert_eq!(incoming.len(), 2, "two edges end at org 9");
     let mirrored = incoming
         .iter()
-        .find(|(_, s)| s.key() == report.edges[0])
+        .find(|view| view.edge() == report.edges[0])
         .expect("the same edge from the far side")
-        .1
         .clone();
     assert_eq!(mirrored.far, person(1), "the in hop's far end is the source");
-    assert_eq!(mirrored.head, steps[0].1.head, "one edge states one head");
+    assert_eq!(
+        (mirrored.src.clone(), mirrored.dst.clone(), mirrored.predicate),
+        (
+            steps[0].src.clone(),
+            steps[0].dst.clone(),
+            steps[0].predicate
+        ),
+        "one edge states one head, whichever face read it"
+    );
 }
 
 // ---------------------------------------------------------------------------
@@ -467,7 +473,7 @@ fn deleting_a_node_takes_its_edges_and_deleting_an_edge_leaves_the_endpoints() {
     assert_eq!(
         walk(&g, &person(2))
             .iter()
-            .map(|(_, s)| s.key())
+            .map(|view| view.edge())
             .collect::<Vec<_>>(),
         vec![p2_to_o3.clone()],
         "person 2 is still an endpoint — of one edge now"
@@ -509,8 +515,8 @@ fn a_traversal_reads_only_the_entries_the_caller_asks_for() {
     // The whole face, one entry per step.
     let mut stream = g.out_dyn(&person(1));
     let mut all = Vec::new();
-    while let Some((_, step)) = stream.next_step() {
-        all.push(step.key());
+    while let Some(view) = stream.next_view().expect("every far handle resolves") {
+        all.push(view.edge());
     }
     assert_eq!(all.len() as u64, WORKS + ADVISES);
     assert_eq!(
@@ -555,8 +561,8 @@ fn a_traversal_reads_only_the_entries_the_caller_asks_for() {
     .expect("probe");
     assert!(pushed.filter_id().is_some(), "the pushdown names a face");
     let mut ids = Vec::new();
-    while let Some((_, step)) = pushed.next_step() {
-        ids.push(step.key());
+    while let Some(view) = pushed.next_view().expect("every far handle resolves") {
+        ids.push(view.edge());
     }
     ids.sort_unstable();
     let mut want = works;
@@ -726,11 +732,11 @@ fn a_key_set_intersects_then_fetches_in_one_call() {
     // The walk's own face keys — the position okm-query's operators speak.
     let steps = walk(&g, &person(1));
     assert_eq!(steps.len(), 5);
-    let all_keys: Vec<Vec<u8>> = steps.iter().map(|(key, _)| key.clone()).collect();
+    let all_keys: Vec<Vec<u8>> = steps.iter().map(|view| view.key.clone()).collect();
     let member_keys: Vec<Vec<u8>> = steps
         .iter()
-        .filter(|(_, step)| members.contains(&step.key()))
-        .map(|(key, _)| key.clone())
+        .filter(|view| members.contains(&view.edge()))
+        .map(|view| view.key.clone())
         .collect();
     assert_eq!(member_keys.len(), 2, "the cluster holds two of the five");
 
@@ -771,21 +777,26 @@ fn a_key_set_intersects_then_fetches_in_one_call() {
         // claim worth asserting is the key, which the line above already does.
         let _ = value;
     }
-    // The entry key's tail IS the far endpoint (`[ns 2][pkey 8]`, no length
-    // prefix — the declaration delimits it), so the two-step shape answers the
-    // neighbours without a second scan and without an edge id to look up.
+    // The entry key states HANDLES (`[ns][slot][src_h 8][pred 2][dst_h 8]`), so
+    // the far endpoint is one registry read away, never a slice of the key — the
+    // edge row no longer carries a ref at all.
+    let registry = Handles::new(&store, NS.to_be_bytes());
     let mut fetched_far: Vec<NodeRef> = rows
         .iter()
         .map(|(key, _)| {
-            let tail = &key[key.len() - 10..];
-            NodeRef::new(&tail[..2], &tail[2..])
+            let tail = &key[key.len() - 18..];
+            let dst = Handle::parse(&tail[10..]).expect("the row names a dst handle");
+            registry
+                .node(dst)
+                .expect("the registry read")
+                .expect("the far handle resolves")
         })
         .collect();
     fetched_far.sort_unstable();
     let mut want_far: Vec<NodeRef> = steps
         .iter()
-        .filter(|(key, _)| member_keys.contains(key))
-        .map(|(_, step)| step.far.clone())
+        .filter(|view| member_keys.contains(&view.key))
+        .map(|view| view.far.clone())
         .collect();
     want_far.sort_unstable();
     assert_eq!(fetched_far, want_far);

@@ -124,9 +124,10 @@ use crate::engine::storage::{
 };
 use crate::error::{Error, Result};
 use crate::model::graph::{
-    Direction, EdgeHead, EdgeKey, EdgeStep, EdgeStream, Graph, GraphEncode, Members, NodeRef,
-    NodeSet,
+    Direction, EdgeHead, EdgeKey, EdgeStep, EdgeStream, Graph, GraphEncode, Handle, HandleCache,
+    HandleKey, Members, NodeRef, NodeSet, in_prefix, out_prefix, parse_predicate_far,
 };
+use crate::model::handles::Handles;
 use crate::model::index::{Document, PRIMARY_SLOT, Slot, write_slot};
 use crate::model::obj_vocab::{FIELD_VOCAB, Faces, Vocabulary};
 
@@ -144,14 +145,14 @@ pub const EDGE_MEMBER_SLOT: Slot = 0x0B;
 /// prefix scan instead of a walk over every cluster of the kind.
 pub const CHILD_INDEX_SLOT: Slot = 0x0C;
 /// Fixed face 0x0D: the derived EDGE → CLUSTER index
-/// `[ns][0x0D][src][pred][dst][kind][hyper_id]` — the reverse direction of
+/// `[ns][0x0D][src_h][pred][dst_h][kind][hyper_id]` — the reverse direction of
 /// `0x0B`, derived from the member rows so it rebuilds from `0x0B` alone.
 ///
-/// The tuple leads on purpose: the face is then ordered by edge, which is the
-/// order a traversal is in, so a perceptive caller can align the two with
-/// `okm_query`'s set operators instead of materializing a set. `(kind,
-/// hyper_id)` follow, so a membership test for a known
-/// `(kind, cluster, edge)` is one exact key — [`member_of`] is that read.
+/// The row leads on purpose: the face is then ordered the way a traversal face
+/// is, so a perceptive caller can align the two with `okm_query`'s set operators
+/// instead of materializing a set. `(kind, hyper_id)` follow, so a membership
+/// test for a known `(kind, cluster, edge)` is one exact key — [`member_of`] is
+/// that read.
 pub const EDGE_CLUSTER_SLOT: Slot = 0x0D;
 
 /// Payload name carrying the number of member EDGES, maintained by the write
@@ -325,10 +326,11 @@ pub fn cluster_key(ns: &[u8; 2], kind: Kind, id: u64) -> Vec<u8> {
     key
 }
 
-/// `[ns][0x0B][kind][hyper_id][src][pred][dst]` — one member edge.
-pub fn edge_member_key(ns: &[u8; 2], cluster: ClusterRef, edge: &EdgeKey) -> Vec<u8> {
+/// `[ns][0x0B][kind][hyper_id][src_h][pred][dst_h]` — one member edge, by the
+/// same row identity the traversal faces use (ADR-0067's boundary-only handle).
+pub fn edge_member_key(ns: &[u8; 2], cluster: ClusterRef, row: &HandleKey) -> Vec<u8> {
     let mut key = members_prefix(ns, cluster);
-    edge.write(&mut key);
+    row.write(&mut key);
     key
 }
 
@@ -365,23 +367,23 @@ pub fn children_prefix(ns: &[u8; 2], kind: Kind, parent: u64) -> Vec<u8> {
     key
 }
 
-/// `[ns][0x0D][src][pred][dst][kind][hyper_id]` — one edge's membership in one
-/// cluster, derived from the member row that says the same thing the other way
-/// round.
+/// `[ns][0x0D][src_h][pred][dst_h][kind][hyper_id]` — one edge's membership in
+/// one cluster, derived from the member row that says the same thing the other
+/// way round.
 ///
-/// The edge first: the face is ordered by edge, so it aligns with a traversal
+/// The row first: the face is ordered by edge, so it aligns with a traversal
 /// stream. `(kind, hyper_id)` after it, so the triple is one exact key.
-pub fn edge_cluster_key(ns: &[u8; 2], edge: &EdgeKey, cluster: ClusterRef) -> Vec<u8> {
-    let mut key = edge_clusters_prefix(ns, edge);
+pub fn edge_cluster_key(ns: &[u8; 2], row: &HandleKey, cluster: ClusterRef) -> Vec<u8> {
+    let mut key = edge_clusters_prefix(ns, row);
     key.push(cluster.kind.0);
     push_u64(&mut key, cluster.id);
     key
 }
 
-/// `[ns][0x0D][src][pred][dst]` — every cluster one edge belongs to.
-pub fn edge_clusters_prefix(ns: &[u8; 2], edge: &EdgeKey) -> Vec<u8> {
+/// `[ns][0x0D][src_h][pred][dst_h]` — every cluster one edge belongs to.
+pub fn edge_clusters_prefix(ns: &[u8; 2], row: &HandleKey) -> Vec<u8> {
     let mut key = face_prefix(ns, EDGE_CLUSTER_SLOT);
-    edge.write(&mut key);
+    row.write(&mut key);
     key
 }
 
@@ -476,24 +478,20 @@ fn decode_dict<S: VirtualStorage + ?Sized>(store: &S, ns: &[u8; 2], raw: &[u8]) 
 // Reads
 // ---------------------------------------------------------------------------
 
-/// The member edges of one cluster, in key order: one prefix scan of 0x0B.
+/// The member rows of one cluster, in key order: one prefix scan of 0x0B.
 ///
-/// A member row's whole suffix IS the edge tuple, so it parses by the
-/// declaration's widths — the same rule a traversal entry follows, and the reason
-/// a membership row carries no edge number (ADR-0067).
-fn member_keys<S: VirtualStorage + ?Sized>(
+/// A member row's whole suffix IS the edge's row identity — eighteen bytes, the
+/// same bytes a traversal entry carries — so it parses by FIXED WIDTH, and a
+/// membership row carries no edge number and no endpoint reference (ADR-0067).
+fn member_rows<S: VirtualStorage + ?Sized>(
     store: &S,
     ns: &[u8; 2],
     cluster: ClusterRef,
-    members: &Members,
-) -> Result<Vec<EdgeKey>> {
+) -> Result<Vec<HandleKey>> {
     let mut out = Vec::new();
     for (suffix, _) in scan_suffix_kv(store, &members_prefix(ns, cluster))? {
-        let Some((key, taken)) = EdgeKey::parse(&suffix, members) else {
-            continue;
-        };
-        if taken == suffix.len() {
-            out.push(key);
+        if let Some(row) = HandleKey::parse(&suffix) {
+            out.push(row);
         }
     }
     Ok(out)
@@ -504,14 +502,13 @@ struct ClusterState {
     exists: bool,
     parent: u64,
     payload: Dict,
-    members: BTreeSet<EdgeKey>,
+    members: BTreeSet<HandleKey>,
 }
 
 fn read_cluster<S: VirtualStorage + ?Sized>(
     store: &S,
     ns: &[u8; 2],
     cluster: ClusterRef,
-    members: &Members,
 ) -> Result<ClusterState> {
     let mut state = ClusterState {
         exists: false,
@@ -527,9 +524,7 @@ fn read_cluster<S: VirtualStorage + ?Sized>(
             state.payload = decode_dict(store, ns, body)?;
         }
     }
-    state.members = member_keys(store, ns, cluster, members)?
-        .into_iter()
-        .collect();
+    state.members = member_rows(store, ns, cluster)?.into_iter().collect();
     Ok(state)
 }
 
@@ -636,9 +631,45 @@ impl<S: VirtualStorage> Hyperedges<S> {
         Ok(out)
     }
 
-    /// The member edges of one cluster, in key order — the authority.
+    /// The member edges of one cluster, in key order — the authority, resolved at
+    /// the boundary: the member rows are handles, and this verb answers tuples
+    /// (one registry scan for the whole set).
     pub fn members(&self, cluster: ClusterRef) -> Result<Vec<EdgeKey>> {
-        member_keys(&self.store, &self.ns, cluster, &self.members)
+        self.resolve(member_rows(&self.store, &self.ns, cluster)?)
+    }
+
+    /// The same member set as ROWS — no resolution. What a caller aligning this
+    /// face with a traversal stream wants, since the stream speaks the same
+    /// eighteen bytes.
+    pub fn member_rows(&self, cluster: ClusterRef) -> Result<Vec<HandleKey>> {
+        member_rows(&self.store, &self.ns, cluster)
+    }
+
+    /// Resolve row identities to tuples for the PUBLIC answer — one registry
+    /// scan, the boundary the whole design defers resolution to.
+    fn resolve(&self, rows: Vec<HandleKey>) -> Result<Vec<EdgeKey>> {
+        let mut wanted = BTreeSet::new();
+        for row in &rows {
+            wanted.insert(row.src);
+            wanted.insert(row.dst);
+        }
+        let sorted: Vec<Handle> = wanted.iter().copied().collect();
+        let refs = Handles::new(&self.store, self.ns).nodes(&sorted)?;
+        let nodes: BTreeMap<Handle, NodeRef> = sorted.into_iter().zip(refs).collect();
+        let mut out = Vec::with_capacity(rows.len());
+        for row in rows {
+            let (Some(src), Some(dst)) = (nodes.get(&row.src), nodes.get(&row.dst)) else {
+                return Err(Error::Corrupt {
+                    what: "a member row names a handle the registry does not hold".into(),
+                });
+            };
+            out.push(EdgeKey {
+                src: src.clone(),
+                predicate: row.predicate,
+                dst: dst.clone(),
+            });
+        }
+        Ok(out)
     }
 
     /// The children of one cluster: one scan of `[ns][0x0C][kind][parent]`.
@@ -677,9 +708,11 @@ impl<S: VirtualStorage> Hyperedges<S> {
         let mut report = DerivedReport::default();
         let mut batch = Batch::default();
 
-        // Phase 1 — sweep both derived faces. One sweep per face because a key
-        // from one face is not a key of the other; the loop keeps a half-built
-        // store bounded by `chunk` either way.
+        // Phase 1 — sweep every derived face (0x0C, 0x0D). One sweep per face
+        // because a key from one face is not a key of the other; the loop keeps
+        // a half-built store bounded by `chunk` either way. The handle
+        // registry's reverse half is NOT here: it is the registry's own sweep,
+        // through [`Handles::rebuild_reverse`] in phase 4.
         for slot in [CHILD_INDEX_SLOT, EDGE_CLUSTER_SLOT] {
             let prefix = face_prefix(&self.ns, slot);
             for item in self
@@ -726,10 +759,10 @@ impl<S: VirtualStorage> Hyperedges<S> {
         }
 
         // Phase 3 — the edge → cluster index, from the MEMBER rows: `0x0B` is
-        // `[kind][cluster][edge]`, so each row states one `(edge, kind,
+        // `[kind][cluster][edge row]`, so each row states one `(row, kind,
         // cluster)` triple and the derived key is that triple in the face's own
-        // order. Nothing here reads the face being written, which is what makes
-        // this rebuild possible with `0x0D` wiped.
+        // order. Nothing here reads the face being written, and nothing is
+        // resolved: both faces speak the same eighteen bytes.
         let prefix = face_prefix(&self.ns, EDGE_MEMBER_SLOT);
         for item in self
             .store
@@ -737,32 +770,41 @@ impl<S: VirtualStorage> Hyperedges<S> {
         {
             let (key, _) = item?;
             let suffix = &key[prefix.len()..];
-            // `[kind][hyper_id]` then the edge tuple, whose width is the
-            // declaration's — never a length in the row.
-            if suffix.len() <= 9 {
+            // `[kind][hyper_id]` then the fixed-width row identity.
+            if suffix.len() != 9 + HandleKey::WIDTH {
                 continue;
             }
             let Some(id) = be_u64(&suffix[1..9]) else {
                 continue;
             };
             let cluster = ClusterRef::new(Kind(suffix[0]), id);
-            let Some((edge, taken)) = EdgeKey::parse(&suffix[9..], &self.members) else {
+            let Some(row) = HandleKey::parse(&suffix[9..]) else {
                 continue;
             };
-            if taken + 9 != suffix.len() {
-                continue;
-            }
-            batch.put(edge_cluster_key(&self.ns, &edge, cluster), Vec::new());
+            batch.put(edge_cluster_key(&self.ns, &row, cluster), Vec::new());
             report.members += 1;
             if batch.ops.len() >= chunk {
                 self.store.commit_batch(std::mem::take(&mut batch))?;
                 report.chunks += 1;
             }
         }
+        // The tail of phase 3 — a partial batch is still a batch, and phase 4
+        // commits through its own verb, so nothing may be left in this one.
         if !batch.ops.is_empty() {
-            self.store.commit_batch(batch)?;
+            self.store.commit_batch(std::mem::take(&mut batch))?;
             report.chunks += 1;
         }
+
+        // Phase 4 — the handle registry's reverse face, through the registry's OWN
+        // rebuild. It is the same sweep-and-derive rule, and it is ONE
+        // definition: this used to inline the sweep here, which meant two
+        // places had to agree about a face whose key layout is
+        // `model::handles`' business. The forward face is authority — it holds
+        // `[node_ns][pkey]`, and an edge row names a handle rather than a
+        // reference (ADR-0067) — and a handle no edge names any more is NOT
+        // reclaimed: that is compaction's business, not a rebuild's.
+        Handles::new(&self.store, self.ns).rebuild_reverse()?;
+        report.chunks += 1;
         Ok(report)
     }
 }
@@ -780,55 +822,45 @@ impl<S: VirtualStorage> Hyperedges<S> {
 /// runs. One name, two costs, one cursor type.
 pub trait ClusterSubject {
     /// The cursor's open — the only thing the two subjects do differently.
-    fn open<'a, S: VirtualStorage>(
-        self,
-        store: &'a S,
-        ns: [u8; 2],
-        members: &'a Members,
-    ) -> ClusterStream<'a, S>;
+    fn open<'a, S: VirtualStorage>(self, store: &'a S, ns: [u8; 2]) -> ClusterStream<'a, S>;
 }
 
 impl ClusterSubject for EdgeKey {
-    fn open<'a, S: VirtualStorage>(
-        self,
-        store: &'a S,
-        ns: [u8; 2],
-        members: &'a Members,
-    ) -> ClusterStream<'a, S> {
-        ClusterStream::of_edge(store, members, ns, self)
+    fn open<'a, S: VirtualStorage>(self, store: &'a S, ns: [u8; 2]) -> ClusterStream<'a, S> {
+        ClusterStream::of_edge(store, ns, row_of_key(store, ns, &self))
     }
 }
 
 impl ClusterSubject for &EdgeKey {
-    fn open<'a, S: VirtualStorage>(
-        self,
-        store: &'a S,
-        ns: [u8; 2],
-        members: &'a Members,
-    ) -> ClusterStream<'a, S> {
-        ClusterStream::of_edge(store, members, ns, self.clone())
+    fn open<'a, S: VirtualStorage>(self, store: &'a S, ns: [u8; 2]) -> ClusterStream<'a, S> {
+        ClusterStream::of_edge(store, ns, row_of_key(store, ns, self))
     }
 }
 
+/// One edge's stored row identity, read-only: `None` when either endpoint never
+/// appeared in an edge, because then no `0x0D` row can name it.
+fn row_of_key<S: VirtualStorage>(
+    store: &S,
+    ns: [u8; 2],
+    key: &EdgeKey,
+) -> Result<Option<HandleKey>> {
+    let registry = Handles::new(store, ns);
+    let (Some(src), Some(dst)) = (registry.handle_of(&key.src)?, registry.handle_of(&key.dst)?)
+    else {
+        return Ok(None);
+    };
+    Ok(Some(HandleKey::new(src, key.predicate, dst)))
+}
+
 impl ClusterSubject for NodeRef {
-    fn open<'a, S: VirtualStorage>(
-        self,
-        store: &'a S,
-        ns: [u8; 2],
-        members: &'a Members,
-    ) -> ClusterStream<'a, S> {
-        ClusterStream::of_node(store, members, ns, &self)
+    fn open<'a, S: VirtualStorage>(self, store: &'a S, ns: [u8; 2]) -> ClusterStream<'a, S> {
+        ClusterStream::of_node(store, ns, &self)
     }
 }
 
 impl ClusterSubject for &NodeRef {
-    fn open<'a, S: VirtualStorage>(
-        self,
-        store: &'a S,
-        ns: [u8; 2],
-        members: &'a Members,
-    ) -> ClusterStream<'a, S> {
-        ClusterStream::of_node(store, members, ns, self)
+    fn open<'a, S: VirtualStorage>(self, store: &'a S, ns: [u8; 2]) -> ClusterStream<'a, S> {
+        ClusterStream::of_node(store, ns, self)
     }
 }
 
@@ -872,9 +904,6 @@ impl ClusterSubject for &NodeRef {
 pub struct ClusterStream<'a, S> {
     store: &'a S,
     ns: [u8; 2],
-    /// The graph's width table — the node form's incident edges come off the
-    /// traversal faces, whose keys are read by it.
-    members: &'a Members,
     /// The cursor over the CURRENT key space: one edge's `[kind][hyper_id]` run.
     scan: Option<ScanIter>,
     /// Bytes of key before the `[kind][hyper_id]` pair.
@@ -882,8 +911,12 @@ pub struct ClusterStream<'a, S> {
     /// The entry on top: its raw key (the [`Seekable`] position) and the cluster
     /// it names.
     cur: Option<(Vec<u8>, ClusterRef)>,
-    /// The edge this stream is about, in the edge form.
-    edge: Option<EdgeKey>,
+    /// The edge this stream is about, in the edge form — `None` for the node
+    /// form, and for an edge whose endpoints never appeared.
+    edge: Option<HandleKey>,
+    /// Whether this stream was opened on an EDGE (the form is a property of the
+    /// QUESTION, not of whether the run turned out to be empty).
+    edge_form: bool,
     /// The node this stream is about, in the node form.
     node: Option<NodeRef>,
     /// The node's out-edges, then (lazily) its in-edges — the two directions
@@ -898,45 +931,48 @@ pub struct ClusterStream<'a, S> {
 }
 
 impl<'a, S: VirtualStorage> ClusterStream<'a, S> {
-    /// One edge's clusters.
-    fn of_edge(store: &'a S, members: &'a Members, ns: [u8; 2], edge: EdgeKey) -> Self {
+    /// One edge's clusters. A row identity of `None` (an endpoint the graph never
+    /// saw) is an EMPTY answer: no `0x0D` entry can name an edge that is not
+    /// there.
+    fn of_edge(store: &'a S, ns: [u8; 2], row: Result<Option<HandleKey>>) -> Self {
         let mut stream = Self {
             store,
             ns,
-            members,
             scan: None,
             suffix_at: 0,
             cur: None,
-            edge: Some(edge.clone()),
+            edge: None,
+            edge_form: true,
             node: None,
             out: None,
             inn: None,
             last: None,
             err: None,
         };
-        stream.open_edge(&edge);
-        stream.fill();
+        match row {
+            Ok(Some(row)) => {
+                stream.edge = Some(row);
+                stream.open_edge(&row);
+                stream.fill();
+            }
+            Ok(None) => {}
+            Err(e) => stream.err = Some(e),
+        }
         stream
     }
 
     /// One node's clusters: its incident edges, flattened.
-    fn of_node(store: &'a S, members: &'a Members, ns: [u8; 2], node: &NodeRef) -> Self {
+    fn of_node(store: &'a S, ns: [u8; 2], node: &NodeRef) -> Self {
         let mut stream = Self {
             store,
             ns,
-            members,
             scan: None,
             suffix_at: 0,
             cur: None,
             edge: None,
+            edge_form: false,
             node: Some(node.clone()),
-            out: Some(EdgeStream::new(
-                store,
-                members,
-                ns,
-                Direction::Out,
-                node.clone(),
-            )),
+            out: Some(EdgeStream::new(store, ns, Direction::Out, node.clone())),
             inn: None,
             last: None,
             err: None,
@@ -947,8 +983,8 @@ impl<'a, S: VirtualStorage> ClusterStream<'a, S> {
 
     /// Point the cursor at one edge's run — the key space changes, so the
     /// position does too.
-    fn open_edge(&mut self, edge: &EdgeKey) {
-        let prefix = edge_clusters_prefix(&self.ns, edge);
+    fn open_edge(&mut self, row: &HandleKey) {
+        let prefix = edge_clusters_prefix(&self.ns, row);
         self.suffix_at = prefix.len();
         self.cur = None;
         let end = prefix_end(&prefix);
@@ -970,13 +1006,7 @@ impl<'a, S: VirtualStorage> ClusterStream<'a, S> {
         if done_with_out {
             self.out = None;
             let node = self.node.as_ref()?.clone();
-            self.inn = Some(EdgeStream::new(
-                self.store,
-                self.members,
-                self.ns,
-                Direction::In,
-                node,
-            ));
+            self.inn = Some(EdgeStream::new(self.store, self.ns, Direction::In, node));
         }
         self.inn.as_mut()?.next()
     }
@@ -1020,7 +1050,7 @@ impl<'a, S: VirtualStorage> ClusterStream<'a, S> {
                 Some(None) | None => self.scan = None,
             }
             match self.next_edge() {
-                Some(step) => self.open_edge(&step.key()),
+                Some(step) => self.open_edge(&step.row()),
                 None => return,
             }
         }
@@ -1033,13 +1063,13 @@ impl<'a, S: VirtualStorage> ClusterStream<'a, S> {
 
     /// The edge this stream was opened on — `None` for the node form, whose key
     /// space changes as it walks.
-    pub fn edge(&self) -> Option<&EdgeKey> {
+    pub fn edge(&self) -> Option<&HandleKey> {
         self.edge.as_ref()
     }
 
     /// Whether this stream walks one edge's run or a node's incident edges.
     pub fn is_edge_form(&self) -> bool {
-        self.edge.is_some()
+        self.edge_form
     }
 
     /// The node this stream was opened on — `None` for the edge form.
@@ -1115,29 +1145,33 @@ impl<S: VirtualStorage> crate::seek::Seekable for ClusterStream<'_, S> {
     }
 }
 
-/// Is `edge` a member of `cluster`? One point read of the derived face — the
+/// Is `row` a member of `cluster`? One point read of the derived face — the
 /// read that makes a membership test a `.filter` predicate inside a traversal
 /// instead of a set built beforehand.
 fn member_of_in<S: VirtualStorage + ?Sized>(
     store: &S,
     ns: &[u8; 2],
     cluster: ClusterRef,
-    edge: &EdgeKey,
+    row: &HandleKey,
 ) -> Result<bool> {
-    Ok(store.get(&edge_cluster_key(ns, edge, cluster))?.is_some())
+    Ok(store.get(&edge_cluster_key(ns, row, cluster))?.is_some())
 }
 
 impl<S: VirtualStorage> Hyperedges<S> {
     /// The clusters one edge belongs to, in `(kind, hyper_id)` order — the
     /// derived face read by its leading segment.
     pub fn clusters_of(&self, edge: &EdgeKey) -> ClusterStream<'_, S> {
-        ClusterStream::of_edge(&self.store, &self.members, self.ns, edge.clone())
+        ClusterStream::of_edge(&self.store, self.ns, row_of_key(&self.store, self.ns, edge))
     }
 
     /// Is this edge a member of this cluster? The derived face's exact key, one
-    /// read.
+    /// read — `Ok(false)` for an edge whose endpoints never appeared, since no
+    /// row can name it.
     pub fn member_of(&self, cluster: ClusterRef, edge: &EdgeKey) -> Result<bool> {
-        member_of_in(&self.store, &self.ns, cluster, edge)
+        match row_of_key(&self.store, self.ns, edge)? {
+            Some(row) => member_of_in(&self.store, &self.ns, cluster, &row),
+            None => Ok(false),
+        }
     }
 }
 
@@ -1151,7 +1185,7 @@ impl<S: VirtualStorage, G: GraphEncode> Graph<S, G> {
     /// for cluster in graph.clusters_of(&node) { /* flat_map over its edges */ }
     /// ```
     pub fn clusters_of<Q: ClusterSubject>(&self, subject: Q) -> ClusterStream<'_, S> {
-        subject.open(self.store(), self.ns().to_be_bytes(), self.member_widths())
+        subject.open(self.store(), self.ns().to_be_bytes())
     }
 
     /// Is `edge` a member of cluster `(kind, cluster)`? One point read of the
@@ -1160,15 +1194,18 @@ impl<S: VirtualStorage, G: GraphEncode> Graph<S, G> {
     /// Not a `bool`: a point read can fault, and a fault reported as \"not a
     /// member\" is how a broken store would read as an empty cluster. The
     /// traversal-filter spelling is
-    /// `.filter(|step| graph.member_of(kind, cluster, &step.key()).unwrap_or(false))`
+    /// `.filter(|step| graph.member_of(kind, cluster, &graph.edge_key(step)?)...)`
     /// — the `unwrap_or` is the caller saying what a fault means to it.
     pub fn member_of(&self, kind: Kind, cluster: u64, edge: &EdgeKey) -> Result<bool> {
-        member_of_in(
-            self.store(),
-            &self.ns().to_be_bytes(),
-            ClusterRef::new(kind, cluster),
-            edge,
-        )
+        match row_of_key(self.store(), self.ns().to_be_bytes(), edge)? {
+            Some(row) => member_of_in(
+                self.store(),
+                &self.ns().to_be_bytes(),
+                ClusterRef::new(kind, cluster),
+                &row,
+            ),
+            None => Ok(false),
+        }
     }
 }
 
@@ -1224,8 +1261,8 @@ struct ClusterPlan {
     /// The cluster is removed outright: an incorporation source, or a drop below two
     /// members.
     delete_row: bool,
-    add: BTreeSet<EdgeKey>,
-    remove: BTreeSet<EdgeKey>,
+    add: BTreeSet<HandleKey>,
+    remove: BTreeSet<HandleKey>,
 }
 
 /// One cluster write's outcome: the exact rows to put and delete.
@@ -1236,8 +1273,8 @@ struct ClusterOutcome {
     old_parent: u64,
     existed: bool,
     payload: Dict,
-    put_members: Vec<EdgeKey>,
-    del_members: Vec<EdgeKey>,
+    put_members: Vec<HandleKey>,
+    del_members: Vec<HandleKey>,
 }
 
 enum ClusterOp {
@@ -1571,37 +1608,63 @@ impl<G: GraphEncode + Default> Fragment<G> {
         // So the same declaration that creates an edge re-asserts it: a row at
         // that tuple means this fragment's `on_edge_conflict` decides the payload
         // (the update path), and no row means the declaration creates it.
+        //
+        // The handle cache is per-FRAGMENT: an endpoint named by several edges
+        // costs one registry probe, and every handle this batch issues rides the
+        // batch itself (a refused fragment leaves none behind).
+        let mut cache = HandleCache::default();
+        let mut batch_rows: Vec<HandleKey> = Vec::new();
         for decl in &self.rows {
             let Decl::Edge(head) = decl else {
                 continue;
             };
-            // The vocabulary id is part of the key, so the predicate is interned
+            // The vocabulary id is part of the row, so the predicate is interned
             // before the existence probe — the write would intern it anyway.
             let key = graph.write_key(head)?;
-            match graph.get_edge(&key)? {
-                Some(stored) => {
+            let row = match graph.row_of(&key)? {
+                Some(row) => {
+                    // The handles are on file, but handle rows are permanent:
+                    // they outlive the assertion they were issued for, so
+                    // "the registry knows both endpoints" says nothing about
+                    // whether this edge exists. The 0x06 row is the edge, so
+                    // the stored payload — not the handle lookup — is what
+                    // decides create-vs-update.
+                    let stored = graph.get_edge(&key)?.map(|body| body.payload);
                     // The stored payload and the declared one go to the hook,
                     // whose answer is what lands: an update is a write, and it
                     // keeps the identity. An edge declaration names a head, not
                     // a payload, so the declared side is the type's default.
-                    let stored_payload = G::decode_payload(&stored.payload);
                     let declared = G::default();
-                    let payload = match self.edge_conflict.as_ref() {
-                        Some(resolve) => resolve(&stored_payload, &declared),
-                        None => stored_payload,
+                    let payload = match stored.as_deref() {
+                        Some(bytes) => {
+                            let stored_payload = G::decode_payload(bytes);
+                            match self.edge_conflict.as_ref() {
+                                Some(resolve) => resolve(&stored_payload, &declared),
+                                None => stored_payload,
+                            }
+                        }
+                        None => match self.edge_conflict.as_ref() {
+                            Some(resolve) => resolve(&declared, &declared),
+                            None => declared,
+                        },
                     };
                     // The entries the OLD payload wrote into the `#[ok_index]`
                     // faces are only re-derivable from the old payload, so the
                     // previous assertion's rows leave first and the re-assertion
                     // lands in the same batch: the edge is never absent at
-                    // commit.
+                    // commit. An absent row has no entries to re-derive — that
+                    // is a creation at an identity the handles already fixed,
+                    // and unlinking it would only fail on the missing row.
                     //
                     // `unlink_into` is not a delete: it takes the row, the three
                     // derived faces and the declared faces, and leaves the
                     // dynamic segment (0x01) alone — the open attributes are a
                     // segment of their own and no declaration's to clear.
-                    graph.unlink_into(batch, &key)?;
-                    graph.assert_into(batch, head, &payload)?;
+                    if stored.is_some() {
+                        graph.unlink_into(batch, &row)?;
+                    }
+                    graph.assert_into(batch, head, &payload, &mut cache)?;
+                    row
                 }
                 None => {
                     // A creation: no row to compare against, so the hook sees
@@ -1611,12 +1674,13 @@ impl<G: GraphEncode + Default> Fragment<G> {
                         Some(resolve) => resolve(&declared, &declared),
                         None => declared,
                     };
-                    graph.link_into(batch, head, &payload)?;
+                    graph.link_into(batch, head, &payload, &mut cache)?.1
                 }
-            }
+            };
+            batch_rows.push(row);
             report.edges.push(key);
         }
-        let batch_edges: Vec<EdgeKey> = report.edges.clone();
+        let batch_edges: Vec<HandleKey> = batch_rows;
 
         // ---- 3. Cluster ids: allocated at run time, per kind ----
         // Every kind this fragment can allocate in: the ones it declares and the
@@ -1709,8 +1773,7 @@ impl<G: GraphEncode + Default> Fragment<G> {
                         if source == into {
                             continue;
                         }
-                        let state =
-                            read_cluster(graph.store(), &ns, *source, graph.member_widths())?;
+                        let state = read_cluster(graph.store(), &ns, *source)?;
                         if !state.exists {
                             return Err(Error::ClusterNotFound {
                                 kind: source.kind.0,
@@ -1748,7 +1811,7 @@ impl<G: GraphEncode + Default> Fragment<G> {
         let mut outcomes: Vec<ClusterOutcome> = Vec::with_capacity(plan.len());
         for ((kind, id), mut entry) in plan {
             let cluster = ClusterRef::new(Kind(kind), id);
-            let state = read_cluster(graph.store(), ns, cluster, graph.member_widths())?;
+            let state = read_cluster(graph.store(), ns, cluster)?;
             if !state.exists && !entry.declared {
                 // An op named a cluster that is not there and this batch does
                 // not create it: there is nothing to move members in or out of.
@@ -1791,8 +1854,8 @@ impl<G: GraphEncode + Default> Fragment<G> {
                 };
             }
 
-            let (put_members, del_members): (Vec<EdgeKey>, Vec<EdgeKey>) = if delete_row {
-                let all: BTreeSet<EdgeKey> = state.members.union(&entry.add).cloned().collect();
+            let (put_members, del_members): (Vec<HandleKey>, Vec<HandleKey>) = if delete_row {
+                let all: BTreeSet<HandleKey> = state.members.union(&entry.add).cloned().collect();
                 (Vec::new(), all.into_iter().collect())
             } else {
                 (
@@ -1928,11 +1991,26 @@ impl<S: VirtualStorage, G: GraphEncode + Default> Graph<S, G> {
         //
         // A declaration names a head and the head IS the identity (ADR-0067), so
         // a doomed edge is stated, never looked up by number.
-        let mut doomed: BTreeSet<EdgeKey> = BTreeSet::new();
+        let mut doomed: BTreeSet<HandleKey> = BTreeSet::new();
         let mut nodes: BTreeSet<NodeRef> = BTreeSet::new();
         for node in &fragment.node_deletes {
-            let mut incident = self.out_edges(node)?;
-            incident.extend(self.in_edges(node)?);
+            // The cascade is read in HANDLE space: the node's out and in faces
+            // are keyed by its handle, so the doomed rows come off the entries
+            // with no endpoint resolution at all.
+            let Some(near) = self.handles().handle_of(node)? else {
+                continue;
+            };
+            let mut incident: Vec<HandleKey> = Vec::new();
+            for (suffix, _) in scan_suffix_kv(self.store(), &out_prefix(&ns, near))? {
+                if let Some((predicate, far)) = parse_predicate_far(&suffix) {
+                    incident.push(HandleKey::new(near, predicate, far));
+                }
+            }
+            for (suffix, _) in scan_suffix_kv(self.store(), &in_prefix(&ns, near))? {
+                if let Some((predicate, far)) = parse_predicate_far(&suffix) {
+                    incident.push(HandleKey::new(far, predicate, near));
+                }
+            }
             if incident.is_empty() {
                 // A node exists only as an endpoint, so one no edge names is not
                 // in the graph: nothing to remove, and the report says zero.
@@ -1943,34 +2021,33 @@ impl<S: VirtualStorage, G: GraphEncode + Default> Graph<S, G> {
         }
         for head in &fragment.edge_deletes {
             // A predicate nobody interned names no row: absence is nothing to do.
-            if let Some(key) = self.key_of(head)? {
-                doomed.insert(key);
+            if let Some(key) = self.key_of(head)?
+                && let Some(row) = self.row_of(&key)?
+            {
+                doomed.insert(row);
             }
         }
 
         // ---- 2. Membership rows follow the edges: ONE pass over 0x0B ----
         //
-        // A member row is `[kind][cluster][edge]`, so an edge's clusters are
+        // A member row is `[kind][cluster][edge row]`, so an edge's clusters are
         // found by SUFFIX. There is no reverse index, and none is needed — this
-        // runs once per retract, not once per edge.
+        // runs once per retract, not once per edge. Both sides are row
+        // identities, so the containment test is a byte comparison.
         let mut plan: BTreeMap<(u8, u64), ClusterPlan> = BTreeMap::new();
-        let members = self.member_widths().clone();
         let prefix = face_prefix(&ns, EDGE_MEMBER_SLOT);
         for (suffix, _) in scan_suffix_kv(self.store(), &prefix)? {
-            if suffix.len() <= 9 {
+            if suffix.len() != 9 + HandleKey::WIDTH {
                 continue;
             }
             let Some(id) = be_u64(&suffix[1..9]) else {
                 continue;
             };
-            let Some((edge, taken)) = EdgeKey::parse(&suffix[9..], &members) else {
+            let Some(row) = HandleKey::parse(&suffix[9..]) else {
                 continue;
             };
-            if taken + 9 != suffix.len() {
-                continue;
-            }
-            if doomed.contains(&edge) {
-                plan.entry((suffix[0], id)).or_default().remove.insert(edge);
+            if doomed.contains(&row) {
+                plan.entry((suffix[0], id)).or_default().remove.insert(row);
             }
         }
         // A cluster `delete` in the fragment rides the same plan; `remove` is
@@ -1985,14 +2062,14 @@ impl<S: VirtualStorage, G: GraphEncode + Default> Graph<S, G> {
         }
 
         // ---- 3. The edges themselves: exactly their rows, in this batch ----
-        for edge in &doomed {
-            if self.get_edge(edge)?.is_none() {
+        for row in &doomed {
+            if !self.has_row(row)? {
                 continue;
             }
             // A delete takes the whole assertion, its open attributes included —
-            // the segment is keyed by the same tuple, so it cannot outlive the
+            // the segment is keyed by the same row, so it cannot outlive the
             // edge it describes.
-            self.purge_into(&mut batch, edge)?;
+            self.purge_into(&mut batch, row)?;
             report.edges += 1;
         }
 
@@ -2020,21 +2097,30 @@ mod tests {
         let ns = [0x00u8, 0x21];
         let cluster = ClusterRef::new(Kind::COMMUNITY, 7);
         // [ns 2][0x0A][kind 1][id 8] = 12 bytes. A member row is that prefix
-        // plus the edge's whole identity `[src][pred][dst]` — no number and no
-        // length, because a `u64`-keyed member table makes both endpoints ten
-        // bytes wide (ADR-0067).
-        let src = NodeRef::new(&[0x00, 0x41], &1u64.to_be_bytes());
-        let dst = NodeRef::new(&[0x00, 0x41], &2u64.to_be_bytes());
-        let edge = EdgeKey::new(src, 3, dst);
+        // plus the edge's stored identity `[src_h 8][pred 2][dst_h 8]` — the
+        // FIXED-WIDTH handle row (ADR-0067's boundary-only handle), not the
+        // ref-and-pkey tuple: a member table's key width never reaches this
+        // face, so its width is the same eighteen bytes in every graph.
+        let row = HandleKey::new(Handle::new(1), 3, Handle::new(2));
         assert_eq!(cluster_key(&ns, Kind::COMMUNITY, 7).len(), 12);
-        assert_eq!(edge_member_key(&ns, cluster, &edge).len(), 12 + 10 + 2 + 10);
-        assert!(edge_member_key(&ns, cluster, &edge).starts_with(&members_prefix(&ns, cluster)));
+        assert_eq!(HandleKey::WIDTH, 18);
+        assert_eq!(
+            edge_member_key(&ns, cluster, &row).len(),
+            12 + 18,
+            "a member row is the cluster prefix plus the eighteen-byte handle row"
+        );
+        assert_eq!(
+            &edge_member_key(&ns, cluster, &row)[12..],
+            &[
+                0, 0, 0, 0, 0, 0, 0, 1, // src handle 1
+                0, 3, // predicate
+                0, 0, 0, 0, 0, 0, 0, 2, // dst handle 2
+            ],
+            "the row is [src_h 8][pred 2][dst_h 8], big-endian, no lengths"
+        );
+        assert!(edge_member_key(&ns, cluster, &row).starts_with(&members_prefix(&ns, cluster)));
         assert!(
-            !edge_member_key(&ns, cluster, &edge).starts_with(&cluster_key(
-                &ns,
-                Kind::COMMUNITY,
-                7
-            ))
+            !edge_member_key(&ns, cluster, &row).starts_with(&cluster_key(&ns, Kind::COMMUNITY, 7))
         );
         // Every scan prefix is the whole key of its own row kind.
         assert_eq!(clusters_prefix(&ns, Kind::COMMUNITY).len(), 4);

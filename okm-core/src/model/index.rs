@@ -49,6 +49,12 @@ pub mod segment {
     /// Lead faces (ADR-0054): the entry's sort segment comes from the KEY's own encoding,
     /// so the face orders a collection by identity rather than by a payload copy of it.
     pub const LEAD: u16 = 0x5;
+    /// The graph's handle registry (ADR-0067), whose two faces — handle → node
+    /// and node → handle — share this ONE family number with the direction in
+    /// the counter bits (`model::handles`). Nothing allocates inside it, so its
+    /// two values are discriminators rather than a watermark, and a third face
+    /// of the same subsystem takes counter 2 rather than another nibble.
+    pub const HANDLE: u16 = 0xF;
 }
 
 /// Assemble a counting family's slot from its family number and counter.

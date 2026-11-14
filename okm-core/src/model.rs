@@ -23,6 +23,7 @@ pub mod document;
 pub mod faces;
 pub mod field;
 pub mod graph;
+pub mod handles;
 pub mod hyper;
 pub mod index;
 pub mod key;

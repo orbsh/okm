@@ -199,6 +199,102 @@ fn an_edge_table_restores_into_a_fresh_graph() {
     assert_eq!(r.predicates().unwrap().len(), 2);
 }
 
+/// A restore writes edges BY HEAD, so it never carries a handle in the file: the
+/// registry is issued by the graph's own write path, in the order the endpoints
+/// are first seen. The forward face (`0x10`, handle → node) is authority; the
+/// reverse one (`0x11`, node → handle) is derived, and the registry's rebuild is
+/// what restates it from the rows the restore just wrote.
+#[test]
+fn a_restore_writes_the_handle_registry_it_can_rebuild() {
+    let dir = tempfile::tempdir().unwrap();
+    let src = TestStore::slatedb_mem();
+    let mut g: Graph<_, Employment> = Graph::new(src.clone());
+    link(
+        &mut g,
+        head(user(1), org(9), "employs"),
+        &Employment {
+            since_year: 2020,
+            weight: 7,
+        },
+    )
+    .unwrap();
+    link(
+        &mut g,
+        head(user(2), org(9), "leads"),
+        &Employment {
+            since_year: 2021,
+            weight: 3,
+        },
+    )
+    .unwrap();
+    let table = g.to_record_batch_table(name_of).unwrap();
+    let file = dir.path().join("facts.parquet");
+    parquet_io::write_batch(&table, &file).unwrap();
+
+    // A restore over an EMPTY store: no registry rows existed, so every handle
+    // the edges name was issued here.
+    let restored = TestStore::slatedb_mem();
+    let mut r: Graph<_, Employment> = Graph::new(restored.clone());
+    r.import_file(&file, ns_of).unwrap();
+
+    let registry = r.handles();
+    let issued: Vec<(okm_core::Handle, NodeRef)> = registry.all().unwrap();
+    assert_eq!(
+        issued.len(),
+        3,
+        "two users and one org — one handle each, nothing resolved twice"
+    );
+    let u1 = registry
+        .handle_of(&user(1))
+        .unwrap()
+        .expect("user 1 issued");
+    assert_eq!(
+        registry.node(u1).unwrap().as_ref(),
+        Some(&user(1)),
+        "handle → node is the authority a read resolves through"
+    );
+
+    // The reverse half is derived state: wipe it and the registry still names
+    // every node's handle through the forward face alone.
+    let mut reverse = <Employment as Document>::NS_PREFIX.to_vec();
+    okm_core::write_slot(&mut reverse, okm_core::NODE_HANDLE_SLOT);
+    let end = okm_core::engine::storage::prefix_end(&reverse);
+    let stale: Vec<Vec<u8>> = restored
+        .scan_range(&reverse, end.as_deref())
+        .map(|item| item.map(|(k, _)| k))
+        .collect::<okm_core::Result<_>>()
+        .unwrap();
+    assert_eq!(stale.len(), 3, "one reverse row per issued handle");
+    for key in &stale {
+        restored.del(key).unwrap();
+    }
+    assert!(
+        registry.handle_of(&user(1)).unwrap().is_none(),
+        "the derived half is gone; the forward face is untouched"
+    );
+
+    // The rebuild is the registry's own phase (`rebuild_derived` calls it):
+    // sweep the derived face, restate it from authority.
+    assert_eq!(
+        registry.rebuild_reverse().unwrap(),
+        3,
+        "every live handle is restated"
+    );
+    assert_eq!(
+        registry.handle_of(&user(1)).unwrap(),
+        Some(u1),
+        "the same number for the same node — a rebuild reissues nothing"
+    );
+    // ... and the restored edges still answer through it.
+    let employs = EdgeKey::new(user(1), 0, org(9));
+    let leads = EdgeKey::new(user(2), 1, org(9));
+    assert_eq!(r.out_edges(&user(1)).unwrap(), vec![employs.clone()]);
+    assert_eq!(r.typed_in("leads", &org(9)).unwrap(), vec![leads]);
+    // The forward face is what made that possible: a read that resolved a
+    // handle never touched the ref the export carried.
+    assert_eq!(r.edge(&employs).unwrap().unwrap().since_year, 2020);
+}
+
 #[test]
 fn an_unknown_endpoint_collection_is_refused_by_name() {
     let store = TestStore::slatedb_mem();

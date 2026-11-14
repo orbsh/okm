@@ -38,7 +38,8 @@ use okm_core::engine::storage::{ExternalScan, ScanIter};
 use okm_core::error::Result as CoreResult;
 use okm_core::schema::CollectionSchema;
 use okm_core::{
-    DocumentEncode, EdgeKey, GraphEncode, KeyEncode, NodeRef, Seekable, VirtualStorage, write_slot,
+    DocumentEncode, EdgeKey, EdgeStep, GraphEncode, HandleKey, KeyEncode, NodeRef, Seekable,
+    VirtualStorage, write_slot,
 };
 use okm_dynamic::{Cluster, ClusterRef, Decl, DynEdge, DynFragment, Graph, Kind};
 use okm_query::intersect_seek;
@@ -141,12 +142,31 @@ fn cluster_face(hyper_id: u64, tail: &[u8]) -> Vec<u8> {
     row_key(0x0A, hyper_id, tail)
 }
 
-/// `[ns 2B][0x0D][src][pred][dst][kind][hyper_id]` — the derived reverse index.
-fn edge_cluster_face(edge: &EdgeKey, kind: Kind, hyper_id: u64) -> Vec<u8> {
-    let mut k = Vec::with_capacity(3 + edge.wire().len() + 1 + 8);
+/// The stored row identity of a caller's tuple — the registry read twice, which
+/// is what the member and derived faces are actually keyed by (ADR-0067). The
+/// test spells it out so a drift in the graph's row layout fails here instead of
+/// agreeing with itself.
+fn row_of(store: &TestStore, edge: &EdgeKey) -> HandleKey {
+    let registry = okm_core::Handles::new(store, NS.to_be_bytes());
+    let src = registry
+        .handle_of(&edge.src)
+        .expect("registry")
+        .expect("a written edge's source was issued a handle");
+    let dst = registry
+        .handle_of(&edge.dst)
+        .expect("registry")
+        .expect("a written edge's destination was issued a handle");
+    HandleKey::new(src, edge.predicate, dst)
+}
+
+/// `[ns 2B][0x0D][src_h][pred][dst_h][kind][hyper_id]` — the derived reverse
+/// index, keyed by the edge's stored handle row (eighteen bytes, whatever width
+/// the node tables' keys are).
+fn edge_cluster_face(row: &HandleKey, kind: Kind, hyper_id: u64) -> Vec<u8> {
+    let mut k = Vec::with_capacity(3 + HandleKey::WIDTH + 1 + 8);
     k.extend_from_slice(&NS.to_be_bytes());
     k.push(0x0D);
-    edge.write(&mut k);
+    row.write(&mut k);
     k.push(kind.byte());
     k.extend_from_slice(&hyper_id.to_be_bytes());
     k
@@ -218,15 +238,25 @@ fn every_cluster_face_round_trips_at_the_adr_layout() {
             "{engine}: member count stamped in the row"
         );
 
-        // 0x0B — one empty-valued row per member edge, in edge-key order.
+        // 0x0B — one empty-valued row per member edge, in row order: the
+        // cluster prefix then the edge's handle row `[src_h 8][pred 2][dst_h 8]`
+        // (ADR-0067), never the tuple's variable-width references.
         assert_eq!(
             g.members(Kind::COMMUNITY, id).expect("members"),
             report.edges,
             "{engine}: one scan of 0x0B"
         );
         for edge in &report.edges {
+            let spelled = row_of(&store, edge);
             assert_eq!(
-                store.get(&row_key(0x0B, id, &edge.wire())).expect("read"),
+                spelled.wire().len(),
+                HandleKey::WIDTH,
+                "{engine}: a member row's tail is the fixed-width handle row"
+            );
+            assert_eq!(
+                store
+                    .get(&row_key(0x0B, id, &spelled.wire()))
+                    .expect("read"),
                 Some(Vec::new()),
                 "{engine}: a member row carries no value — the edge does"
             );
@@ -236,7 +266,11 @@ fn every_cluster_face_round_trips_at_the_adr_layout() {
         for edge in &report.edges {
             assert_eq!(
                 store
-                    .get(&edge_cluster_face(edge, Kind::COMMUNITY, id))
+                    .get(&edge_cluster_face(
+                        &row_of(&store, edge),
+                        Kind::COMMUNITY,
+                        id
+                    ))
                     .expect("read"),
                 Some(Vec::new()),
                 "{engine}: the derived edge → cluster row"
@@ -840,11 +874,22 @@ impl Seekable for KeySet {
 }
 
 /// The `0x06` entry key of one edge, spelled by hand: the face a walk of its
-/// source visits. `[ns][0x06][src][pred][dst]` — the identity IS the suffix.
-fn out_face_key(edge: &EdgeKey) -> Vec<u8> {
+/// source visits. `[ns][0x06][src_h][pred][dst_h]` — the suffix is the edge's
+/// stored handle row, eighteen bytes whatever width the node tables' keys are
+/// (ADR-0067), so the tuple's references go through the registry first.
+fn out_face_key<S: VirtualStorage>(store: &S, edge: &EdgeKey) -> Vec<u8> {
+    let registry = okm_core::Handles::new(store, NS.to_be_bytes());
+    let src = registry
+        .handle_of(&edge.src)
+        .expect("registry")
+        .expect("a written edge's source was issued a handle");
+    let dst = registry
+        .handle_of(&edge.dst)
+        .expect("registry")
+        .expect("a written edge's destination was issued a handle");
     let mut key = NS.to_be_bytes().to_vec();
     write_slot(&mut key, 0x06);
-    edge.write(&mut key);
+    HandleKey::new(src, edge.predicate, dst).write(&mut key);
     key
 }
 
@@ -879,25 +924,30 @@ fn a_traversal_find_reads_fewer_entries_than_the_face_holds() {
         let works: Vec<EdgeKey> = edges[..WORKS as usize].to_vec();
 
         // ---- one edge, both directions: the same head, mirrored far ends ----
+        // A step states HANDLES (ADR-0067); a reference behind one is
+        // `Graph::node`, and the tuple a step names is `Graph::edge_key`.
         let out_step = g
             .out(&person(1))
-            .find(|step| step.key() == works[0])
+            .find(|step| g.edge_key(step).is_ok_and(|key| key == works[0]))
             .expect("the hub's first out-edge");
         let in_step = g
             .inn(&org(1))
-            .find(|step| step.key() == works[0])
+            .find(|step| g.edge_key(step).is_ok_and(|key| key == works[0]))
             .expect("the same edge from the far side");
         assert_eq!(
             (
-                out_step.far.clone(),
-                out_step.head.src.clone(),
-                out_step.head.dst.clone()
+                g.node(out_step.far_handle).expect("resolves"),
+                g.node(out_step.head.src_handle).expect("resolves"),
+                g.node(out_step.head.dst_handle).expect("resolves")
             ),
             (org(1), person(1), org(1)),
             "{engine}: an out hop's far end is the destination"
         );
         assert_eq!(
-            (in_step.far.clone(), in_step.head.dst.clone()),
+            (
+                g.node(in_step.far_handle).expect("resolves"),
+                g.node(in_step.head.dst_handle).expect("resolves")
+            ),
             (person(1), org(1)),
             "{engine}: the in hop's far end is the source"
         );
@@ -918,20 +968,27 @@ fn a_traversal_find_reads_fewer_entries_than_the_face_holds() {
         calls.reset();
         let walked = g.out(&person(1)).count();
         assert_eq!(walked as u64, WORKS + ADVISES, "{engine}: the whole face");
+        // Opening a walk costs exactly ONE registry read (node → handle); the
+        // entries themselves name both endpoints in their key.
         assert_eq!(
             calls.gets.get(),
-            0,
-            "{engine}: a hop reads no primary row — the entry names both endpoints"
+            1,
+            "{engine}: a hop reads no edge row — the walk's only point read is the \
+             registry's node → handle probe, once at the open, over {walked} entries"
         );
 
         // ---- laziness: the answer's position bounds the reads ----
         calls.reset();
         let found = g
             .out(&person(1))
-            .find(|step| step.far == org(1))
+            .find(|step| g.node(step.far_handle).is_ok_and(|far| far == org(1)))
             .expect("org 1 is the first destination");
-        assert_eq!(found.key(), works[0]);
         let find_pulled = calls.pulled();
+        assert_eq!(
+            g.edge_key(&found).expect("resolves"),
+            works[0],
+            "{engine}: the step `find` stopped on is the first edge written"
+        );
         assert!(
             find_pulled <= 3,
             "{engine}: `find` must stop at the answer, pulled {find_pulled} of {}",
@@ -939,9 +996,13 @@ fn a_traversal_find_reads_fewer_entries_than_the_face_holds() {
         );
 
         calls.reset();
-        let head_of_face: Vec<EdgeKey> = g.out(&person(1)).take(3).map(|step| step.key()).collect();
-        assert_eq!(head_of_face.len(), 3);
+        let taken: Vec<EdgeStep> = g.out(&person(1)).take(3).collect();
         let take_pulled = calls.pulled();
+        let head_of_face: Vec<EdgeKey> = taken
+            .iter()
+            .map(|step| g.edge_key(step).expect("resolves"))
+            .collect();
+        assert_eq!(head_of_face.len(), 3);
         assert!(
             take_pulled <= 4,
             "{engine}: `take(3)` reads three entries plus the one position it keeps \
@@ -953,15 +1014,22 @@ fn a_traversal_find_reads_fewer_entries_than_the_face_holds() {
             g.predicate_id("works_at").expect("probe").is_some(),
             "{engine}: the predicate was interned"
         );
+        // The steps are collected FIRST and resolved after: the tuple is a
+        // registry scan, and the counters below are about what the walk pulled.
         calls.reset();
-        let untyped = g.out(&person(1)).map(|step| step.key()).collect::<Vec<_>>();
+        let untyped: Vec<EdgeStep> = g.out(&person(1)).collect();
         let untyped_pulled = calls.pulled();
         assert_eq!(untyped.len() as u64, WORKS + ADVISES);
 
         calls.reset();
         let narrowed = g.out(&person(1)).by("works_at").expect("predicate id");
-        let mut pushed = narrowed.map(|step| step.key()).collect::<Vec<_>>();
+        let pushed_steps: Vec<EdgeStep> = narrowed.collect();
         let pushed_pulled = calls.pulled();
+        let pushed_gets = calls.gets.get();
+        let mut pushed: Vec<EdgeKey> = pushed_steps
+            .iter()
+            .map(|step| g.edge_key(step).expect("resolves"))
+            .collect();
         pushed.sort_unstable();
         let mut want = works.clone();
         want.sort_unstable();
@@ -975,11 +1043,11 @@ fn a_traversal_find_reads_fewer_entries_than_the_face_holds() {
              over a {}-entry face)",
             WORKS + ADVISES
         );
-        assert!(
-            calls.gets.get() <= 1,
-            "{engine}: the pushdown's only point read is the predicate's own vocabulary \
-             entry ({}), never an edge row",
-            calls.gets.get()
+        assert_eq!(
+            pushed_gets, 2,
+            "{engine}: the pushed-down walk's point reads are the open's two probes — the \
+             node → handle registry row and the predicate's own vocabulary entry — and none \
+             per entry: no edge row is read"
         );
 
         // A predicate nobody interned answers empty without opening a scan.
@@ -1017,12 +1085,15 @@ fn a_traversal_find_reads_fewer_entries_than_the_face_holds() {
             .members(Kind::COMMUNITY, cluster)
             .expect("members")
             .iter()
-            .map(out_face_key)
+            .map(|edge| out_face_key(&store, edge))
             .collect();
         let shared: Vec<Vec<u8>> =
             intersect_seek(g.out(&person(1)), KeySet::new(member_keys)).collect();
         assert_eq!(shared.len(), 2, "{engine}: two of the hub's edges are in C");
-        let mut want = vec![out_face_key(&works[0]), out_face_key(&works[1])];
+        let mut want = vec![
+            out_face_key(&store, &works[0]),
+            out_face_key(&store, &works[1]),
+        ];
         want.sort_unstable();
         assert_eq!(
             shared, want,
@@ -1034,10 +1105,14 @@ fn a_traversal_find_reads_fewer_entries_than_the_face_holds() {
         let filtered: Vec<EdgeKey> = g
             .out(&person(1))
             .filter(|step| {
-                g.member_of(Kind::COMMUNITY, cluster, &step.key())
-                    .unwrap_or(false)
+                g.member_of(
+                    Kind::COMMUNITY,
+                    cluster,
+                    &g.edge_key(step).expect("a step resolves"),
+                )
+                .unwrap_or(false)
             })
-            .map(|step| step.key())
+            .map(|step| g.edge_key(&step).expect("a step resolves"))
             .collect();
         let mut filtered_sorted = filtered;
         filtered_sorted.sort_unstable();

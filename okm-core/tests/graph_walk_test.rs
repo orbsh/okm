@@ -34,8 +34,8 @@ use okm_async::TestStore;
 use okm_core::engine::storage::{ExternalScan, ScanIter};
 use okm_core::error::Result;
 use okm_core::{
-    Decl, Document, DocumentEncode, EdgeHead, EdgeKey, Fragment, Graph, GraphEncode, KeyEncode,
-    NodeRef, Seekable, VirtualStorage,
+    Decl, Document, DocumentEncode, EdgeHead, EdgeKey, EdgeStep, Fragment, Graph, GraphEncode,
+    KeyEncode, NodeRef, Seekable, VirtualStorage,
 };
 use okm_query::{difference, intersect_seek, union};
 
@@ -269,25 +269,33 @@ fn verify(store: TestStore) {
     calls.reset();
 
     // ---- 1. one edge, both directions: the same head, mirrored far ends ----
+    //
+    // A step states its endpoints as HANDLES — the graph's own numbering
+    // (ADR-0067) — so the reference behind one is asked for explicitly
+    // (`Graph::node`), and the tuple a step names is `Graph::edge_key`. Neither
+    // is a field: the walk resolves nothing it was not asked to.
     let out_step = g
         .out(&person(1))
-        .find(|step| step.key() == works[0])
+        .find(|step| g.edge_key(step).is_ok_and(|key| key == works[0]))
         .expect("the hub's first out-edge");
     let in_step = g
         .inn(&org(1))
-        .find(|step| step.key() == works[0])
+        .find(|step| g.edge_key(step).is_ok_and(|key| key == works[0]))
         .expect("the same edge from the far side");
     assert_eq!(
         (
-            out_step.far.clone(),
-            out_step.head.src.clone(),
-            out_step.head.dst.clone()
+            g.node(out_step.far_handle).expect("resolves"),
+            g.node(out_step.head.src_handle).expect("resolves"),
+            g.node(out_step.head.dst_handle).expect("resolves")
         ),
         (org(1), person(1), org(1)),
         "{name}: an out hop's far end is the destination"
     );
     assert_eq!(
-        (in_step.far.clone(), in_step.head.dst.clone()),
+        (
+            g.node(in_step.far_handle).expect("resolves"),
+            g.node(in_step.head.dst_handle).expect("resolves")
+        ),
         (person(1), org(1)),
         "{name}: the in hop's far end is the source"
     );
@@ -304,10 +312,10 @@ fn verify(store: TestStore) {
     // ... and the in face is not a re-read: the second person's edge mirrors too.
     let mirrored = g
         .inn(&org(1))
-        .find(|step| step.key() == bridge)
+        .find(|step| g.edge_key(step).is_ok_and(|key| key == bridge))
         .expect("the bridge edge arrives at org 1");
     assert_eq!(
-        mirrored.far,
+        g.node(mirrored.far_handle).expect("resolves"),
         person(2),
         "{name}: a second source on the in face"
     );
@@ -316,40 +324,53 @@ fn verify(store: TestStore) {
     calls.reset();
     let walked = g.out(&person(1)).count();
     assert_eq!(walked as u64, WORKS + ADVISES, "{name}: the whole face");
+    // The face is keyed by the node's HANDLE, so opening a walk costs exactly
+    // ONE registry read (node → handle, `EdgeStream::new`) and nothing per
+    // entry — the far endpoint is in the entry, never behind a row read.
     assert_eq!(
         calls.gets.get(),
-        0,
-        "{name}: a hop reads no primary row — the entry names both endpoints"
+        1,
+        "{name}: a hop reads no edge row — the walk's only point read is the registry's \
+         node → handle probe, once at the open, over {walked} entries"
     );
 
     // ---- 3. predicate pushdown: same set, fewer entries ----
     let untyped_keys = keys_of(g.out(&person(1)));
-    let untyped: Vec<EdgeKey> = g.out(&person(1)).map(|step| step.key()).collect();
+    let untyped: Vec<EdgeKey> = g
+        .out(&person(1))
+        .map(|step| g.edge_key(&step).expect("resolves"))
+        .collect();
     // Ordered by the face, i.e. by destination — the identities are not the order.
     let mut untyped_sorted = untyped.clone();
     untyped_sorted.sort();
 
     // The manual filter the pushdown replaces: walk the untyped face and keep
-    // the entries whose key states the predicate. It reads no row — the head is
-    // the key (ADR-0067) — so what pushdown buys is ENTRIES, not reads.
+    // the entries whose key states the predicate. It reads no row — the head
+    // (both handles and the predicate) IS the key (ADR-0067) — so what pushdown
+    // buys is ENTRIES, not reads. The steps are collected FIRST and resolved
+    // after: resolution is a registry scan, and the counters below are about
+    // what the walk pulled.
     calls.reset();
-    let manual: Vec<EdgeKey> = g
+    let manual_steps: Vec<EdgeStep> = g
         .out(&person(1))
         .filter(|step| step.head.predicate == works_pred)
-        .map(|step| step.key())
         .collect();
     let manual_pulled = calls.pulled();
     let manual_gets = calls.gets.get();
+    let manual: Vec<EdgeKey> = manual_steps
+        .iter()
+        .map(|step| g.edge_key(step).expect("resolves"))
+        .collect();
 
     // Pushed down: the 0x08 face's `[predicate][src]` prefix, one scan.
     let narrowed = g.out(&person(1));
     calls.reset();
-    let pushed = narrowed
-        .by("works_at")
-        .expect("predicate id")
-        .map(|step| step.key())
-        .collect::<Vec<_>>();
+    let pushed_steps: Vec<EdgeStep> = narrowed.by("works_at").expect("predicate id").collect();
     let pushed_pulled = calls.pulled();
+    let pushed: Vec<EdgeKey> = pushed_steps
+        .iter()
+        .map(|step| g.edge_key(step).expect("resolves"))
+        .collect();
     let mut pushed_sorted = pushed.clone();
     pushed_sorted.sort();
 
@@ -377,10 +398,12 @@ fn verify(store: TestStore) {
          {}-entry face)",
         WORKS + ADVISES
     );
+    // The walk's open is the one point read (the registry's node → handle
+    // probe), and nothing per entry: the predicate rides in the entry's key.
     assert_eq!(
-        manual_gets, 0,
-        "{name}: the untyped face states the predicate, so filtering it costs no row read \
-         ({manual_gets})"
+        manual_gets, 1,
+        "{name}: the untyped walk's only point read is the open's node → handle probe — \
+         choosing an entry by its predicate costs no read at all ({manual_gets})"
     );
     assert_eq!(
         pushed.len() as u64,
@@ -409,10 +432,14 @@ fn verify(store: TestStore) {
     calls.reset();
     let found = g
         .out(&person(1))
-        .find(|step| step.far == org(1))
+        .find(|step| g.node(step.far_handle).is_ok_and(|far| far == org(1)))
         .expect("org 1 is the first destination");
-    assert_eq!(found.key(), works[0]);
     let find_pulled = calls.pulled();
+    assert_eq!(
+        g.edge_key(&found).expect("resolves"),
+        works[0],
+        "{name}: the step `find` stopped on is the first edge written"
+    );
     assert!(
         find_pulled <= 3,
         "{name}: `find` must stop at the answer, pulled {find_pulled} of {}",
@@ -420,9 +447,13 @@ fn verify(store: TestStore) {
     );
 
     calls.reset();
-    let head_of_face: Vec<EdgeKey> = g.out(&person(1)).take(3).map(|step| step.key()).collect();
-    assert_eq!(head_of_face.len(), 3);
+    let taken: Vec<EdgeStep> = g.out(&person(1)).take(3).collect();
     let take_pulled = calls.pulled();
+    let head_of_face: Vec<EdgeKey> = taken
+        .iter()
+        .map(|step| g.edge_key(step).expect("resolves"))
+        .collect();
+    assert_eq!(head_of_face.len(), 3);
     assert!(
         take_pulled <= 4,
         "{name}: `take(3)` reads three entries plus the one position it keeps on top, \
@@ -430,12 +461,18 @@ fn verify(store: TestStore) {
     );
 
     calls.reset();
-    let prefix_run: Vec<EdgeKey> = g
+    let run: Vec<EdgeStep> = g
         .out(&person(1))
-        .take_while(|step| step.far.ns_id() == Org::NS)
-        .map(|step| step.key())
+        .take_while(|step| {
+            g.node(step.far_handle)
+                .is_ok_and(|far| far.ns_id() == Org::NS)
+        })
         .collect();
     let while_pulled = calls.pulled();
+    let prefix_run: Vec<EdgeKey> = run
+        .iter()
+        .map(|step| g.edge_key(step).expect("resolves"))
+        .collect();
     assert_eq!(prefix_run.len() as u64, WORKS + ADVISES);
     assert!(
         while_pulled <= WORKS as usize + ADVISES as usize + 1,
@@ -545,25 +582,36 @@ fn verify(store: TestStore) {
 
     // ---- 7. a hop chain is `flat_map`, and `walk` is `out` ----
     assert_eq!(
-        g.walk(&person(2)).map(|step| step.far).collect::<Vec<_>>(),
+        g.walk(&person(2))
+            .map(|step| g.node(step.far_handle).expect("resolves"))
+            .collect::<Vec<_>>(),
         vec![org(1)],
         "{name}: `walk` is the out face, one hop"
     );
     let deeper: Vec<NodeRef> = g
         .walk(&person(1))
-        .flat_map(|step| g.walk(&step.far))
-        .map(|step| step.far)
+        .flat_map(|step| {
+            let far = g.node(step.far_handle).expect("resolves");
+            g.walk(&far)
+        })
+        .map(|step| g.node(step.far_handle).expect("resolves"))
         .collect();
     assert!(
         deeper.is_empty(),
         "{name}: orgs have no out-edges, so the second hop is empty — and nothing \
          collected a visited set to learn it"
     );
-    let reverses = g.inn(&org(1)).map(|step| step.far).collect::<Vec<_>>();
+    // The in face's entry key is `[dst_h][predicate][src_h]`, so this order is
+    // the source's HANDLE order — issue order, which is also the order these two
+    // nodes first appeared in an edge.
+    let reverses = g
+        .inn(&org(1))
+        .map(|step| g.node(step.far_handle).expect("resolves"))
+        .collect::<Vec<_>>();
     assert_eq!(
         reverses,
         vec![person(1), person(2)],
-        "{name}: the in face answers both sources, in key order"
+        "{name}: the in face answers both sources, in handle (issue) order"
     );
 
     // Sanity on the face sizes the claims used.

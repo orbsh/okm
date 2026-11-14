@@ -6,10 +6,11 @@
 //! declaration's widths, the same PREDICATE VOCABULARY (0x04/0x05) for
 //! predicates. The differences are declaration-side only:
 //!
-//! - endpoints need no Rust type, but they DO need the member table's key
-//!   widths: an edge key is `[src][pred][dst]` with no length prefix, so the
-//!   schema's `member_widths` is what makes it parse (ADR-0067). A writer
-//!   whose schema declares no widths cannot key an edge at all;
+//! - endpoints are stored as the graph's own HANDLES: an edge row is
+//!   `[src_h][pred][dst_h]`, eighteen bytes whatever width the member tables
+//!   declare (ADR-0067's boundary-only handle). The schema's `member_widths` is
+//!   what a caller-supplied `NodeRef` is checked against at write time; the
+//!   faces themselves never carry a reference;
 //! - edge attributes are nTLV frames (id + vocabulary, self-describing
 //!   value types) in the dynamic segment instead of compile-time fields —
 //!   attribute names are runtime data, so their ids allocate through the
@@ -26,10 +27,14 @@
 //! subscribe stays excluded; func/partial indexes and reduce are
 //! callable-implementable on the table side.
 
+use std::collections::{BTreeMap, BTreeSet};
+
 use okm_core::model::graph::{
-    Direction, EDGE_IN_SLOT, EDGE_OUT_SLOT, EDGE_PREDICATE_IN_SLOT, EDGE_PREDICATE_OUT_SLOT,
-    EdgeKey, EdgeStep, HopHead, Members, NodeRef,
+    Direction, EDGE_PREDICATE_OUT_SLOT, EdgeKey, EdgeStep, Handle, HandleKey, HopHead, Members,
+    NodeRef, face_key, in_face_key, in_prefix, out_face_key, out_prefix, parse_predicate_far,
+    predicate_in_face_key, predicate_in_prefix, predicate_out_face_key, predicate_out_prefix,
 };
+use okm_core::model::handles::Handles;
 use okm_core::obj_vocab::{FIELD_VOCAB, Faces, PREDICATE_VOCAB, Vocabulary};
 use okm_core::schema::CollectionSchema;
 use okm_core::storage::{Batch, ScanIter, VirtualStorage, prefix_end, scan_suffix_kv};
@@ -157,42 +162,114 @@ impl<S: VirtualStorage> Graph<S> {
         k
     }
 
-    /// `[ns][0x06][src][pred][dst]` — the edge itself, payload in the value.
-    fn out_key(&self, key: &EdgeKey) -> Vec<u8> {
-        let mut k = self.face_key(EDGE_OUT_SLOT, &[]);
-        key.write(&mut k);
-        k
+    /// The handle registry of THIS graph's namespace — the one place a write
+    /// issues an identity and a read resolves one (ADR-0067).
+    fn handles(&self) -> Handles<'_, S> {
+        Handles::new(&self.store, self.ns_pair())
     }
 
-    /// `[ns][0x07][dst][pred][src]`.
-    fn in_key(&self, key: &EdgeKey) -> Vec<u8> {
-        let mut k = self.face_key(EDGE_IN_SLOT, &[]);
-        key.dst.write(&mut k);
-        k.extend_from_slice(&key.predicate.to_be_bytes());
-        key.src.write(&mut k);
-        k
+    /// The stored row identity behind a caller's tuple: both endpoints resolved
+    /// WITHOUT issuing (a read, a probe, or a delete must never allocate).
+    /// `None` when either endpoint never appeared in an edge — then no row can
+    /// name it.
+    fn row_of(&self, key: &EdgeKey) -> Result<Option<HandleKey>, String> {
+        let registry = self.handles();
+        let (Some(src), Some(dst)) = (
+            registry.handle_of(&key.src).map_err(|e| e.to_string())?,
+            registry.handle_of(&key.dst).map_err(|e| e.to_string())?,
+        ) else {
+            return Ok(None);
+        };
+        Ok(Some(HandleKey::new(src, key.predicate, dst)))
     }
 
-    /// `[ns][0x08][pred][src][dst]`.
-    fn predicate_out_key(&self, key: &EdgeKey) -> Vec<u8> {
-        let mut k = self.face_key(EDGE_PREDICATE_OUT_SLOT, &[&key.predicate.to_be_bytes()]);
-        key.src.write(&mut k);
-        key.dst.write(&mut k);
-        k
+    /// Resolve a set of rows to the tuples a caller speaks — ONE registry scan
+    /// for the whole answer, the boundary the design defers resolution to.
+    fn edges_from_rows(&self, rows: Vec<HandleKey>) -> Result<Vec<EdgeKey>, String> {
+        if rows.is_empty() {
+            return Ok(Vec::new());
+        }
+        let mut wanted = BTreeSet::new();
+        for row in &rows {
+            wanted.insert(row.src);
+            wanted.insert(row.dst);
+        }
+        let sorted: Vec<Handle> = wanted.iter().copied().collect();
+        let refs = self.handles().nodes(&sorted).map_err(|e| e.to_string())?;
+        let nodes: BTreeMap<Handle, NodeRef> = sorted.into_iter().zip(refs).collect();
+        let mut out = Vec::with_capacity(rows.len());
+        for row in rows {
+            let (Some(src), Some(dst)) = (nodes.get(&row.src), nodes.get(&row.dst)) else {
+                return Err("an edge row names a handle the registry does not hold".to_string());
+            };
+            out.push(EdgeKey {
+                src: src.clone(),
+                predicate: row.predicate,
+                dst: dst.clone(),
+            });
+        }
+        Ok(out)
     }
 
-    /// `[ns][0x09][pred][dst][src]`.
-    fn predicate_in_key(&self, key: &EdgeKey) -> Vec<u8> {
-        let mut k = self.face_key(EDGE_PREDICATE_IN_SLOT, &[&key.predicate.to_be_bytes()]);
-        key.dst.write(&mut k);
-        key.src.write(&mut k);
-        k
+    /// One handle's node — one point read, the boundary a stream consumer needs:
+    /// [`DynEdgeStream`] reports HANDLES (ADR-0067), and a reference is this
+    /// call, never a field on the step.
+    pub fn node(&self, handle: Handle) -> Result<NodeRef, String> {
+        self.handles()
+            .node(handle)
+            .map_err(|e| e.to_string())?
+            .ok_or_else(|| {
+                format!(
+                    "handle {} is named by an edge row but the registry has no node for it",
+                    handle.id()
+                )
+            })
     }
 
-    /// The dynamic segment's entry: `[ns][0x01][src][pred][dst]` → nTLV frames.
-    fn fields_key(&self, key: &EdgeKey) -> Vec<u8> {
+    /// The tuple a traversal step names — its two handles resolved once, at the
+    /// boundary; the walk itself resolves nothing.
+    pub fn edge_key(&self, step: &EdgeStep) -> Result<EdgeKey, String> {
+        self.edges_from_rows(vec![step.row()])?
+            .into_iter()
+            .next()
+            .ok_or_else(|| "the handle registry answered no row for an edge step".to_string())
+    }
+
+    /// Does an edge sit at this row identity? One point read of 0x06 — the
+    /// delete path's existence test, in handle space so nothing is resolved.
+    pub(crate) fn has_row(&self, row: &HandleKey) -> Result<bool, String> {
+        Ok(self
+            .store
+            .get(&self.out_key(row))
+            .map_err(|e| e.to_string())?
+            .is_some())
+    }
+
+    /// `[ns][0x06][src_h][pred][dst_h]` — the edge itself, payload in the value.
+    fn out_key(&self, row: &HandleKey) -> Vec<u8> {
+        out_face_key(&self.ns_pair(), row)
+    }
+
+    /// `[ns][0x07][dst_h][pred][src_h]`.
+    fn in_key(&self, row: &HandleKey) -> Vec<u8> {
+        in_face_key(&self.ns_pair(), row)
+    }
+
+    /// `[ns][0x08][pred][src_h][dst_h]`.
+    fn predicate_out_key(&self, row: &HandleKey) -> Vec<u8> {
+        predicate_out_face_key(&self.ns_pair(), row)
+    }
+
+    /// `[ns][0x09][pred][dst_h][src_h]`.
+    fn predicate_in_key(&self, row: &HandleKey) -> Vec<u8> {
+        predicate_in_face_key(&self.ns_pair(), row)
+    }
+
+    /// The dynamic segment's entry: `[ns][0x01][src_h][pred][dst_h]` → nTLV
+    /// frames, keyed by the same row identity as the edge itself.
+    fn fields_key(&self, row: &HandleKey) -> Vec<u8> {
         let mut k = self.face_key(okm_core::index::DYNAMIC_SLOT, &[]);
-        key.write(&mut k);
+        row.write(&mut k);
         k
     }
 
@@ -209,6 +286,17 @@ impl<S: VirtualStorage> Graph<S> {
         predicates
             .ensure(&mut door, predicate)
             .map_err(|e| e.to_string())
+    }
+
+    /// The refusal every delete states when a tuple names no row: the endpoints are
+    /// named, because a caller's handle does not know the graph's numbering.
+    fn not_found(key: &EdgeKey) -> String {
+        format!(
+            "unlink: edge (src ns {}, predicate {}, dst ns {}) not found",
+            key.src.ns_id(),
+            key.predicate,
+            key.dst.ns_id()
+        )
     }
 
     /// The predicate's id if some edge ever carried it — no allocation.
@@ -327,36 +415,65 @@ impl<S: VirtualStorage> Graph<S> {
     /// The dynamic segment is REPLACED, not merged: the entry is written with
     /// this edge's attributes, so an assertion that dropped an attribute cannot
     /// leave the old frame behind.
+    ///
+    /// Answers the caller's tuple (endpoints as given), while the rows are keyed
+    /// by the handles the write issued — [`write_row_into`](Self::write_row_into)
+    /// is the row-shaped form a cluster plan needs.
     pub(crate) fn write_into(
         &mut self,
         batch: &mut Batch,
         edge: &DynEdge,
     ) -> Result<EdgeKey, String> {
+        let row = self.write_row_into(batch, edge)?;
+        Ok(EdgeKey {
+            src: edge.src.clone(),
+            predicate: row.predicate,
+            dst: edge.dst.clone(),
+        })
+    }
+
+    /// The same write, answering the ROW identity the faces were keyed by — both
+    /// endpoints issued (or re-read) through the caller's batch, so the probe
+    /// sees a handle this fragment already wrote (no second row) and a refused
+    /// fragment leaves no handle behind (ADR-0067). Each endpoint costs one
+    /// registry probe per write; a fragment that repeats a node pays that probe
+    /// per edge, never a second allocation.
+    pub(crate) fn write_row_into(
+        &mut self,
+        batch: &mut Batch,
+        edge: &DynEdge,
+    ) -> Result<HandleKey, String> {
         self.check_endpoint("src", &edge.src)?;
         self.check_endpoint("dst", &edge.dst)?;
         let predicate = self.predicate_vocab_id(&edge.predicate)?;
-        let key = EdgeKey {
-            src: edge.src.clone(),
-            predicate,
-            dst: edge.dst.clone(),
-        };
         let attr_wire = self.attrs_wire(&edge.attrs)?;
         let payload = Self::empty_payload();
+        // Identity lives in the registry, and the issue rides THIS batch: the
+        // probe reads through it, so the second endpoint of a repeated node is
+        // the handle the first one already wrote.
+        let registry = self.handles();
+        let src = registry
+            .issue_into(batch, &edge.src)
+            .map_err(|e| e.to_string())?;
+        let dst = registry
+            .issue_into(batch, &edge.dst)
+            .map_err(|e| e.to_string())?;
+        let row = HandleKey::new(src, predicate, dst);
 
         // 0x06 IS the edge: its value is the payload, so the traversal row and
         // the row are one write (ADR-0067).
-        batch.put(self.out_key(&key), payload);
-        batch.put(self.in_key(&key), Vec::new());
-        batch.put(self.predicate_out_key(&key), Vec::new());
-        batch.put(self.predicate_in_key(&key), Vec::new());
+        batch.put(self.out_key(&row), payload);
+        batch.put(self.in_key(&row), Vec::new());
+        batch.put(self.predicate_out_key(&row), Vec::new());
+        batch.put(self.predicate_in_key(&row), Vec::new());
         // Open attributes ride the dynamic segment, one entry per edge, keyed by
-        // the same tuple: the put is unconditional and therefore a REPLACE, so a
-        // re-assertion overwrites the previous frame list instead of merging into
-        // it.
+        // the same row identity: the put is unconditional and therefore a
+        // REPLACE, so a re-assertion overwrites the previous frame list instead
+        // of merging into it.
         if attr_wire.is_empty() {
-            batch.del(&self.fields_key(&key));
+            batch.del(&self.fields_key(&row));
         } else {
-            batch.put(self.fields_key(&key), attr_wire);
+            batch.put(self.fields_key(&row), attr_wire);
         }
         // Vocabulary growth on THIS path commits immediately (`id_for` writes
         // through the real store, not the caller's batch), so every pending id
@@ -364,7 +481,7 @@ impl<S: VirtualStorage> Graph<S> {
         // pays a probe per name for the rest of the handle's life.
         self.predicates.landed_all();
         self.fields.landed_all();
-        Ok(key)
+        Ok(row)
     }
 
     /// Remove one edge: the identity is the key, so every face is re-derived
@@ -381,29 +498,39 @@ impl<S: VirtualStorage> Graph<S> {
     /// `retract` needs, because an edge's rows and the membership rows that
     /// name it leave in ONE commit.
     pub(crate) fn unlink_into(&mut self, batch: &mut Batch, key: &EdgeKey) -> Result<(), String> {
-        let out = self.out_key(key);
-        if self.store.get(&out).map_err(|e| e.to_string())?.is_none() {
-            return Err(format!(
-                "unlink: edge (src ns {}, predicate {}, dst ns {}) not found",
-                key.src.ns_id(),
-                key.predicate,
-                key.dst.ns_id()
-            ));
+        let Some(row) = self.row_of(key)? else {
+            return Err(Self::not_found(key));
+        };
+        if !self.has_row(&row)? {
+            return Err(Self::not_found(key));
         }
-        batch.del(&out);
-        batch.del(&self.in_key(key));
-        batch.del(&self.predicate_out_key(key));
-        batch.del(&self.predicate_in_key(key));
-        batch.del(&self.fields_key(key));
+        self.purge_row_into(batch, &row);
         Ok(())
     }
 
-    /// Fetch one edge, decoded: endpoints from the identity, predicate resolved
-    /// to its name, attributes from the dynamic segment.
+    /// The delete stated as the ROW it is: every face re-derived from the
+    /// eighteen bytes, nothing resolved. The encoding half of
+    /// [`unlink_into`](Self::unlink_into) — `retract` holds rows (it read them
+    /// in handle space), so this is the form that takes one.
+    pub(crate) fn purge_row_into(&self, batch: &mut Batch, row: &HandleKey) {
+        batch.del(&self.out_key(row));
+        batch.del(&self.in_key(row));
+        batch.del(&self.predicate_out_key(row));
+        batch.del(&self.predicate_in_key(row));
+        batch.del(&self.fields_key(row));
+    }
+
+    /// Fetch one edge, decoded: endpoints from the caller's tuple, predicate
+    /// resolved to its name, attributes from the dynamic segment. The row is
+    /// resolved once, at the boundary — a tuple naming an endpoint the graph
+    /// never saw has no row to read.
     pub fn get_edge(&mut self, key: &EdgeKey) -> Result<Option<DynEdge>, String> {
+        let Some(row) = self.row_of(key)? else {
+            return Ok(None);
+        };
         if self
             .store
-            .get(&self.out_key(key))
+            .get(&self.out_key(&row))
             .map_err(|e| e.to_string())?
             .is_none()
         {
@@ -416,7 +543,7 @@ impl<S: VirtualStorage> Graph<S> {
         };
         let attrs = match self
             .store
-            .get(&self.fields_key(key))
+            .get(&self.fields_key(&row))
             .map_err(|e| e.to_string())?
         {
             Some(wire) => self.attrs_from(&wire)?,
@@ -430,101 +557,81 @@ impl<S: VirtualStorage> Graph<S> {
         }))
     }
 
-    /// Out-edges of one node (0x06): each entry's suffix is `[predicate][dst]`.
+    /// Out-edges of one node (0x06): each entry's suffix is `[predicate][dst_h]`,
+    /// exactly ten bytes — the far endpoint comes off the key (ADR-0067). The
+    /// rows are resolved at the boundary, in ONE registry scan.
     pub fn out_edges(&self, src: &NodeRef) -> Result<Vec<EdgeKey>, String> {
-        let mut prefix = self.face_key(EDGE_OUT_SLOT, &[]);
-        src.write(&mut prefix);
-        let mut out = Vec::new();
-        for (suffix, _) in scan_suffix_kv(&self.store, &prefix).map_err(|e| e.to_string())? {
-            if suffix.len() < 2 {
-                continue;
+        let Some(near) = self.handles().handle_of(src).map_err(|e| e.to_string())? else {
+            // A node the graph never saw as an endpoint has no out face.
+            return Ok(Vec::new());
+        };
+        let mut rows = Vec::new();
+        for (suffix, _) in scan_suffix_kv(&self.store, &out_prefix(&self.ns_pair(), near))
+            .map_err(|e| e.to_string())?
+        {
+            if let Some((predicate, far)) = parse_predicate_far(&suffix) {
+                rows.push(HandleKey::new(near, predicate, far));
             }
-            let predicate = u16::from_be_bytes([suffix[0], suffix[1]]);
-            let Some((dst, taken)) = NodeRef::parse(&suffix[2..], &self.members) else {
-                continue;
-            };
-            if taken + 2 != suffix.len() {
-                continue;
-            }
-            out.push(EdgeKey {
-                src: src.clone(),
-                predicate,
-                dst,
-            });
         }
-        Ok(out)
+        self.edges_from_rows(rows)
     }
 
-    /// In-edges of one node (0x07): each entry's suffix is `[predicate][src]`.
+    /// In-edges of one node (0x07): the face states `[predicate][src_h]`.
     pub fn in_edges(&self, dst: &NodeRef) -> Result<Vec<EdgeKey>, String> {
-        let mut prefix = self.face_key(EDGE_IN_SLOT, &[]);
-        dst.write(&mut prefix);
-        let mut out = Vec::new();
-        for (suffix, _) in scan_suffix_kv(&self.store, &prefix).map_err(|e| e.to_string())? {
-            if suffix.len() < 2 {
-                continue;
+        let Some(near) = self.handles().handle_of(dst).map_err(|e| e.to_string())? else {
+            return Ok(Vec::new());
+        };
+        let mut rows = Vec::new();
+        for (suffix, _) in scan_suffix_kv(&self.store, &in_prefix(&self.ns_pair(), near))
+            .map_err(|e| e.to_string())?
+        {
+            if let Some((predicate, far)) = parse_predicate_far(&suffix) {
+                rows.push(HandleKey::new(far, predicate, near));
             }
-            let predicate = u16::from_be_bytes([suffix[0], suffix[1]]);
-            let Some((src, taken)) = NodeRef::parse(&suffix[2..], &self.members) else {
-                continue;
-            };
-            if taken + 2 != suffix.len() {
-                continue;
-            }
-            out.push(EdgeKey {
-                src,
-                predicate,
-                dst: dst.clone(),
-            });
         }
-        Ok(out)
+        self.edges_from_rows(rows)
     }
 
     /// Predicate-qualified traversal (0x08/0x09): unknown predicates scan
-    /// empty (no face).
+    /// empty (no face), and a node with no handle has no face either.
     fn typed_edges(
         &mut self,
-        slot: u16,
+        dir: Direction,
         predicate: &str,
         node: &NodeRef,
     ) -> Result<Vec<EdgeKey>, String> {
         let Some(predicate_id) = self.predicate_vocab_lookup(predicate)? else {
             return Ok(Vec::new());
         };
-        let mut prefix = self.face_key(slot, &[&predicate_id.to_be_bytes()]);
-        node.write(&mut prefix);
-        let mut out = Vec::new();
+        let Some(near) = self.handles().handle_of(node).map_err(|e| e.to_string())? else {
+            return Ok(Vec::new());
+        };
+        let ns = self.ns_pair();
+        let prefix = match dir {
+            Direction::Out => predicate_out_prefix(&ns, predicate_id, near),
+            Direction::In => predicate_in_prefix(&ns, predicate_id, near),
+        };
+        let mut rows = Vec::new();
         for (suffix, _) in scan_suffix_kv(&self.store, &prefix).map_err(|e| e.to_string())? {
-            let Some((far, taken)) = NodeRef::parse(&suffix, &self.members) else {
+            let Some(far) = Handle::parse(&suffix) else {
                 continue;
             };
-            if taken != suffix.len() {
-                continue;
-            }
-            out.push(match slot {
-                EDGE_PREDICATE_OUT_SLOT => EdgeKey {
-                    src: node.clone(),
-                    predicate: predicate_id,
-                    dst: far,
-                },
-                _ => EdgeKey {
-                    src: far,
-                    predicate: predicate_id,
-                    dst: node.clone(),
-                },
+            rows.push(match dir {
+                Direction::Out => HandleKey::new(near, predicate_id, far),
+                Direction::In => HandleKey::new(far, predicate_id, near),
             });
         }
-        Ok(out)
+        self.edges_from_rows(rows)
     }
 
     /// Predicate-qualified out-edges (0x08).
     pub fn typed_out(&mut self, predicate: &str, src: &NodeRef) -> Result<Vec<EdgeKey>, String> {
-        self.typed_edges(EDGE_PREDICATE_OUT_SLOT, predicate, src)
+        self.typed_edges(Direction::Out, predicate, src)
     }
 
     /// Predicate-qualified in-edges (0x09).
     pub fn typed_in(&mut self, predicate: &str, dst: &NodeRef) -> Result<Vec<EdgeKey>, String> {
-        self.typed_edges(EDGE_PREDICATE_IN_SLOT, predicate, dst)
+        self.typed_edges(Direction::In, predicate, dst)
     }
 
     /// Edges from one node to another, whatever the predicate. The predicate
@@ -563,38 +670,38 @@ impl<S: VirtualStorage> Graph<S> {
             predicate: predicate_id,
             dst: dst.clone(),
         };
+        let Some(row) = self.row_of(&key)? else {
+            // Neither endpoint ever appeared: no row can carry the tuple.
+            return Ok(None);
+        };
         Ok(self
             .store
-            .get(&self.out_key(&key))
+            .get(&self.out_key(&row))
             .map_err(|e| e.to_string())?
             .map(|_| key))
     }
 
     /// All edges of one predicate (0x08's bare `[predicate]` prefix) — the
-    /// `MATCH ()-[r:has]->()` entry.
+    /// `MATCH ()-[r:has]->()` entry. Each suffix is `[src_h][dst_h]`, sixteen
+    /// bytes, so nothing is parsed by declaration width.
     pub fn edges_of_predicate(&mut self, predicate: &str) -> Result<Vec<EdgeKey>, String> {
         let Some(predicate_id) = self.predicate_vocab_lookup(predicate)? else {
             return Ok(Vec::new());
         };
-        let prefix = self.face_key(EDGE_PREDICATE_OUT_SLOT, &[&predicate_id.to_be_bytes()]);
-        let mut out = Vec::new();
+        let mut prefix = face_key(&self.ns_pair(), EDGE_PREDICATE_OUT_SLOT);
+        prefix.extend_from_slice(&predicate_id.to_be_bytes());
+        let mut rows = Vec::new();
         for (suffix, _) in scan_suffix_kv(&self.store, &prefix).map_err(|e| e.to_string())? {
-            let Some((src, n1)) = NodeRef::parse(&suffix, &self.members) else {
-                continue;
-            };
-            let Some((dst, n2)) = NodeRef::parse(&suffix[n1..], &self.members) else {
-                continue;
-            };
-            if n1 + n2 != suffix.len() {
+            if suffix.len() != 16 {
                 continue;
             }
-            out.push(EdgeKey {
-                src,
-                predicate: predicate_id,
-                dst,
-            });
+            let (Some(src), Some(dst)) = (Handle::parse(&suffix[..8]), Handle::parse(&suffix[8..]))
+            else {
+                continue;
+            };
+            rows.push(HandleKey::new(src, predicate_id, dst));
         }
-        Ok(out)
+        self.edges_from_rows(rows)
     }
 
     /// Every predicate this graph has, id-ordered: one 0x04 prefix scan.
@@ -650,25 +757,13 @@ impl<S: VirtualStorage> Graph<S> {
     /// it, because an [`Iterator`] has no place to put one and a corrupt face
     /// must not read as "no more neighbours".
     pub fn out(&self, node: &NodeRef) -> DynEdgeStream<'_, S> {
-        DynEdgeStream::new(
-            &self.store,
-            &self.members,
-            self.ns_pair(),
-            Direction::Out,
-            node.clone(),
-        )
+        DynEdgeStream::new(&self.store, self.ns_pair(), Direction::Out, node.clone())
     }
 
     /// The in-edges of one node as the same [`DynEdgeStream`] over face 0x07 —
     /// [`out`](Self::out) with the direction as its only difference.
     pub fn inn(&self, node: &NodeRef) -> DynEdgeStream<'_, S> {
-        DynEdgeStream::new(
-            &self.store,
-            &self.members,
-            self.ns_pair(),
-            Direction::In,
-            node.clone(),
-        )
+        DynEdgeStream::new(&self.store, self.ns_pair(), Direction::In, node.clone())
     }
 
     /// One hop out of `node` — the chainable spelling of [`out`](Self::out):
@@ -696,10 +791,10 @@ impl<S: VirtualStorage> Graph<S> {
 ///   entry ahead of what it was given, and dropping the stream stops the scan
 ///   where it stands.
 /// - **Ordered by entry key.** The key is `[ns][slot][scanned prefix][far
-///   ref]`, i.e. the far endpoint's byte order — the address order of the face,
-///   not an insertion order. That is what makes it a
-///   [`Seekable`](okm_core::seek::Seekable), and what makes two streams over the
-///   same face alignable by `okm-query`'s operators.
+///   handle]`, i.e. the far endpoint's handle order — the address order of the
+///   face, not an insertion order (issue order is not a key order, ADR-0067).
+///   That is what makes it a [`Seekable`](okm_core::seek::Seekable), and what
+///   makes two streams over the same face alignable by `okm-query`'s operators.
 /// - **Cycle-unaware.** The stream answers one node's edges and stops. "The
 ///   same node" depends on the caller's own filter, so a visited set here would
 ///   price every walk for a question only the caller can ask.
@@ -707,15 +802,17 @@ pub struct DynEdgeStream<'a, S> {
     /// The engine the face lives in — re-read by [`by`](Self::by), which
     /// reopens the scan on another face.
     store: &'a S,
-    /// The declaration's width table: how a suffix becomes a ref.
-    members: &'a Members,
     /// The graph's namespace, as the two header bytes every key starts with.
     ns: [u8; 2],
     /// Which face family this stream walks.
     dir: Direction,
-    /// The node the walk started from: the scanned prefix, and the `near` side
-    /// of every head the stream reports.
+    /// The node the walk started from: the `near` side of every head the stream
+    /// reports.
     node: NodeRef,
+    /// That node's HANDLE — the scanned prefix, resolved ONCE at the open
+    /// (ADR-0067). [`Handle::NONE`] when the graph never saw the node as an
+    /// endpoint, which is an empty walk, not a fault.
+    handle: Handle,
     /// The pushed-down predicate id, or `None` for the untyped face.
     filter: Option<u16>,
     /// The face cursor. `None` means this stream is SPENT before its first
@@ -730,27 +827,37 @@ pub struct DynEdgeStream<'a, S> {
 }
 
 impl<'a, S: VirtualStorage> DynEdgeStream<'a, S> {
-    fn new(store: &'a S, members: &'a Members, ns: [u8; 2], dir: Direction, node: NodeRef) -> Self {
+    fn new(store: &'a S, ns: [u8; 2], dir: Direction, node: NodeRef) -> Self {
         let mut stream = Self {
             store,
-            members,
             ns,
             dir,
             node,
+            handle: Handle::NONE,
             filter: None,
             scan: None,
             suffix_at: 0,
             cur: None,
             err: None,
         };
-        stream.reopen(None);
+        // ONE resolution per walk, here at the open: the face is keyed by the
+        // node's handle, and a node the graph never saw has no face at all (an
+        // empty walk, not a fault — nothing names it).
+        match Handles::new(store, ns).handle_of(&stream.node) {
+            Ok(Some(handle)) => {
+                stream.handle = handle;
+                stream.reopen(None);
+            }
+            Ok(None) => {}
+            Err(e) => stream.err = Some(e.to_string()),
+        }
         stream
     }
 
     /// Where this stream walks — the face family, the pushed-down filter and
     /// the node it was opened on.
     fn prefix(&self) -> Vec<u8> {
-        edge_face_prefix(self.ns, self.dir, self.filter, &self.node)
+        edge_face_prefix(self.ns, self.dir, self.filter, self.handle)
     }
 
     /// Point the cursor at (possibly) another face and re-fill it.
@@ -771,8 +878,8 @@ impl<'a, S: VirtualStorage> DynEdgeStream<'a, S> {
 
     /// Put the next decodable entry on top, or clear it when the face ends.
     ///
-    /// An entry whose key this face cannot carry (a suffix that does not parse
-    /// by the declared widths, or one with bytes left over) is SKIPPED rather
+    /// An entry whose key this face cannot carry (a suffix that is not a
+    /// predicate-plus-handle pair, or one of another width) is SKIPPED rather
     /// than guessed at — the entry belongs to some other layout.
     fn fill(&mut self) {
         self.cur = None;
@@ -789,14 +896,9 @@ impl<'a, S: VirtualStorage> DynEdgeStream<'a, S> {
                     return;
                 }
                 Some(Ok((key, _))) => {
-                    if let Some(step) = edge_step(
-                        &key,
-                        self.suffix_at,
-                        self.dir,
-                        &self.node,
-                        self.filter,
-                        self.members,
-                    ) {
+                    if let Some(step) =
+                        edge_step(&key, self.suffix_at, self.dir, self.handle, self.filter)
+                    {
                         self.cur = Some((key, step));
                         return;
                     }
@@ -919,56 +1021,51 @@ pub fn edge_step(
     key: &[u8],
     suffix_at: usize,
     dir: Direction,
-    node: &NodeRef,
+    handle: Handle,
     filter: Option<u16>,
-    members: &Members,
 ) -> Option<EdgeStep> {
     let suffix = key.get(suffix_at..)?;
-    let (predicate, rest) = match filter {
+    let (predicate, far) = match filter {
         // A qualified face consumed the predicate in the scanned prefix.
-        Some(id) => (id, suffix),
-        None => {
-            if suffix.len() < 2 {
-                return None;
-            }
-            (u16::from_be_bytes([suffix[0], suffix[1]]), &suffix[2..])
-        }
+        Some(id) => (id, Handle::parse(suffix)?),
+        // The unqualified faces put it right after the near endpoint, and the
+        // pair is exactly ten bytes.
+        None => parse_predicate_far(suffix)?,
     };
-    let (far, taken) = NodeRef::parse(rest, members)?;
-    if taken != rest.len() {
-        return None;
-    }
-    let (src, dst) = match dir {
-        Direction::Out => (node.clone(), far.clone()),
-        Direction::In => (far.clone(), node.clone()),
+    let (src_handle, dst_handle) = match dir {
+        Direction::Out => (handle, far),
+        Direction::In => (far, handle),
     };
     Some(EdgeStep {
-        far,
+        far_handle: far,
         head: HopHead {
-            src,
-            dst,
+            src_handle,
+            dst_handle,
             predicate,
         },
     })
 }
 
-/// The scan prefix one node's walk opens on: `[ns][slot][predicate?][node ref]`,
+/// The scan prefix one node's walk opens on: `[ns][slot][predicate?][near_h]`,
 /// where the slot is the face family the direction (and the pushed-down
 /// predicate) selects. The counterpart of [`edge_step`] for the other half of
 /// the layout: reading where a walk starts, not what an entry means.
+///
+/// The near side is a HANDLE, not a [`NodeRef`]: the faces are keyed by the
+/// graph's own numbering (ADR-0067), and a caller that only holds one resolves
+/// it through the registry before it opens a walk.
 pub fn edge_face_prefix(
     ns: [u8; 2],
     dir: Direction,
     filter: Option<u16>,
-    node: &NodeRef,
+    handle: Handle,
 ) -> Vec<u8> {
-    let mut prefix = ns.to_vec();
-    okm_core::write_slot(&mut prefix, dir.slot(filter));
-    if let Some(id) = filter {
-        prefix.extend_from_slice(&id.to_be_bytes());
+    match (dir, filter) {
+        (Direction::Out, None) => out_prefix(&ns, handle),
+        (Direction::In, None) => in_prefix(&ns, handle),
+        (Direction::Out, Some(id)) => predicate_out_prefix(&ns, id, handle),
+        (Direction::In, Some(id)) => predicate_in_prefix(&ns, id, handle),
     }
-    node.write(&mut prefix);
-    prefix
 }
 
 /// The predicate's id, read-only: a throwaway vocabulary cache over a shared

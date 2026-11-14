@@ -145,16 +145,18 @@ fn head(src: NodeRef, dst: NodeRef, predicate: &str) -> EdgeHead {
 }
 
 /// The edge set IS the identities (ADR-0067): a listing is one scan of `0x06`,
-/// in key order, with no counter anyone has to keep in sync — and no number to
-/// reserve for a caller's next write.
+/// in the face's own order — the source's handle, then the destination's — with
+/// no counter anyone has to keep in sync and no number to reserve for a
+/// caller's next write.
 #[test]
-fn the_edge_set_is_the_identities_in_key_order() {
+fn the_edge_set_is_the_identities_in_handle_order() {
     let store = okm_async::TestStore::slatedb_mem();
     let mut g: Graph<_, Employment> = Graph::new(store);
     assert!(g.edges().unwrap().is_empty(), "an empty graph has no edges");
 
-    // Linked OUT OF ORDER (dst 9, 11, 7): the answer is key order, not write
-    // order — the tuple is the position.
+    // Linked dst 9, 11, 7: the answer is the HANDLE order the faces are keyed
+    // by — the order the endpoints were first issued in — not the pkey's byte
+    // order and not an insertion order either.
     for (id, year) in [(9u64, 2019u16), (11, 2020), (7, 2021)] {
         link(
             &mut g,
@@ -166,21 +168,21 @@ fn the_edge_set_is_the_identities_in_key_order() {
         )
         .unwrap();
     }
-    let in_key_order: Vec<EdgeKey> = [7u64, 9, 11]
+    let in_handle_order: Vec<EdgeKey> = [9u64, 11, 7]
         .iter()
         .map(|id| key(&g, "employs", user(1), org(*id)))
         .collect();
-    assert_eq!(g.edges().unwrap(), in_key_order);
+    assert_eq!(g.edges().unwrap(), in_handle_order);
     // The exhaustive read agrees with the face that answers a traversal.
-    assert_eq!(g.out_edges(&user(1)).unwrap(), in_key_order);
+    assert_eq!(g.out_edges(&user(1)).unwrap(), in_handle_order);
 
     // Unlinking one removes exactly its own identity: the set is a read of the
     // rows, not a number space with a watermark.
     unlink(&mut g, head(user(1), org(11), "employs")).unwrap();
     assert_eq!(
         g.edges().unwrap(),
-        vec![in_key_order[0].clone(), in_key_order[1].clone()],
-        "the dst-11 row is gone; the dst-7 and dst-9 rows stand"
+        vec![in_handle_order[0].clone(), in_handle_order[2].clone()],
+        "the dst-11 row is gone; the dst-9 and dst-7 rows stand"
     );
 }
 
@@ -715,7 +717,9 @@ fn noderef_is_two_ns_bytes_and_the_bare_key() {
 fn hex_lock_one_link() {
     // Byte-level lock of one link (ns 100, predicate "employs" → id 0,
     // user(1)→org(9), payload {since_year: 2020, weight: 0}). The tuple IS the
-    // row: `0x06` carries the payload and there is no numbered primary row.
+    // row: `0x06` carries the payload and there is no numbered primary row. The
+    // row is FIXED WIDTH — `[src_h 8][pred 2][dst_h 8]` — so every face of the
+    // edge is the same eighteen bytes and no face needs a width to cut it.
     let store = okm_async::TestStore::slatedb_mem();
     let mut g: Graph<_, Employment> = Graph::new(store.clone());
     let attrs = Employment {
@@ -731,10 +735,48 @@ fn hex_lock_one_link() {
         v
     };
     let pid = 0u16.to_be_bytes().to_vec();
-    let src = user(1).wire();
-    let dst = org(9).wire();
-    assert_eq!(src.len(), 10, "[ns 2B][pkey 8B]");
-    assert_eq!(dst.len(), 10);
+    // The endpoints' HANDLES are what the faces are keyed by (ADR-0067): the
+    // registry issued them, the traversals never resolve one, and eight bytes
+    // is the whole reference — no ns, no width table, no length.
+    let src_h = g
+        .handles()
+        .handle_of(&user(1))
+        .unwrap()
+        .expect("user(1) is an endpoint, so it has a handle");
+    let dst_h = g
+        .handles()
+        .handle_of(&org(9))
+        .unwrap()
+        .expect("org(9) is an endpoint, so it has a handle");
+    let src = src_h.wire();
+    let dst = dst_h.wire();
+    assert_eq!(src.len(), 8, "a handle is eight bytes");
+    assert_eq!(dst.len(), 8);
+    assert_ne!(src_h, dst_h, "two endpoints, two handles");
+
+    // The registry lives in family `0xF`: `0xF000` names a handle's node,
+    // `0xF001` names a node's handle. It is the ONLY face that still holds a
+    // ref — everything else speaks the number.
+    let mut fwd = ns.to_vec();
+    okm_core::write_slot(&mut fwd, okm_core::HANDLE_NODE_SLOT);
+    fwd.extend_from_slice(&src);
+    assert_eq!(
+        store.get(&fwd).unwrap(),
+        Some(user(1).wire()),
+        "handle → node"
+    );
+    let mut rev = ns.to_vec();
+    okm_core::write_slot(&mut rev, okm_core::NODE_HANDLE_SLOT);
+    rev.extend_from_slice(&user(1).wire());
+    assert_eq!(store.get(&rev).unwrap(), Some(src.clone()), "node → handle");
+    assert_eq!(
+        (
+            okm_core::HANDLE_NODE_SLOT >> 12,
+            okm_core::NODE_HANDLE_SLOT >> 12
+        ),
+        (0xF, 0xF),
+        "both registry faces sit in family 0xF"
+    );
 
     // The payload is the same two-segment obj a document row carries, and it has
     // no header (ADR-0042 as amended): [hot segment][cold TLV] — since_year u16
@@ -745,7 +787,7 @@ fn hex_lock_one_link() {
         v.extend_from_slice(&0u32.to_be_bytes());
         v
     };
-    // 0x06 = [ns][0x06][src][pred][dst] → the payload. One row, no id anywhere.
+    // 0x06 = [ns][0x06][src_h][pred][dst_h] → the payload. One row, no id.
     assert_eq!(
         store
             .get(
@@ -807,49 +849,44 @@ fn hex_lock_one_link() {
             .is_some(),
         "predicate name → id"
     );
-    // Every face spells the tuple: 0x06 `[src][pred][dst]`, 0x07 the mirrored
+    // Every face spells the row: 0x06 `[src][pred][dst]`, 0x07 the mirrored
     // `[dst][pred][src]`, 0x08 `[pred][src][dst]`, 0x09 `[pred][dst][src]`.
-    assert!(
-        store
-            .get(&cat(&[
+    // The three derived ones carry nothing (the key states everything).
+    for (label, face) in [
+        ("in", 0x07u16),
+        ("predicate+out", 0x08),
+        ("predicate+in", 0x09),
+    ] {
+        let key = if face == 0x07 {
+            [
                 ns.to_vec(),
-                slot(0x07),
+                slot(face),
                 dst.clone(),
-                pid.clone(),
-                src.clone()
-            ]))
-            .unwrap()
-            .is_some(),
-        "in"
-    );
-    assert!(
-        store
-            .get(&cat(&[
-                ns.to_vec(),
-                slot(0x08),
                 pid.clone(),
                 src.clone(),
-                dst.clone()
-            ]))
-            .unwrap()
-            .is_some(),
-        "predicate+out"
-    );
-    assert!(
-        store
-            .get(&cat(&[
-                ns.to_vec(),
-                slot(0x09),
-                pid.clone(),
-                dst.clone(),
-                src.clone()
-            ]))
-            .unwrap()
-            .is_some(),
-        "predicate+in"
-    );
+            ]
+            .concat()
+        } else {
+            let (near, far) = if face == 0x08 {
+                (src.clone(), dst.clone())
+            } else {
+                (dst.clone(), src.clone())
+            };
+            [ns.to_vec(), slot(face), pid.clone(), near, far].concat()
+        };
+        assert_eq!(
+            store.get(&key).unwrap(),
+            Some(Vec::new()),
+            "{label}: the key states the head, the row is empty"
+        );
+    }
     // A head that differs in ONE byte is a different row — there is no number
-    // space for a second edge to collide in.
+    // space for a second edge to collide in. `org(8)` is a node the graph never
+    // saw, so it has no handle at all; the probe spells its handle as absent.
+    assert!(
+        g.handles().handle_of(&org(8)).unwrap().is_none(),
+        "an endpoint no edge named was never issued a handle"
+    );
     assert!(
         store
             .get(&cat(&[
@@ -857,7 +894,7 @@ fn hex_lock_one_link() {
                 slot(0x06),
                 src.clone(),
                 pid.clone(),
-                org(8).wire()
+                0u64.to_be_bytes().to_vec()
             ]))
             .unwrap()
             .is_none(),
@@ -885,9 +922,9 @@ fn hex_lock_one_link() {
         <__OkmIndex_Employment_by_since as okm_core::KvIndex>::SLOT,
     );
     face.extend_from_slice(&2020u16.to_be_bytes());
-    face.extend_from_slice(&src);
+    face.extend_from_slice(&user(1).wire());
     face.extend_from_slice(&pid);
-    face.extend_from_slice(&dst);
+    face.extend_from_slice(&org(9).wire());
     assert_eq!(face.len(), 2 + 2 + 2 + 10 + 2 + 10);
     assert!(
         store.get(&face).unwrap().is_some(),
