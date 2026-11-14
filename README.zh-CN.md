@@ -330,7 +330,7 @@ struct Employment {
 }
 ```
 
-写只有一个动词，碎片（`Fragment`）是它唯一的输入：声明里收节点与边，链上可选的簇与三个 reduce，`None` 的部分就是不做。
+写只有一个动词，碎片（`Fragment`）是它唯一的输入：声明里收节点与边，链上可选的簇与三个冲突钩子，`None` 的部分就是不做。
 
 ```rust
 let mut x = Fragment::<Employment>::new([
@@ -338,11 +338,17 @@ let mut x = Fragment::<Employment>::new([
     Decl::Edge(EdgeHead { src, dst, predicate: "employs".into() }),
 ]);
 x.cluster(Cluster::new(Kind::EVENT, payload))            // 成簇（可选）
- .reduce_node::<User>(|u| u.seen += 1)                   // 更新走 reduce
- .reduce_edge(|e| e.weight += 1)
- .reduce_cluster(|c| c.insert("weight", …));
-graph.incorporate(x)?;                                   // 一批落地：端点、边、成员行、reduce
+ .on_node_conflict::<User>(|old, _declared| User { seen: old.seen + 1 })   // 更新走钩子
+ .on_edge_conflict(|_stored, declared| Employment { weight: declared.weight + 1 })
+ .on_cluster_conflict(|_stored, declared| {
+     let mut row = declared.clone();
+     row.insert("weight", …);
+     row
+ });
+graph.incorporate(x)?;                                   // 一批落地：端点、边、成员行、钩子
 ```
+
+每个钩子拿到**已存**载荷与**声明**载荷，回答要写入的那一行——`|old, _| old.clone()` 保留旧值，`|_, declared| declared.clone()` 直接覆盖，`|old, declared| if declared.ts >= old.ts { declared.clone() } else { old.clone() }` 是「新者胜」；后一条是就地改写形态说不出来的规则，因为回调从来见不到进来的那个值。
 
 删除是反向动词，两条规则不同：删节点连带删它的所有边（一条边不能缺一端），删边保留两端（之后它们可能不再连任何边——"节点只在成为端点时存在"是写入前提，不是删除后的不变量）。
 
@@ -356,11 +362,11 @@ graph.retract(Fragment::new([]).delete_node(user_key).delete_edge(7))?;
 
 ### 5. 跨表原子写：一个碎片，一次提交
 
-`Fragment` 就是跨表写的载体：同一批里的节点、边、成员行、reduce 一起提交或一起不提交。没有跨表事务语言、也没有级联机制——一致性靠"一个碎片 = 一次提交"，以及写入口强制的两条前提（节点必须是某条边的端点，簇至少两个成员）。
+`Fragment` 就是跨表写的载体：同一批里的节点、边、成员行、冲突钩子一起提交或一起不提交。没有跨表事务语言、也没有级联机制——一致性靠"一个碎片 = 一次提交"，以及写入口强制的两条前提（节点必须是某条边的端点，簇至少两个成员）。
 
 ```rust
 let mut x = Fragment::<Employment>::new([Decl::edge_at(head, 7)]);  // 同一 id 重述 = 就地更新
-x.reduce_edge(|e| *e = new_payload);
+x.on_edge_conflict(|_stored, _declared| new_payload.clone());
 graph.incorporate(x)?;                                              // id、面、成员行都不动
 ```
 

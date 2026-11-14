@@ -819,10 +819,14 @@ let mut x = Fragment::<Employment>::new([
     }),
 ]);
 x.cluster(Cluster::new(Kind::EVENT, payload))   // None 新建，Cluster::into(id) 并入
- .reduce_node::<User>(|u| u.seen += 1)
- .reduce_edge(|e| e.weight += 1)
- .reduce_cluster(|c| c.insert("weight", …));
-graph.incorporate(x).unwrap();                  // 端点、边、成员行、三个 reduce
+ .on_node_conflict::<User>(|old, _declared| User { seen: old.seen + 1 })
+ .on_edge_conflict(|_stored, declared| Employment { weight: declared.weight + 1 })
+ .on_cluster_conflict(|_stored, declared| {
+     let mut row = declared.clone();
+     row.insert("weight", …);
+     row
+ });
+graph.incorporate(x).unwrap();                  // 端点、边、成员行、三个冲突钩子
 
 // 声明之后的一切都是可选的：碎片只有声明，就只写节点与边
 graph.incorporate(Fragment::new([Decl::Node(EmploymentNode::User, user1_key)]));
@@ -889,11 +893,34 @@ let colleagues = graph.walk(&user).flat_map(|step| graph.walk(&step.far));
 
 写入口不新增声明种类：
 
-写入口与边同一个碎片：把节点与边攒成一个碎片，再交给图——`x.cluster(Cluster::new(kind, payload))` 建簇（`Cluster::into(id)` 并入已有簇），`reduce_cluster` 是簇载荷的 reduce，三者与边的写法、节点与边的声明都在同一批里落地，而声明之后的一切都是可选的（只有声明就只写节点与边）。`Decl` 只有两个变体，节点种类来自 `#[ok_nodes(..)]` 生成的枚举；成员加入幂等。其余操作复用同一行型：`remove`、`incorporate(sources, into)`、`split`、`reassign`、`lookup`、`members`、`children`、`diff`。
+写入口与边同一个碎片：把节点与边攒成一个碎片，再交给图——`x.cluster(Cluster::new(kind, payload))` 建簇（`Cluster::into(id)` 并入已有簇），三个冲突钩子在同一批里落地，而声明之后的一切都是可选的（只有声明就只写节点与边）。每个钩子拿到**已存**载荷与**声明**载荷，回答要写入的那一行，所以「保留旧值」「直接覆盖」「取更大的 stamp」各自是一个表达式，而不是去改一个回调看不见的新值。`Decl` 只有两个变体，节点种类来自 `#[ok_nodes(..)]` 生成的枚举；成员加入幂等。其余操作复用同一行型：`remove`、`incorporate(sources, into)`、`split`、`reassign`、`lookup`、`members`、`children`、`diff`。
 
 `0x0D` 是同一次成员关系反过来读：`0x0B` 答"这个簇里有谁"，`0x0D` 答"这条边在哪些簇里"。没有它，第二个问题只能靠扫该 kind 的全部成员行做后缀匹配——每次收回一次还好，每次遍历一跳都这么做就不行；而边号领衔让它的条目按边号流本来就有的顺序排，于是"这些节点指向的边中，哪些是 C 的成员"是两条有序流之间的一次求交（`graph.clusters_of` 对一个成员游标），而不是调用方先攒一个集合。`member_of(kind, 簇, 边)` 就是这张面的精确键、一次点读，这正是「成员判断」可以当遍历里的 `.filter` 用的原因。代价写在付出的地方：每次写多一条条目（每个成员行一条），而 `clusters_of(node)` 的节点形态是每条关联边一次扫描——这是「面按边号做键」的价。
 
 簇是断言，所以 `0x0A`/`0x0B` 在 changelog 里归 Truth，`0x0C`/`0x0D` 归 Derived 且可整体重建。删一条边时它的成员行同批删除；簇低于两个成员即消失——节点只在成为端点时存在、簇只在有成员时存在，这两条写入前提让“成员必有对应边”不需要兜底形状。
+
+### 声明是数据时，同一批簇
+
+`okm-dynamic` 是「没有 Rust 声明类型」的存储用的那一形态：schema 以数据形式到达（`CollectionSchema`），端点是 `NodeRef`，载荷一律是 `Dict`。它带着**相同**的那四张簇面——`0x0A` 簇行（值以 `[parent_id u64 BE][载荷]` 开头）、`0x0B` 成员边、`0x0C` 派生子簇索引、`0x0D` 派生的边→簇索引——因为键由同一批函数拼出，词汇也是同一套：一个簇仍然由 `(kind, hyper_id)` 命名。变的只是这一形态一贯变的那部分：没有 `#[ok_nodes]` 成员集要校验，没有声明类型，也没有节点声明——这一形态下节点就是端点，一个 `NodeRef`（ns + 裸键字节）就是它的全部地址。
+
+```rust
+let mut fragment = okm_dynamic::DynFragment::new([
+    Decl::edge(DynEdge { src: alice(), dst: acme(), predicate: "works_at".into(), attrs }),
+    Decl::edge(DynEdge { src: bob(), dst: acme(), predicate: "works_at".into(), attrs }),
+]);
+fragment
+    .cluster(Cluster::new(Kind::EVENT, payload))    // None 新建；Cluster::into(kind, 簇号, …) 并入
+    .on_edge_conflict(|stored: &Dict, declared: &Dict| { … })   // 进 Dict、出 Dict：没有声明类型
+    .on_cluster_conflict(|stored: &Dict, declared: &Dict| { … });
+graph.incorporate(fragment)?;                       // 边 + 簇 + 钩子，一个 batch
+graph.retract(fragment)?;                           // delete_node / delete_edge / delete(簇)
+```
+
+两条删除规则与静态形态一字不差：删**节点**会带走所有以它为端点的边——出入两条遍历面、谓词面、载荷行、动态段，以及那些边的成员行；删**边**则不动两端，即便它们此后不连任何东西。低于两个成员的簇随之消失，剩余的成员行一并离场。成员加入同样幂等（同一 `(kind, 簇, 边)` 写两次是一行）；重断言一条边只改它的帧——声明的 `Dict` 就是载荷，live id 上钩子拿到的**已存**那份与声明的并排交付，所以「更新」就是带冲突钩子的 `incorporate`，不需要第五个动词。
+
+读的形状也相同，所以「声明是数据」的存储答同样的问题：`member_of(kind, 簇, 边)` 是派生面的精确键（一次点读，因此可以当遍历上的 `.filter`），`members(kind, 簇)` 扫一次 `0x0B`，`children(kind, 父簇)` 扫一次 `0x0C`，`lookup(kind, 簇号)` 点读那一行，`rebuild_derived(chunk)` 用簇行重建 `0x0C`、只用成员行重建 `0x0D`。
+
+遍历是同一股流，两个方向共用一个类型：`out` / `inn` / `walk` 给出 `DynEdgeStream`，产出 `EdgeStep { edge_id, far, head }`，远端端点从条目的键里读（一跳不读任何行）；`.by("谓词")` 下推到 `0x08`/`0x09` 前缀而不是事后过滤；`find` / `take` / `take_while` 只读到答案为止。这条流在原始条目键上实现同一个 `Seekable` 契约，所以 `okm-query` 的 `intersect_seek`、`difference`、`union` 原样可用。对「声明是数据」的存储来说，要紧的一点是**查询形状不分叉**：「这个节点的哪些边在簇 C 里」永远是两条有序流的一次对齐——一条遍历、一份成员集——与载荷是声明类型还是 `Dict` 无关。
 
 ### 什么该进图
 

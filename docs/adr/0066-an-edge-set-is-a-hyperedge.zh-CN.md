@@ -37,16 +37,16 @@
 ```rust
 let mut fragment = Fragment::<G>::new([Decl::Node(G::Nodes::User, key), Decl::Edge(head), …]);
 fragment.cluster(Cluster { kind, id, payload })         // id None = 新建，Some = 合并
- .reduce_node::<User>(|u: &mut User| u.seen += 1)       // 按集合注册：节点行是异质的
- .reduce_edge(|e: &mut E| e.weight += 1)                // 一张图只有一种边载荷
- .reduce_cluster(|c: &mut Dict| …);                     // 簇是动态的
-graph.incorporate(fragment);                            // 端点、边、成员行、三个 reduce
+ .on_node_conflict::<User>(|old, _declared| User { seen: old.seen + 1 })   // 按集合注册：节点行是异质的
+ .on_edge_conflict(|_stored, declared| E { weight: declared.weight + 1 })  // 一张图只有一种边载荷
+ .on_cluster_conflict(|_stored, declared| declared.clone());                // 簇是动态的
+graph.incorporate(fragment);                            // 端点、边、成员行、三个冲突钩子
 
 // 只有声明是必须的：什么都不挂的碎片，就只写节点与边
 graph.incorporate(Fragment::new([Decl::Node(G::Nodes::User, key)]));
 ```
 
-端点按需创建；成员加入幂等（同一 `(kind, 簇, 成员)` upsert）；三个 reduce 在同一批里求值——ADR-0028 的计数器就落在这里。其余操作复用同一行型：`remove`、`incorporate`、`split`、`reassign`、`lookup`、`members`、`diff`。
+端点按需创建；成员加入幂等（同一 `(kind, 簇, 成员)` upsert）；三个冲突钩子在同一批里求值——ADR-0028 的计数器就落在这里。每个钩子拿到**已存**载荷与**声明**载荷，回答要写入的那一行，于是「保留」「覆盖」「取最新的 stamp」各自是一个表达式。其余操作复用同一行型：`remove`、`incorporate`、`split`、`reassign`、`lookup`、`members`、`diff`。
 
 **8 四条固定面，取自核心带腾出的位置。** `0x0A` 簇行、`0x0B` 边成员、`0x0C` 派生的子簇索引 `[ns][0x0C][kind][父簇号][子簇号]`——它把"列一个簇的子簇"变成干净的前缀扫，自己由簇行里的 `parent_id` 派生，扫一遍簇行即可重建。`0x0D` 派生的一边→簇索引 `[ns][0x0D][边号][kind][簇号]`，同一次成员关系的另一个方向：`0x0B` 答"这个簇里有谁"，`0x0D` 答"这条边在哪些簇里"，且只由成员行派生。用四张面而不是「一张面加行内字节」，因为模型的规矩是**面说明这一行是什么**。新的行型进 `0x0E` Extension，带内用子类号。簇不用计数族：计数族的计数器是声明序、上限 4095，而簇是运行时无界的。
 

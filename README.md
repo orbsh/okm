@@ -2,132 +2,172 @@
 
 > And what, SQL, must we give in return?
 
-OKM is the KV counterpart of ORM: the logic is defined ORM-style, code generation produces the underlying KV operations. ORM maps objects onto relational tables, OKM maps objects onto KV keyspaces. Declarative derive macros (`KeyEncode` / `DocumentEncode` / `GraphEncode`) plus numeric namespace IDs build a zero-cost semantic data layer — as declarative as an ORM at development time, compiled down to pure pointer-offset arithmetic.
+[中文版](README.zh-CN.md)
 
-Related reading: [KV Storage Engine](https://github.com/orbsh/wiki/blob/main/kv-storage-engine-en.md) — underlying architecture and design patterns (encoding principles, index strategies, engine-level trade-offs); [Architecture](docs/ARCHITECTURE.md) — the two-layer declaration machine (derive expansion + constant tables); [Modeling Guide](docs/MODELING.md) — the normative schema-modeling method (four layers, three read paths, covering-index restraint, composite-key boundary); [Query Recipes](docs/query-recipes.md) — composing merge / intersect / difference / union, group_by and walk into SQL shapes, the WHERE boundary record; [Graph Query Recipes](docs/graph-queries.md) — the graph's faces composed into Cypher-shaped traversals; [Concurrency and Writers](docs/CONCURRENCY.md) — what single-writer means, which mechanisms assume it, and the four shapes that carry more.
+The application is the only reader of its data, so the database should not be a network service. OKM is an embedded, type-safe, compile-time-optimised storage engine — no query language, no optimiser, no run-time plan, because your application code already knows the shape of every query, and the only thing left is to let the compiler know it too.
 
-## The bet: a smaller surface, an asymmetric payoff
+```rust
+use okm::prelude::*;
 
-Every capability OKM declines is declined for one reason: it could only exist
-at run time, in a layer between the declaration and the bytes.
+#[derive(KeyEncode)]                  // identity declared on its own: fixed width, BE, no separators
+pub struct UserKey {
+    pub org_id: u32,
+    pub user_id: u64,
+}
 
-- **No query language.** Queries are code, not text. Nothing parses SQL, and no
-  planner decides which access method to use — the call site names it.
-- **No optimizer.** No cost model, no statistics, no plan selection. The
-  physical path is the one the declaration and the call spell out.
-- **No schema-less mode.** The schema lives in the type system; a change is a
-  deploy, not a run-time DDL statement.
-- **No ad-hoc queries.** Shapes outside the declared access methods (arbitrary
-  filters, unindexed joins) are not slow — they are not expressible. Joins are
-  client-side: set algebra over two ordered key streams (`merge` / `intersect` /
-  `difference`), then one fetch per surviving key.
-- **Some patterns unsupported on purpose.** Atomicity stops at one engine; a
-  scan inside a batch is refused rather than answered partially; the write side
-  is single-writer by construction.
+#[derive(DocumentEncode)]             // row: identity + payload + access methods
+#[ok_ref(UserKey)]                    // the row pins its own key type
+#[ok_ns(1)]                           // the ns is declared HERE, not at the assembly site
+#[ok_index(by_plan { fields(plan) })] // one face: entry key = indexed field + key tail
+pub struct User {
+    pub email: String,
+    pub plan: Plan,
+}
+```
 
-What that buys is not "less code" but a different shape of cost. The loss is
-paid ONCE, by the author at declaration time and by the compiler at build time.
-The gain is paid EVERY operation: a key is a pointer into fixed-width bytes, a
-decode is a slice, a semantic write is one commit, and engine choice is free
-because bytes are bytes.
+## SQL is dynamic; the SQL in your application is not
 
-That asymmetry is the whole argument — a one-time restriction against a
-per-operation payoff. It is also what "breaking an abstraction layer" means
-here: the interpreter that would sit between declaration and engine (planner,
-schema catalog, query runtime) is not optimized away, it is absent. Each layer
-removed that way moves its cost to the compiler or to the author, which is the
-only place where paying once is possible. A restriction that is not statically
-checkable breaks the bet: it returns to run time, and the cost becomes
-per-operation again.
+SQL was designed as a language interpreted at run time: a query is a string, its structure unknown before execution, so the database has to carry a parser, an optimiser and a plan cache — the only reason those mechanisms exist is that it does not know what the next query looks like.
 
-### Scaling: nothing in the middle to grow
+Your application is not like that. Every query is written in code, its parameters come from variables, and its shape is fixed at compile time: the shape of `WHERE plan = $1` is always "fetch rows by plan", and only the value of `$1` changes. What gets called a "dynamic query" is, in the overwhelming majority of cases, **the same static shape with a different argument**; the small remainder that really does change structure with user input — WHERE clauses assembled in a BI panel, report generators, throwaway admin queries — is exactly SQL's home ground, and exactly where an embedded engine should not pretend it can win. The honest boundary runs here.
 
-There is no catalog to register a table in, no planner to feed statistics to, no
-query service to replicate — a table is a namespace number plus a declaration,
-and a query is the call site's code. A capability is added the same way: a new
-table, a new face, a path index over the schema-free zone. Nothing is registered
-with the library or the store, so the ceiling is per table and never per system:
-tables are the unit of scale, each with its one writer
-([Concurrency and Writers](docs/CONCURRENCY.md) prices a second one), and reads,
-filters and joins run at the call site instead of in a service of their own. The
-domain never enters the library — which is why business logic is an extension of
-this mechanism rather than a plugin into a runtime.
+So the trade states in one sentence: **take the premise "the query is only known at run time" out of the engine**. Once the premise is gone, a whole string of mechanisms that existed for it goes with it: the parser, the optimiser, the plan cache, parameter sniffing, the prepared-statement lifecycle, the connection pool, and the cache layer that existed to route around all of it. They are not replaced by better implementations — they **lose the reason they existed**.
 
-### The language is the runtime
+The cost is just as explicit, and has to be stated: the query set is closed. A schema change means a recompile; ad-hoc analysis takes another path (CDC into Delta Lake, letting the analytical side use whatever engine it likes); and "just connect with psql and take a look" is gone. What static-ness saves is not some constant factor but the maintenance tax on **a whole set of capabilities that never actually paid off for you**.
 
-A client/server database charges a round trip per statement and answers in its
-own dialect, so whatever must be fast ends up inside a stored procedure: a
-second language, a second debugger, a dialect-only type system, and a copy of
-the logic that exists nowhere else. OKM has no such boundary to push across.
-The declaration, the query and the engine handle live in ONE process (with an
-in-process engine — fjall, redb, slatedb; a remote store is the deliberate
-exception and pays its hop and nothing more), so the code that would have been
-a stored procedure is ordinary Rust: `cargo test`, the type checker,
-breakpoints, crates, the same review as the rest of the service. The statement
-it replaces has no wire to cross — the round trip is not made fast, it is
-absent.
+## Why not SQL + Redis?
 
-## Why: code as DDL
+The default architecture of a modern backend is "PostgreSQL holds the truth, Redis makes it fast":
 
-SQL's core value is not execution performance — it is the readability, modeling discipline, and team-coordination determinism delivered by the relational model. Raw binary keys degrade into spaghetti: nobody on the team can reason about key layout rules. The solution is to replace SQL DDL with the Rust type system, moving schema correctness from a runtime database engine to the compile-time compiler.
+```
+app ──network RTT──→ SQL    (parse → plan → execute)
+app ──network RTT──→ Redis  (cache, invalidated by hand)
+```
 
-- **Struct as DDL**: SQL defines table structure; a Rust struct defines key encoding. The compiler enforces format consistency — any code attempting to write a malformed key fails at compile time, no runtime validation.
-- **Schema-less is a trap**: schema-less stores accept anything (`"25"`, `[25]` for a numeric field), and every consuming service pays for it in defensive parsing. Strong typing fuses invalid data at `cargo check` — it never even gets generated — while keeping KV's hardware-level speed and skipping PG's runtime DDL-lock and SQL-parsing taxes.
-- **Hex stability tests**: the last line of defense against encoding drift. Hard-coded historical hex bytes lock the physical key layout; any change to ns, field order, or widths fails CI immediately (see `okm-core/tests/integration.rs`).
+Each layer pays for the other's existence: Redis exists because every SQL read costs a network round trip, a parse and a plan; SQL is deployed centrally because queries are dynamic strings that need a separate parsing service. The two are each other's cause, which is also why both disappear together.
 
-The verdict: SQL's core value is human-facing structured discipline. By holding to "code as DDL" — strongly-typed key encoding, lazy migration via versioned enums, dual-write key-pointer contracts, and hard-coded hex stability tests — OKM gains all of it at once: compile-time schema safety (the Rust compiler) + runtime performance (LSM-Tree) + zero-downtime evolution (versioned enums) + team maintainability (struct comments as documentation) + drift protection (hex tests). On schema safety it overtakes both SurrealDB (schema-less) and PostgreSQL (runtime DDL locks).
+| | SQL + Redis | OKM |
+|---|---|---|
+| read one row | 0.5–2 ms (RTT + parse + plan) | ~1 µs (in-process B-tree) |
+| cache layer | required (reads are too slow) | none (a read is already memory speed) |
+| cache invalidation | an entire engineering discipline | nothing to invalidate |
+| deployment manifest | app + database service + connection pool | one binary |
+| query validation | run-time error | compile-time error |
+| business boundary | two systems, no cross-system transaction | one type domain |
 
-## Two modes: compiled schema and declared schema
+Redis's performance story holds in a world where the network is a given premise. OKM's unified claim is to make that premise disappear — the cache layer is not replaced, it is pulled out entirely.
 
-OKM carries ONE storage engine contract and ONE key layout, reached by two schema carriers:
+## Two-step semantics: query = set algebra + fetch
 
-- **Static mode (code generation)** — Rust types + `#[derive(...)]` (okm-derive). The compiler IS the schema validator: key widths, offsets, and index declarations are compile-time facts; `Collection<S, K, R>` is the assembly point. For Rust hosts and wasm booths compiled from Rust source.
-- **Dynamic mode (schema data)** — a `CollectionSchema` value (exported from the static side by `okm_core::schema::CollectionSchema::of`, or authored as data) + okm-dynamic. `DynamicCollection` takes a run-time ns and the schema value; encode/decode mirrors the derive byte-for-byte. For embedded-language booths (Python/Steel via the bindings), hosts assembling collections at run time (aura ADR-0026: one real ns per booth type, allocated from a registry).
+Every query reduces to two primitives:
 
-The two modes produce IDENTICAL bytes for the same declaration: same header discipline, same key encoding, same payload frames, same vocabulary behavior. Data written by a compiled collection reads back through the dynamic one and vice versa — mode is a property of the WRITER, not the data. The write verbs are aligned on purpose (`merge` / `replace` / `purge` / `scan` + the document map), so application code shapes do not fork; the typed side adds `get` / `put`, which speak the struct.
+```rust
+// Step one: key-set algebra (pure memory, O(min(|A|,|B|)), optimal as cardinality shifts)
+let active: KeySet<UserId> = users.by_plan().contains(&[Plan::Pro]);
+let paid: KeySet<UserId>   = users.by_email().prefix("team");
 
-Division of labor across crates: okm-core = the shared runtime (engine contract, `Collection`, document/dynamic-segment machinery, reduce, subscribe); okm-derive = static codegen; okm-dynamic = the schema-driven codec and `DynamicCollection`; okm-wire = the wire format for remote engines; okm-async = the async face (the mirror trait, the wire sender, and the engines whose API is async — not depending on it means it is not in the build); okm-query/stream/graph/vector/ngram = consumer-side operators above the core.
+// Intersection, union, difference — all structured values: serialisable, pushable
+let target = active.intersect(&paid);
 
-## Physical gains
+// Step two: fetch (batch read of whole rows by primary key)
+let rows: Vec<User> = users.fetch(&target);
+```
 
-- **85% prefix compression**: a 14-byte string prefix becomes 2 bytes of numeric namespace.
-- **100% fixed-width keys** (for full-identity keys): every field's absolute byte offset is compile-time locked; decoding is pure pointer slicing, zero parsing.
-- **32768 namespaces**: u16 with the top bit niched as the edge direction bit (see [ADR-0001](docs/adr/0001-direction-bit-niche.md)).
-- **Cache locality**: bloom-filter rejection plus in-memory seeks keep the hot path CPU-cache friendly.
-- **Zero runtime overhead**: no regex, no split, no AST — the query path is machine code after `cargo build --release`.
+- **Large cardinality is not an optimisation problem, it is an `if` statement**: build a hash from the small set and scan the large one; which is smaller is a run-time fact, the code decides on the spot, and no optimiser has to guess.
+- **A key set is a serialisable intermediate representation**: crossing a process, a network or an engine ships the result of set algebra rather than the raw data.
+- **Dynamic queries have their place too**: a filter a user assembles in a UI has the natural shape "predicate → key set → fetch", so the dynamism is confined to the input side of set algebra.
+
+## Faces and engines: shape fixed at declaration, engine chosen at assembly
+
+An index is not a separate object; it is **a face on the row**: `#[ok_index(...)]` is written in the row's declaration, and the entry key is the indexed fields plus this row's key tail. So there is no such thing as "build another index table" — the face's shape is compiled together with the row, its key is the row's key type, and one key type can be shared by several rows and several faces.
+
+Engine selection happens at the assembly site, one decision per collection:
+
+```rust
+// production: persistent LSM
+let users: Collection<_, UserKey, User> = Collection::new(Fjall::open("data/users")?);
+
+// tests: pure memory, zero I/O
+let users: Collection<_, UserKey, User> = Collection::new(Mem::default());
+
+// archive: the same declaration, another engine instance
+let archive: Collection<_, UserKey, User> = Collection::new(Fjall::open("data/archive")?);
+```
+
+Every engine implements the same behavioural contract (see `engine_matrix_test`); swapping engines does not touch application logic — where the bytes live is an implementation detail, and location is not in the type.
+
+## The layers beyond the engine
+
+An honest world, each layer minding its own business:
+
+- **Ad-hoc analysis / BI** → CDC drains the business log continuously into Delta Lake; the analytical side uses any engine (DuckDB / Spark / Trino).
+- **Schema evolution** → a schema change is a compile-time event: blue and green processes each run their own version over shared COW snapshots.
+- **Dynamic mode** (tenant-defined fields) → okm-dynamic: the structure is data rather than a type, and outer access still takes the statically optimised path.
 
 ## Status
 
-Implemented:
+In production use in several internal projects. API stability is not yet promised; at this stage it suits evaluation and experiment, not external production dependency.
 
-- `KeyEncode` — fixed-width key encoding (`u32` / `u64` / `[u8; N]`), big-endian, compile-time `KEY_LEN` / `FIELD_WIDTHS`, `encode_prefix_named` truncation primitive.
-- `GraphEncode` + `Graph<S, E>` + `NodeSet`/`NodeRef` — graph edges, the third relation carrier (ADR-0017): ONE declaration is the graph (ns + the edge's own payload + explicit `#[ok_index]` faces + the `#[ok_nodes]` member set), open endpoints as self-describing `[ns 2B][len][pkey]` refs (width rides in the ref — no registry), parallel edges with caller-chosen ids, predicates through the graph's own PREDICATE vocabulary (0x04/0x05 — listing them is one prefix scan), declared attribute faces as ordinary counting-family 0x1 indexes; `link`/`unlink` write and delete every face in one batch, `unlink` decoding the payload to delete exactly; untyped/typed/predicate/attribute scans.
-- `DocumentEncode` — one macro declares a row (Node): `#[ok_ref]` identity + TLV payload fields + `#[ok_index(...)]` access methods; the `ValueEncode` derive is absorbed into it.
-- Secondary indexes (access methods) — `#[ok_index(name { fields(…), includes(…), key(…), func(…), where(…) })]` on **row structs**: composite indexes over payload fields (declaration order), no per-index slot/ns — the 2-byte table namespace already discriminates every entry; leftmost-prefix scans with fetch-back; `key(…)` truncates the carried primary-key tail to the named subset (`encode_prefix_named`), full key by default; `includes` covering positioned as a materialized view for high-fanout queries; `func(path)` replaces the data segment with a plain fn's return value — the return form is an iterator of the segment type, so one value (`[v]`) and a fan-out (`Vec`/slice/iterator) are one contract (ADR-0055), probe side calls the same path; `where(path)` is a row-level predicate — a partial index, rows the predicate rejects contribute no entries.
-- Lead faces (identity orderings) — `#[ok_lead(name { fields(key_fields), key(…), deprecated })]` on **row structs** (ADR-0054): the entry's sorted segment is sliced out of the KEY's own encoding instead of a payload column, so a reverse read costs no copy and cannot disagree with the key. Own slot family (`0x5nnn`, its own counter), same `KvIndex` doors, typed probe builder (`.prefix().member_id(id).finish()`), `Covered = ()` always; `rebuild_faces` repairs these without decoding a row, because nothing about them depends on the payload.
-- `Collection<S, K, R>` node assembly point — `put`/`purge` write the primary key and every declared index entry in one store instance (the declaration IS the registry); `scan` returns `(Key, Option<Row>)` via leftmost-prefix on any access method.
-- **Document API** — reads name their parts, and ONE `put` writes: the payload type picks the path. The struct door: `get_row` speaks `R`. The document door: `get::<(parts::Row, parts::Value)>` hands back each slot on its own (`Option<R>`, `Option<Variant>`); `put(&key, &R)` writes the row, `put(&key, &map)` writes the names the map carries, `put(&key, (&map,))` makes the map the whole document, `purge` removes both slots — one engine commit per write. No assembly function exists: a row converts with `Document::to_value()` and two values compose with `Variant::merged` (objects merge by name, recursively; anything else replaces). **Every verb is fallible** (`okm_core::Result`): no write panics — the engine's refusal, a full vocabulary and a map that does not fit the declaration all come back as `okm_core::Error` (ADR-0037). Reads answer `Result<Option<R>>` / `Result<Vec<…>>` — absence is the `Option`, a store that could not answer is the `Err` (ADR-0038). The dynamic side has only the document door: there is no struct there to speak. Unknown field names allocate in the per-table field-name vocabulary and land in the dynamic segment (n-TLV frames, nested objects recursive, no CBOR); the row-map bridge lifts declared fields to logical types (`Quant`→`F64`, `Vocab`→label, `Offset`→`i64`).
-- **Dynamic codec bindings** — schema export drives embedded-language readers: `bindings/okm-python` (PyO3) and `bindings/okm-steel`, byte-identical with the Rust derive.
-- **Path indexes over the dynamic segment** ([ADR-0029](docs/adr/0029-path-index.md)) — `AccessMethod::path(slot, Path::parse("author.name")?, FieldType::Str)?`: nested and array paths declared as access methods, one entry per resolved value (a wildcard is the absence of an `Index` component), maintained on the dynamic-segment write path; the value type is declared, and the entry key carries the slot, never the path.
-- Engine backends behind Cargo features: `fjall` (sync `FjallStore`), `redb` (sync `RedbStore`), `slatedb` (async `SlatedbStore`); tests run the real engines through the `TestStore` matrix (slatedb-mem / fjall / redb), no mock to drift from them.
-- **Semantic batch write path** ([ADR-0031](docs/adr/0031-batch-write-semantics.md)) — `BatchStore` (a batch as a writer: point reads see pending ops newest-first, scans refused) + `Collection::save_with_prev_into(batch, key, doc, prev)`: primary + faces into the caller's `Batch`, the reduce fold/unfold applied through the adapter, and the faces the new document no longer produces deleted — so a table with a ledger joins a multi-table atomic commit instead of re-implementing it. `Collection::purge_into(batch, key)` is the same path for a removal — both slots, the faces deleted, the ledger unfolded, and its reads through the batch, so a row the batch itself wrote is still the state that gets removed.
-- Multi-engine mixing — different engines per ns segment in one process (fjall for transactions, slatedb for logs); atomicity stops at one engine, ns numbering globally unique.
-- Field-level encoding wrappers (`Vocab<N>`, `Offset<T>`, `VarInt<T>`, `Quant<P>`, `Reverse<T>`, `Vector<T>`, `Bytes`) and variable-length payload/index fields (`String`), keys stay fixed-width.
-- Snapshot export — rows → Parquet, engine-independent (backup / data exchange / lakehouse); ns restored to descriptive text, columns = field names.
-- Lakehouse path — the exported directory IS a Delta table (`okm_lake::delta`: one JSON commit per window, schema read from the Parquet footer, paths relative to the table, no catalog and nothing to register; open fields travel as one `variant` column). The lake is a key space, not a directory: `okm_lake::store` writes the same table to a local directory or to an S3 bucket, and `okm_lake::publish` is the entry point for a service that mirrors its own state one snapshot at a time (ADR-0061). Incremental: the change log captures at the commit boundary ([ADR-0045](docs/adr/0045-changelog-capture-and-drain.md)); the window join is core's (`okm_core::changelog::window`) and `okm-lake`, a standalone binary with no link to the application, projects a window into a file, watermarking only after it lands.
-- **Document model** — one encoding for declared rows and external data ([ADR-0012](docs/adr/0012-object-model-and-field-dictionary.md)). OKM is document-oriented: a document is logically all-dynamic (any field may appear at run time), and **declared static fields embed into the dynamic whole** — hot/cold segments, indexing, and schema export apply to them as usual. A declared struct is the degenerate document with only the static path; a pure document (MQ payload, JSON) is the degenerate document with only the dynamic path; both are the same encoding. Terms on the embedding spectrum:
-  - **variant** — a dynamic blob nested as ONE declared static field (`Bytes` payload); the dynamics live inside a value, not in the key layout.
+## The optimiser's shrinking role
 
-  Dynamic frames use a CBOR-derived framing, not CBOR itself: only the **major-type pattern** is taken — a type nibble opening each frame — and struct encoding rides the same scheme. CBOR's major types include lists and maps; with a field-name vocabulary OKM needs only the list: a map is an n-TLV list (number, type, len, value), with structure information living in the values, not in a per-document schema.
+This is the hole that erodes the optimiser most. The optimiser exists because "the query is unknown, so the engine must be clever". In a static world, anything an optimiser can do can be done ahead of time in code, with no estimation error:
+
+- predicate pushdown → the programmer computes the set first and then fetches, which is pushdown by construction
+- join order → the order of set operations is the call chain, and the programmer knows the cardinalities
+- index selection → the access method is bound when the declaration slot is written
+- cardinality estimation → no guessing needed; whoever wrote the code has seen the data
+
+This is not the claim that "the programmer is always smarter than the optimiser"; it is that when the query set is closed, the optimiser's work becomes a one-off development-time decision.
+
+## Against the historical precedents
+
+- **ORM query builders**: TypeORM/Diesel's compile-time query builders half-admit this, but they still compile to text SQL, wasting the static-ness at the last step — compiling to a string and handing it to a dynamic engine loses on both sides.
+- **Stored procedures**: logic moves to the data side, but the language is closed, the ecosystem absent and debugging is hell; OKM moves the data to the logic side (embedding) and keeps the whole Rust ecosystem.
+- **Embedded KVs such as Sled/redb**: they admit the embedded advantage but stop at the byte layer, with no type layer.
+- **Supercompilation (Futamura projections)**: in theory the first projection of "specialise the interpreter into a compiler". A static query is that projection specialisation done by hand.
+
+## Overall assessment
+
+| Property | How it is implemented | Design intent | Status |
+|---|---|---|---|
+| ORM experience | Rust type system + derive macros | generate access code at compile time, avoiding run-time parsing | ✅ core feature |
+| Redis speed | a lean, tuned KV store | embedded, no network overhead, close to memory access | ✅ target performance |
+| PostgreSQL durability | business log + persistent storage | no data lost after a system fault | ✅ design goal |
+| Functions without a boundary | embedded calls into Rust functions | complex logic implemented directly in application code | ✅ distinctive advantage |
+| Two-step semantics | set algebra separated from fetch-back | matching separated from materialisation | ✅ core innovation |
+
+**Core advantages**: compile-time type safety (a mismatched query shows up at compile time), zero-cost abstraction (after compilation it degrades to plain pointer offsets), a clear model (relational algebra) and a small API.
+
+**Current challenges**: ecosystem, production validation, complex queries (across several entities), team collaboration (the community is zero).
+
+**Fit**: high (read/write performance beyond Redis and traditional stores, in a Rust stack); situational (fast concept validation); unsuitable (where a ready ecosystem and community support matter).
+
+## Comparison with other approaches
+
+| Approach | Kind | Core strength | Core weakness | Fit |
+|---|---|---|---|---|
+| OKM | embedded Rust ORM | performance potential, extensibility, type safety | empty ecosystem | performance-sensitive work, Rust exploration |
+| Diesel | Rust ORM | mature and stable, compile-time checks | limited async, steep curve | traditional web backends |
+| SQLx | async SQL toolkit | async first, compile-time checks, flexible | not an ORM, relations handled by hand | async services, microservices |
+| SeaORM | dynamic ORM | flexible, dynamic, feature-rich | the abstraction layer costs performance | fast REST/GraphQL development |
+| rusqlite | SQLite bindings | light, dependency-free, simple | synchronous API, SQLite's limits | CLI tools, desktop apps |
+| Redis | in-memory database | extremely fast, rich data structures | not persistent, needs network access | caching, sessions, real-time analytics |
+
+## Summary and advice
+
+OKM represents a contrarian line of database design: map the query patterns of a relational database onto a KV store's structure, and replace run-time querying with ORM-style type definitions and compile-time code generation.
+
+What deserves warning is the price this project charges: static-ness is not free — run-time freedom (BI tools, ad-hoc queries, dynamic reports) is genuinely given up. That settles OKM's position as an application database, not an analytical one; ad-hoc is where SQL really is at home.
+
+For the great majority of projects, adopting OKM is not worth it today: its ecosystem is zero and every component has to be built. It is better suited as a technical exploration and an experimental platform for validating its design ideas; if embedding is what you need, rusqlite (SQLite) is the safer choice; if high performance is what you need, Redis (with persistence) is still the mainstream answer; if maturity is what you need, SeaORM or Diesel fit better.
+
+OKM's value lies in the design ideas it starts from, "functions without a boundary" and "two-step semantics" in particular, which may offer a new paradigm for future database design.
 
 ## Usage
 
 ### 1. Declarations: keys, rows, and relations
 
-The full declaration vocabulary (`KeyEncode` / `DocumentEncode` /
-`GraphEncode`, the `fields`/`includes`/`key`/`func`/`where` annotations of
-`#[ok_index]`, and `#[ok_lead]` for orderings over identity) is in the
-[Modeling Guide](docs/MODELING.md), "Declaration basics". The three shapes:
+The full declaration vocabulary (`KeyEncode` / `DocumentEncode` / `GraphEncode`, and the `fields`/`includes`/`key`/`func`/`where` annotations of `#[ok_index]`) is in the [Modeling Guide](docs/MODELING.md), "Declaration basics". Three shapes: **identity**, **row**, **graph**. Many-to-many has no carrier of its own any more — it is an ordinary collection (the key is the pair of identities) plus one `#[ok_lead]` reverse face.
 
 ```rust
 #[derive(KeyEncode)]                        // identity: fixed-width fields, BE, no separators
@@ -138,31 +178,9 @@ pub struct UserKey { pub org_id: u32, pub user_id: u64 }
 #[ok_ns(1)]                                 // the ns is declared HERE, not at the assembly site
 #[ok_index(by_org { fields(org_id) })]      // a face: entry key = indexed fields + key tail
 pub struct User { pub org_id: u32, pub bio_len: u32 }
-
-#[derive(KeyEncode)]                        // many-to-many IS a table, keyed by the pair
-pub struct UserToSessionKey { pub org_id: u32, pub user_id: u64, pub session_id: u64 }
-
-#[derive(DocumentEncode)]
-#[ok_ref(UserToSessionKey)]
-#[ok_ns(2)]
-#[ok_lead(by_session { fields(session_id) })] // reverse read: identity out of the key, no copy
-pub struct UserToSession { pub role: u8 }
-
-#[derive(GraphEncode, Clone, Default)]       // ONE declaration IS the graph (ADR-0017)
-#[ok_ns(100)]
-#[ok_nodes(User, Org)]                       // the member set: the node TABLES, by type
-#[ok_index(by_since { fields(since_year) })] // attributes are declared faces — nothing implied
-pub struct Employment { pub since_year: u16, pub weight: u32 }
-
-// generated: `pub enum EmploymentNode { User, Org }` + its `NodeSet` impl,
-// each ns read off that table's own `#[ok_ns]` — never typed twice
 ```
 
-A face declaration names its access-method type mechanically:
-`ok_index(by_org ...)` generates `__OkmIndex_User_by_org` and
-`ok_lead(by_member ...)` generates `__OkmLead_Row_by_member` (no case
-conversion), which is what `scan::<…>` takes — `use __OkmIndex_User_by_org
-as ByOrg` gives the short form.
+A face declaration mechanically generates its access-method type: `ok_index(by_org ...)` produces `__OkmIndex_User_by_org` (no case conversion), and that is what `scan::<…>` takes — `use __OkmIndex_User_by_org as ByOrg` gives the short name.
 
 ### 2. Documents at runtime (`Collection`)
 
@@ -173,47 +191,39 @@ let users = <User as Document>::collection(store.clone());
 let key = UserKey { org_id: 7, user_id: 101 };
 
 // Write: primary entry + one entry per declared face, one store instance.
-// The verbs take `&self` (same shape as the KV beneath them); exclusivity is
-// the collection being `!Sync`.
-users.put(&key, &User { org_id: 7, bio_len: 240 })?;
-// Reads are fallible too: `?` is "the store answered", the Option inside is
-// "the row is there". A store that could not answer is an Err, never a `None`
-// the caller would mistake for an absent row (ADR-0038).
-let row: Option<User> = users.get_row(&key)?;
+// The verbs take `&self` (same shape as the put/del beneath them); exclusivity
+// is the collection being `!Sync`.
+users.put(&key, &User { org_id: 7, bio_len: 240 });
+let row: Option<User> = users.get_row(&key);
 
-// Read by primary-key prefix: the key IS the access path. A composite key
-// groups by construction, so "every user of this org" needs no index and no
-// declared query — the probe names leading fields, in declaration order.
+// Read by primary-key prefix: the key itself IS the access path. A composite
+// key groups by construction, so "every user of this org" needs no index and
+// no declared query — the probe names leading fields in declaration order.
 let org_users = users.scan_keys(&UserKey::prefix().org_id(7).finish());
 // Lazy: `.take(n)` is a LIMIT, `.skip(n)` a page, `.rev()` walks backwards;
-// each item is a `Result<UserKey>` (rows only — a document read fetches it).
+// each item is a `Result<UserKey>` (keys only — a document read fetches it).
 
 // Read by access method: the dimension is NOT in the key, so it is a declared
 // face — leftmost-prefix scan, then fetch-back. The probe mirrors the key's:
 // `ByOrg::prefix()` names the index's declared `fields(...)` in order, and
 // `finish()` yields exactly the bytes a caller would hand-encode.
-for (pk, row) in users.scan::<ByOrg>(&ByOrg::prefix().org_id(7).finish())? {
+for (pk, row) in users.scan::<ByOrg>(&ByOrg::prefix().org_id(7).finish()) {
     // pk.decoded: UserKey, row: Option<User>
 }
 
 // A comparison on the leading index field is a physical key interval —
 // byte order is value order, so this reads only rows inside [1, 100).
-users.scan_range::<ByOrg>(&1u32.to_be_bytes(), Some(&100u32.to_be_bytes()))?;
+users.scan_range::<ByOrg>(&1u32.to_be_bytes(), Some(&100u32.to_be_bytes()));
 
-// Remove: primary + faces + dynamic segment, one commit. The row's faces
-// derive from the STORED row, so the caller cannot hand it the wrong one.
-users.purge(&key)?;
+// Remove: primary + exactly the faces this document produced.
+users.purge(&key);   // primary + faces + dynamic segment, one commit; the deleted set derives from the stored row
 ```
 
-The three read doors are the modeling decision SQL hides: a predicate on a leading key segment is a prefix scan on the primary table (no index, no declaration), every other dimension is a declared face, and one row is a point read. An index here is not a second copy the planner may or may not choose — the ordering a prefix read needs is already the storage order, so the key that addresses a row also groups it.
+The three read doors are the modeling decision SQL hides: a predicate on a leading key segment is a prefix scan on the primary table (no index, no declaration), every other dimension is a declared face, and one row is a point read. An index here is not a second copy the optimiser may or may not choose — the ordering a prefix read needs is already the storage order, so the key that addresses a row also groups it.
 
-A prefix read is less abstract than a SQL predicate, and less flexible. That is the trade, stated plainly. A SQL predicate is a promise that a planner will find an access path; many engines do not keep it, and the way they break it is worse than an error — wherever the index depends on key order (MySQL's composite indexes being the canonical case), the left-prefix rule makes physical layout part of the query: whether `INDEX(a, b, c)` serves `WHERE b = 1` depends on the field order chosen at create-table time. That is an abstraction leak, not abstraction, and it costs intuition as well as flexibility. OKM takes the other fork: no planner, and therefore no promise to break — the key layout IS the read path, a prefix is a range in storage order, and the price is that access patterns are settled at modeling time rather than per query.
+A prefix read is less abstract than a SQL predicate, and less flexible. That is the trade, stated plainly. A SQL predicate is a promise that an optimiser will find an access path; many engines do not keep it, and the way they break it is worse than an error — wherever the index depends on key order (MySQL's composite indexes being the canonical case), the left-prefix rule makes physical layout part of the query: whether `INDEX(a, b, c)` serves `WHERE b = 1` depends on the field order chosen at create-table time. That is an abstraction leak, not abstraction, and it costs intuition as well as flexibility. OKM takes the other fork: no optimiser, and therefore no promise to break — the key layout IS the read path, a prefix is a range in storage order, and the price is that access patterns are settled at modeling time rather than once per query.
 
-Overwrite semantics differ by design: `put` unfolds the stored document from
-every declared reduce group before folding the new one in, while faces are
-per-document derivations — an overwrite whose indexed value changed lands at
-a NEW entry key, so the stale face is the caller's to remove (or
-`save_with_prev_into`'s, section 5).
+Overwrite semantics divide in two by design: `put` first unfolds the stored document out of every declared reduce group and then folds the new one in, while faces are per-document derivations — change an indexed value and the entry lands at a new key, so the old face is the caller's to remove (or `save_with_prev_into`'s, section 6).
 
 A ledger is a declaration line, not a table you maintain (ADR-0023):
 
@@ -222,53 +232,34 @@ A ledger is a declaration line, not a table you maintain (ADR-0023):
 #[ok_reduce(Sum(bio_len) { group(org_id) })]   // field total; signed and Quant stay exact
 ```
 
-The accumulator entry is `[ns 2B][reduce slot][group segment]`, read-modify-written
-by the same `put`/`purge` that writes the row — one store instance, so the
-ledger shares the row's atomicity.
+The accumulator entry is `[ns 2B][reduce slot][group segment]`, read-modify-written by the same `put`/`purge` that writes the row — one store instance, so the ledger shares the row's atomicity boundary.
 
 ### 3. Dynamic fields: the document API
 
-Three doors, and the split is about what a call may look at — not about
-convenience:
+Three doors, and the distinction is about what a call may see, not about convenience:
 
 | door | sees | pays |
 |---|---|---|
-| `get` / `put` with `&R` | the declared row only (`R`), never the dynamic segment | no field-name vocabulary load, no segment read — the compiled-schema path |
-| `get::<(parts::Row, parts::Value)>` | exactly the slots it names | only those slots |
-| `put` with a map | the whole document: both halves | only the arms the names actually touch |
+| `get` / `put` (payload `&R`) | the declared row only (`R`), never the dynamic segment | no field-name vocabulary load, no segment read — the compiled-schema path |
+| `get::<(parts::Row, parts::Value)>` | exactly the slots it names | only the slots it names |
+| `put` (payload is a map) | the whole document: both halves | only the arms the names actually touch |
 
-Writing is ONE verb on both collections, and the PAYLOAD picks the path — the
-call site never translates its data into a verb name:
+Writing is one verb on both sides, and the **payload** picks the route — the call site never translates its data into a verb name:
 
 | payload | path |
 |---|---|
-| `&R` (typed side only) | the row and its faces; the fresh-row fast path, so the previous values' entries are NOT swept |
-| `&Dict` / `&Variant::Map(map)` | partial document: a declared name is a row read-modify-write (its superseded face swept, the ledger compensated), every other name overwrites that name in the segment, and names the map omits keep their stored values |
-| `(&Dict,)` / `(&Variant::Map(map),)` | whole document: the map IS the document — an omitted declared field takes its default, an omitted dynamic name is removed |
+| `&R` (typed side only) | the row and its faces; the fresh-row fast path, so the previous values' entries are **not** swept |
+| `&Dict` / `&Variant::Map(map)` | partial document: a declared name is one row RMW (its superseded face swept, the ledger compensated), every other name overwrites that name in the dynamic segment, and names the map omits keep their stored values |
+| `(&Dict,)` / `(&Variant::Map(map),)` | whole document: the map IS the document — an omitted declared field takes its default, an unnamed dynamic name is removed |
 | `purge` | both slots — the only removal verb, on both sides |
 
-The map those rows name is `okm_value::Dict`: an insertion-ordered name → value
-map, the only spelling of a document object (`Variant::Map` carries it, and
-insertion order is the contract — ADR-0063).
+The map those rows name is `okm_value::Dict`: an insertion-ordered name → value map, the only spelling of a document object (`Variant::Map` carries it, and insertion order is the contract — ADR-0063).
 
-The payload is caller data, so a write is fallible (`okm_core::Error`): a
-declared name carrying the wrong kind is `Error::KindMismatch`, never a silent
-default, and nothing is written. The missing-document arm costs nothing: the
-schema decides which arm the plan takes, so a map with no declared name never
-reads the row and a map with no dynamic name never reads the segment or loads
-the vocabulary.
+The payload is caller data, so a write is fallible (`okm_core::Error`): a declared name carrying the wrong kind is `Error::KindMismatch`, never a silent default, and nothing is written. The absent half costs nothing: the schema decides which arm the plan takes, so a map with no declared name never reads the row, and a map with no dynamic name never reads the segment or loads the vocabulary.
 
-Reading is parts, and composition belongs to the caller: a point read answers
-each slot on its own, a row converts to one value (`Document::to_value`), and
-two values merge (`Variant::merge` / `merged` — objects merge name by
-name, nested objects recursively, anything else replaces the left side). There
-is deliberately no assembly function: the two primitives are the whole story,
-and the composition is two lines at the call site.
+Reading is parts, and composition belongs to the caller: a point read answers each slot on its own, a row converts to one value (`Document::to_value`), and two values merge (`Variant::merge` / `merged` — objects merge name by name, nested objects recursively, anything else replaces the left side). There is deliberately **no** assembly function: the two primitives are the whole story, and the composition is two lines at the call site.
 
-One encoding for declared rows and external data. Unknown field names are
-normal input: they allocate in the per-table field-name vocabulary and
-land in the dynamic segment (`[id][type][len][value]` frames, nested
-objects recursive). Declared fields stay typed and indexable.
+One encoding serves declared rows and external data. Unknown field names are normal input: they allocate a number in the per-table field-name vocabulary and land in the dynamic segment (`[id][type][len][value]` frames, nested objects recursive). Declared fields stay typed and indexable.
 
 ```rust
 // Read: name the parts. Row is slot 0, Value is slot 1 as an object; each is
@@ -288,87 +279,24 @@ let doc = match (row, dyn_seg) {
 
 // Write: one verb, and the payload picks the path.
 // Merge — only the names given are touched; a declared name takes the typed
-// path (faces, reduces, events); unknown names join the dynamic segment.
+// path (faces, reduces, events as one), unknown names join the dynamic segment.
 users.put(&key, &patch)?;                       // Dict
 
 // Replace — the map IS the document (absent declared fields default, unnamed
 // dynamic names are removed). The one-element tuple is the whole-document arm.
 users.put(&key, (&doc.unwrap_or_default(),))?;
 
-// A decoded value writes as itself; a non-object payload is refused, because a
-// scalar is a field VALUE and not a document.
+// A value already in hand writes as itself; a non-object payload is refused,
+// because a scalar is a field VALUE and not a document.
 users.put(&key, &Variant::Map(patch))?;
 
-// Purge: both slots, one commit.
+// Purge: both slots together, one commit.
 users.purge(&key)?;
 ```
 
-Embedded-language readers (Python / Steel Booths) consume the schema
-export through the dynamic codec — `bindings/okm-python` (PyO3) and
-`bindings/okm-steel` encode/decode byte-identically with the Rust
-derive; version-default migration applies on that path too.
+Embedded-language readers (Python / Steel booths) consume the dynamic codec through the schema export — `bindings/okm-python` (PyO3) and `bindings/okm-steel` are byte-identical with the Rust derive, and version-default migration applies on that path too.
 
-### 4. Relations at runtime: relation tables and graph
-
-```rust
-// Many-to-many: the row IS the relation, and each direction is a face.
-let links: Collection<_, UserToSessionKey, UserToSession> = Collection::new(store.clone());
-links.put(&UserToSessionKey { org_id, user_id, session_id }, &UserToSession { role: 1 })?;
-let sessions = links.scan::<BySession>(&BySession::prefix().session_id(session_id).finish())?;
-links.purge(&UserToSessionKey { org_id, user_id, session_id })?;
-
-// Graph: endpoints are self-describing refs — no registry, no width table.
-let mut g: Graph<_, Employment> = Graph::new(store.clone());
-g.link(&EdgeHead {
-    src: NodeRef::new(&10u16.to_be_bytes(), &1u64.to_be_bytes()),  // [ns][len][pkey]
-    dst: NodeRef::new(&11u16.to_be_bytes(), &9u64.to_be_bytes()),
-    predicate: "employs".into(),                                  // runtime data, vocabularised
-}, &Employment { since_year: 2020, weight: 7 }, 1)?;             // edge id is the caller's
-
-g.out_nodes(&user_ref);                       // one-hop neighbours as NodeRefs
-g.typed_out("employs", &user_ref);            // predicate-qualified traversal (0x09 face)
-g.in_edges(&org_ref);                         // who points here
-g.predicates();                               // every relation type: one 0x04 prefix scan
-g.by_attr_face(<BySince as KvIndex>::SLOT, &2020u16.to_be_bytes()); // declared attribute face
-g.unlink(1)?;                                 // decodes the body, deletes exactly those faces
-```
-
-Division of labour: `Refs` and a relation table are for fixed, typed endpoint pairs;
-a graph edge is for open endpoints, runtime predicates, parallel edges and
-attributes. Node "types" stay ordinary document collections — the ns is the
-type marker, so node-kind filtering is that collection's own index.
-
-### 5. Multi-table atomic writes: the batch path
-
-One `Batch`, one commit, everything or nothing (ADR-0003). A routine
-single-collection write needs no batch from the caller: `put`, `purge`,
-`merge`, `replace` and `purge` build one internally — primary entry, faces, embedded children,
-the releases the old document dropped, the reduce RMWs and vocabulary growth —
-and commit it once, so one semantic write is one engine commit and one crash
-boundary. The caller-owned batch below is for writes that span assembly
-points. Document writes encode with `save_with_prev_into`, edges and
-junctions with their `*_into` siblings:
-
-```rust
-let mut batch = Batch::default();
-users.save_with_prev_into(&mut batch, &key, &new_row, Some(&old_row));
-g.link_into(&mut batch, &head, &attrs, 7)?;
-store.commit_batch(batch)?;                    // rows, faces and ledgers land together
-```
-
-`save_with_prev_into` is the ONE document verb for this path — an encoding-only
-predecessor existed and is gone, because it left every rule below to the caller.
-The reduce fold/unfold and the stale-face cleanup run through a `BatchStore`
-— a read-through view of the batch, so a same-group fold sees the value the
-same batch already produced instead of double-counting
-([ADR-0031](docs/adr/0031-batch-write-semantics.md)). Subscribe emission stays
-out of the batch path by decision: a batch writer owns its events, and
-announcing an uncommitted write would announce one that may never land.
-Callers do not push ops into the batch by hand — `save_with_prev_into` /
-`link_into` encode the keys and faces for them; the op list itself is the
-internal seam the engines, the wire frames and the dynamic plan consume.
-
-### 6. Engine backends
+### 4. Engine backends
 
 ```toml
 [dependencies]
@@ -376,25 +304,78 @@ okm-core = { version = "0.1", features = ["fjall"] }    # or "redb"; the async e
 ```
 
 - **fjall** (sync): `FjallStore::open(path)` — local LSM engine, single `Database` handle, `persist` on demand.
-- **slatedb** (async): `SlatedbStore::open(path, Arc<dyn ObjectStore>)` — object-storage-backed; use `slatedb::object_store` re-exports to construct stores so versions always match slatedb's internals. Async traversal goes through the same `Collection` doors.
+- **slatedb** (async): `SlatedbStore::open(path, Arc<dyn ObjectStore>)` — object-storage backed; construct stores from the `slatedb::object_store` re-exports so versions always match slatedb's internals. Async traversal goes through the matching async iterators.
 - **TestStore**: the test matrix over the real engines (slatedb in-memory, fjall temp dir, redb temp file) — no mock implementation to drift from the real ones.
+
+### 5. Relations at runtime: the graph
+
+A graph's declaration is the whole graph: `#[ok_ns]` sets the trust domain, `#[ok_nodes(User, Org)]` lists the member **tables** (the derive generates the enum and its `NodeSet` from them, one variant per collection), and `#[ok_index]` declares faces explicitly.
+
+```rust
+#[derive(GraphEncode, Clone, Default)]
+#[ok_ns(100)]
+#[ok_nodes(User, Org)]
+#[ok_index(by_since { fields(since_year) })]
+struct Employment {
+    since_year: u16,
+    weight: u32,
+}
+```
+
+Writing has one verb, and a fragment (`Fragment`) is its only input: the declaration collects nodes and edges, optionally chains a cluster and three conflict hooks, and a `None` part means it is not done.
+
+```rust
+let mut x = Fragment::<Employment>::new([
+    Decl::Node(EmploymentNode::User, user_key),          // endpoints created on demand
+    Decl::Edge(EdgeHead { src, dst, predicate: "employs".into() }),
+]);
+x.cluster(Cluster::new(Kind::EVENT, payload))            // form a cluster (optional)
+ .on_node_conflict::<User>(|old, _declared| User { seen: old.seen + 1 })   // updates go through a hook
+ .on_edge_conflict(|_stored, declared| Employment { weight: declared.weight + 1 })
+ .on_cluster_conflict(|_stored, declared| {
+     let mut row = declared.clone();
+     row.insert("weight", …);
+     row
+ });
+graph.incorporate(x)?;                                   // one landing: endpoints, edges, member rows, hooks
+```
+
+Each hook is handed the STORED payload and the DECLARED one and answers the row to write — `|old, _| old.clone()` keeps what is there, `|_, declared| declared.clone()` overwrites, `|old, declared| if declared.ts >= old.ts { declared.clone() } else { old.clone() }` is last-writer-wins; a rule the mutate-in-place form could not state, because the callback never saw the incoming value.
+
+Deletion is the reverse verb, and its two rules differ: deleting a node deletes every edge of it (an edge cannot be missing an endpoint), deleting an edge keeps both endpoints (afterwards they may connect no edge at all — "a node exists only when it becomes an endpoint" is a write premise, not an invariant after deletion).
+
+```rust
+graph.retract(Fragment::new([]).delete_node(user_key).delete_edge(7))?;
+```
+
+Traversal is an ordered stream, one `next()` per hop: `out` and `inn` yield the same `EdgeStep` (direction is an argument, not two APIs), predicate filters push down to the `0x08`/`0x09` prefixes, `find`/`take_while` short-circuit naturally, and dropping the stream stops it. The streams implement `Seekable`, so `intersect`/`difference`/`union` share one implementation with set algebra and with cluster-member streams.
+
+Clusters (hyperedges) land in three fixed faces: `0x0A` the cluster row (value = `parent_id` + dynamic payload), `0x0B` edge membership, `0x0C` the child-cluster index; plus `0x0D`, a derived edge→cluster index, so "which clusters does this edge belong to" is one point read. Membership records edges only; the participants are the two endpoints of the member edges, and the projection happens at the call site.
+
+### 6. Cross-table atomic writes: one fragment, one commit
+
+`Fragment` is the carrier of a cross-table write: the nodes, edges, member rows and conflict hooks of one batch commit together or not at all. There is no cross-table transaction language and no cascade mechanism — consistency rests on "one fragment = one commit", and on the two premises the write entry point enforces (a node must be an endpoint of some edge, a cluster needs at least two members).
+
+```rust
+let mut x = Fragment::<Employment>::new([Decl::edge_at(head, 7)]);  // restating the same id = in-place update
+x.on_edge_conflict(|_stored, _declared| new_payload.clone());
+graph.incorporate(x)?;                                              // id, face and member rows stay put
+```
+
+Different carriers are separate commits: an edge's payload lives on the graph, its open attributes live in the document's dynamic segment (`0x01`), and the two belong to two write paths; when both must land together, the caller puts them in one higher-level flow rather than asking the engine to guess.
 
 ## Interface layers
 
-Four tiers, each built on the one below it. The rule across all four: **a tier
-speaks in the currency of the one below it** — declarations emit bytes, assembly
-points call the engine contract, engines see nothing but bytes.
+Four tiers, each built on the one below it. The rule across all four: **a tier speaks in the currency of the one below it** — declarations emit bytes, assembly points call the engine contract, engines see nothing but bytes.
 
 | Tier | The interface | What it commits to |
 |---|---|---|
 | Declaration | `KeyEncode` / `DocumentEncode` / `GraphEncode` (okm-derive) | pure `Vec<u8>` in/out — no storage, no I/O, no engine type; that is what keeps each derive a single-item pure function |
-| Assembly | `Collection<S, K, R>` / `Graph<S, E>`, plus the reduce and subscribe hooks | binds ONE engine instance; `&self` for both (writes hold no `&mut`: the collection is `!Sync`, so one owner is checked at compile time); `Graph` keeps `&mut self` because its predicate vocabulary is a mutable cache field; the declaration IS the registry, so there is no runtime schema object to keep in sync |
-| Engine contract | `VirtualStorage` / `SharedVirtualStorage` (`okm-core/src/engine/storage.rs`); `VirtualStorageAsync` is its mirror in `okm-async` (ADR-0059) | the seven methods over encoded bytes — the only thing a backend must speak; the async mirror exists for engines and transports whose own API is async |
+| Assembly | `Collection<S, K, R>` / `Graph<S, E>`, plus the reduce and subscribe hooks | binds **one** engine instance; reads and writes both take `&self` (a write needs no `&mut`: the collection is `!Sync`, so its single owner is fixed at compile time); `Graph` keeps `&mut self`, because its predicate vocabulary is a mutable cache field; the declaration IS the registry, so there is no schema object to keep in sync at run time |
+| Engine contract | `VirtualStorage` / `SharedVirtualStorage` (`okm-core/src/engine/storage.rs`); `VirtualStorageAsync` is its mirror in `okm-async` (ADR-0059) | the seven methods over encoded bytes — the only language a backend must speak; the async mirror serves only engines and transports whose own API is async |
 | Consumers | okm-query / okm-stream / okm-graph / okm-vector / okm-ngram / bindings | sit above the assembly tier and consume its outputs (ordered scan streams, subscribe events, documents) with zero core changes |
 
-Both schema carriers — compiled declarations (okm-derive) and schema data
-(okm-dynamic) — reach the same two lower tiers, so "which mode" never changes
-the engine contract or the bytes.
+Both schema carriers — compiled declarations (okm-derive) and schema data (okm-dynamic) — reach the same two lower tiers, so "which mode" never changes the engine contract or the bytes.
 
 ### The engine tier in full
 
@@ -402,66 +383,46 @@ One contract, two worlds, one carrier, two adapters:
 
 | Item | Kind | Contract |
 |---|---|---|
-| `VirtualStorage` | sync contract | `put` / `get` / `del` / `scan_suffix` / `scan_range` / `commit_batch`; writes take `&self` (ADR-0026); `scan_range` is the ONE ordered-read primitive (a lazy `ScanIter` of `(key, value)` pairs) — `scan_suffix` defaults onto it and the eager form is the caller's `.collect()` |
-| `VirtualStorageAsync` | async mirror | the same surface, awaited (`SlatedbStore`, `WireClient`) |
-| `SharedVirtualStorage` | capability | `shared_handle()` returns a handle to the SAME physical keyspace, never a copy; required by `NestStorage` and by fetch-back inside `scan_range` |
-| `Batch` | carrier | an ordered op list (`ops: Vec<(key, Option<value>)>`: `Some` = put, `None` = del, **no dedupe** — the list is replayed in order). `Default` + `put` / `del` is its whole API, and the assembly points are what fill it; one `commit_batch` flushes it as a single engine-level write |
-| `ScanIter` | iterator | opaque enum over each backend's native owned iterator (fjall / redb / slatedb / remote / buffered); `DoubleEndedIterator` wherever the engine can walk backwards |
-| `BatchStore<'a, S>` | adapter | a batch as a writer: point reads see pending ops newest-first then the store, writes only append, scan shapes panic (ADR-0031) |
+| `VirtualStorage` | sync contract | `put` / `get` / `del` / `scan_suffix` / `scan_range` / `commit_batch`; writes take `&self` (ADR-0026); `scan_range` is the **only** ordered-read primitive (a lazy `ScanIter` of `(key, value)` pairs) — `scan_suffix` defaults onto it, and the eager form is the caller's `.collect()` |
+| `VirtualStorageAsync` | async mirror | the same surface, awaited (`SlatedbStore` and `WireClient` implement it) |
+| `SharedVirtualStorage` | capability | `shared_handle()` returns a handle to the **same physical keyspace**, never a copy; required by `NestStorage` and by fetch-back inside `scan_range` |
+| `Batch` | carrier | an ordered op list (`ops: Vec<(key, Option<value>)>`: `Some` = put, `None` = del, **no dedupe** — replayed in order). `Default` + `put` / `del` is its whole API, and the assembly points are what fill it; one `commit_batch` flushes it as a single engine-level write |
+| `ScanIter` | iterator | a closed enum over each backend's native owned iterator (fjall / redb / slatedb / remote / buffered); `DoubleEndedIterator` wherever the engine can walk backwards |
+| `BatchStore<'a, S>` | adapter | a batch as a writer: point reads see pending ops newest-first then the store, writes only append, every scan shape panics (ADR-0031) |
 
-Eight types implement the sync contract — six backends and two adapters:
+Eight implementations of the sync contract — six backends and two adapters:
 
 | Type | Where | Kind | Shared |
 |---|---|---|---|
 | `FjallStore` | `engine/fjall_backend.rs` | local LSM (feature `fjall`) | yes |
 | `RedbStore` | `engine/redb_backend.rs` | COW B-tree (feature `redb`) | yes |
 | `SlatedbSync` | `engine/slatedb_backend.rs` | sync view over slatedb; the async face is `SlatedbStore` | no |
-| `RemoteStore` | `engine/nest.rs` | wire client; its server half `NestStorage` is a pump over one engine mutex, NOT a `VirtualStorage` | no |
+| `RemoteStore` | `engine/nest.rs` | wire client; its server half `NestStorage` is a pump over one engine mutex, **not** a `VirtualStorage` | no |
 | `TestStore` | `engine/test_engine.rs` | test matrix over the real engines (slatedb-mem / fjall / redb) | yes |
 | `EngineBox` | `bindings/okm-entry` | **adapter**: dispatches to an in-process `TestStore` or a host-injected `Engine` (four byte methods) — what lets a host hold a different okm build | no |
 | `BatchStore` | `engine/storage.rs` | **adapter**: decorates an `S`, redirects writes into a `Batch`, lands nothing itself | no |
 
 #### `BatchStore` is a façade, not a backend
 
-It implements the trait it decorates (`impl VirtualStorage for BatchStore<'_, S>`),
-which is how the reduce read-modify-write runs through a batch without knowing
-it is writing into one. What it adds is a redirection, not a capability:
+It implements the trait it decorates (`impl VirtualStorage for BatchStore<'_, S>`), which is how the reduce read-modify-write runs through a batch without knowing it is writing into one. What it adds is a redirection, not a capability:
 
-- **writes do not pass through** — `put` / `del` only append to the `Batch`;
-  **reads do** — `get` checks the batch's newest op for that key, then the store;
-- it owns no data and borrows the engine (`store: &'a S`): a temporary view
-  bound to the borrowed batch, not something to hold on to or hand out;
-- **the commit lives outside it** — `commit_batch` is the caller's call on the
-  engine; called on the adapter instead, it only merges the inner ops into the
-  outer batch;
-- no `SharedVirtualStorage` (so `NestStorage` and `scan_range`'s fetch-back
-  refuse it), and every scan shape panics rather than answer a partial view.
+- **writes do not pass through** — `put` / `del` only append to the `Batch`; **reads do** — `get` checks the batch's newest op for that key, then the store;
+- it owns no data and only borrows the engine (`store: &'a S`): a one-off view bound to the borrowed batch, not something to hold or hand out;
+- **the commit lives outside it** — `commit_batch` is the caller's call on the engine; called on the adapter instead, it only merges the inner ops into the outer batch;
+- no `SharedVirtualStorage` (so `NestStorage` and `scan_range`'s fetch-back both refuse it), and every scan shape panics rather than answer a partial view.
 
-Decision records live in [docs/adr/](docs/adr/); implementation status is
-[docs/PLAN.md](docs/PLAN.md).
+Decision records live in [docs/adr/](docs/adr/); implementation status is [docs/PLAN.md](docs/PLAN.md).
 
 ## Design notes
 
-- **Namespace stays in code** — the namespace vocabulary is compile-time constants, never stored in KV. The access pattern itself lives in code (binary keys, no separators, per-field widths); putting ns in code is the same act as putting the key layout in code. Macros run at compile time when no KV exists to read from — a vocabulary in KV is a bootstrap deadlock. Numbers are manually assigned, append-only, never reused; see [ADR-0002](docs/adr/0002-namespace-dictionary.md).
-- **Two layout regimes** — primary keys are fixed-width (zero parsing, hot path); secondary indexes are variable-length (text as discriminating prefix, UTF-8 byte order = dictionary scan order, primary-key ID appended at the key tail, value left empty). Width is a property of *structure*, not *data*; the discriminator is access pattern: point-lookup-only may hash to fixed width, anything needing prefix/range scan must keep raw text. Variable-length fields use a length prefix `[len: u16][bytes]` over NUL termination (no escaping burden); a fixed-width field *after* a variable-length one loses its compile-time offset and falls back to a runtime cursor — "fixed-width prefix + variable tail" keeps most of the zero-parsing benefit. Hex stability tests still apply to variable-length keys: what they lock is the encoding scheme itself (prefix layout, length endianness, limits), not specific bytes. The name→id index is the mainstream case and is almost always variable-length, since an index exists to answer prefix/range queries. See the [KV Storage Engine](https://github.com/orbsh/wiki/blob/main/kv-storage-engine-en.md) essay for the full argument.
-- **Macro layer is deliberately storage-free** — encode/decode are pure `Vec<u8>` in/out functions; engine choice and lifecycle belong to the assembly site (`<Document>::collection(store)`). This is what keeps each derive a single-item pure function.
-- **Portability**: the paradigm is bytes-level and host-language independent — a Python dataclass with the same `encode()` reproduces the layout, at the price of moving guarantees from compile time to runtime assertions (SlateDB's Python bindings via UniFFI provide the needed primitives: `get` / `scan_prefix` + `KeyRange` / `WriteBatch` / transactions). Portability has a structural cost, however: type errors move from compile time to runtime (`assert` instead of the compiler), encoding is byte-concatenation rather than memcpy-level offsets (1–2 orders of magnitude slower on hot paths), and decorators/metaclass registration is a runtime cost instead of a compile-time expansion. Same paradigm, guarantee level set by the host language.
+- **Namespace stays in code** — the namespace vocabulary is compile-time constants, never stored in KV. The access pattern itself lives in code (binary keys, no separators, per-segment widths defined by code), so putting ns in code is the same act as putting the whole key layout in code. Macros run at compile time, when there is no KV to read — a vocabulary in KV would be a bootstrap deadlock. Numbers are assigned by hand, append-only, never reused; see [ADR-0002](docs/adr/0002-namespace-dictionary.md).
+- **Two layout regimes** — primary keys are fixed-width (zero parsing, hot path); index entries are variable-length (discriminating text up front, so UTF-8 byte order = dictionary scan order; the primary-key ID rides at the key tail and the value is left empty). Width is a property of *structure*, not *data*; the test is access pattern: point lookups only may hash to fixed width, while anything needing prefix/range scan must keep raw text. Variable-length fields use a length prefix `[len: u16][bytes]` rather than NUL termination (no escaping burden); a fixed-width field *after* a variable-length one loses its compile-time offset and falls back to a run-time cursor — "fixed-width prefix + variable tail" keeps most of the zero-parsing benefit. Hex stability tests still apply to variable-length keys: what they lock is the **encoding scheme itself** (prefix layout, length byte order, limits), not specific bytes. The name→id index is the mainstream case and is almost always variable-length, since an index exists to answer prefix/range queries. The full argument is in [KV Storage Engine](https://github.com/orbsh/wiki/blob/main/kv-storage-engine-en.md).
+- **Macro layer is deliberately storage-free** — encode/decode are pure `Vec<u8>` in/out functions; engine choice and lifecycle belong to the assembly site (`Collection::new(store)`). This is what keeps each derive a single-item pure function.
+- **Portability**: the paradigm acts at the byte layer and is independent of the host language — a Python dataclass with the same `encode()` reproduces the layout (SlateDB's Python bindings via UniFFI provide the needed primitives: `get` / `scan_prefix` + `KeyRange` / `WriteBatch` / transactions). Portability has a structural cost, though: type errors move from compile time to run time (`assert` instead of the compiler), encoding is byte concatenation rather than memcpy-level pointer offsets (1–2 orders of magnitude slower on hot paths), and decorators/metaclasses register at run time instead of expanding at compile time. Same paradigm, guarantee level set by the host language's capability.
 
-## Why not just use a (ready-made) database?
+## Related docs
 
-A side benefit of OKM: engine selection anxiety disappears. The actual menu is long — PostgreSQL, DuckDB, Lakehouse, SurrealDB… — and OKM speaks plain bytes, so any engine that can put and get them qualifies.
-
-The workload OKM is shaped for is not a rare one. Most applications conduct a fixed set of data operations: one version ships its shapes, the next version ships a different fixed set — the query set moves with the deploy, not with the statement, and within a version nothing moves at all. The two activities that genuinely invent queries at run time are ad-hoc analysis and database administration, and they are another solution over the same data (an analytics engine, a BI layer, a database console), not the path an application's requests take.
-
-A general-purpose database nevertheless bills every request for that possibility. The statement is parsed on every execution, a schema change takes a DDL lock, and the planner re-walks its alternatives for a query the code has issued unchanged since the version shipped. Generality is real; it is only rented by the operation, and a workload that never redeems it pays the rent anyway. OKM stops paying: the schema is the type system (a change is a deploy, the compiler is the validator), the access path is named at the call site instead of discovered per query, and what remains of the statement is machine code.
-
-Ad-hoc query, on the other hand, does not need to move into the store to be answered. What it actually asks for is columns, not access paths: an analytical question scans, filters and aggregates, and it does not use the store's indexes at all — the key layout, the declared faces, the prefix scans are beside the point. The format that carries that work is Parquet, and OKM's answer to the ad-hoc surface is an export path rather than a second query runtime: rows → Parquet (engine-independent, one file set per table), then whatever answers the question — DuckDB, Spark, a warehouse — is the query engine. The transactional path stays byte-shaped; the analytical question gets a columnar one.
-
-That path is already incremental, and one step further than Parquet files in a directory. The change log (ADR-0045) captures at the commit boundary, core joins sealed segments into windows (`okm_core::changelog::window`), and the `okm-lake` binary projects each window to a file, moving its watermark only after the file exists — a window is history, not current state, so compaction belongs to the sink. Each window is then one commit in a Delta log over the exported directory (`okm_lake::delta`), which makes the directory a table a reader can open by path with nothing registered anywhere: verified end to end against DuckDB's `delta_scan` from a working directory outside the table, including `variant_extract` over a document's open fields. Removals are expressible two ways: a window that carries one writes a change row (`okm_op` / `okm_slot` / `okm_seq`, ADR-0058 § Amendment), and `okm-lake condense` folds a table's change files into one current-state file and commits a `remove` per file it replaced — copy-on-write, so no key→file index is needed (the drain can do it on its own once the change files pass `--fold-after-files` / `--fold-after-bytes`). Still owed, and it is sink work, not store work: row-level deletion vectors (which do need that index), partitioning and file-size targets.
-
-The one place the shape does change is an application upgrade, and there the argument has to be honest: SQL lets a schema change online, OKM does not. A shape change is a migration with exactly one path — replay the change log into a store built by the new code ([ADR-0056](docs/adr/0056-the-segment-is-the-migration-path.md)) — and because a KV store has a single writer, even an upgrade that changes no byte format needs a stop-and-swap. The shape is blue/green ([ADR-0042](docs/adr/0042-layout-versions-are-stamps.md)): the new build runs as a second process on its own store and replays baseline plus segments until it is caught up, the old instance keeps serving and then drains its tail into the log, one short cutover stop applies that tail, and traffic is switched by a program the deployment names (`ChangelogConfig.handover`) which the NEW instance runs once it holds the claim. Who may write is a per-table `owner` file beside the segments, not a process anyone has to trust: the old writer seals, records the position a reader can see, and it is that number the new build has to match before it may accept a write ([ADR-0056](docs/adr/0056-the-segment-is-the-migration-path.md) §6). The MIGRATION carrier is `okm_core::changelog::replay` (`okm-log replay` is its CLI): it walks a table directory (baseline, segments, sidecars) and writes the rows through the target's write path, re-interning vocabulary labels so the target's ids are its own. The mechanism is core's because replaying a segment is not a format — it is what the log is for. The built-in `okm_lake::snapshot::parquet_io::export_parquet` / `import_parquet` pair is a dump/restore of the CURRENT STATE — a deleted row is absent from it because it reads the store, not the history — and import restores through the normal write path, so index entries are rebuilt from the rows rather than carried. Two different jobs: state travels as a snapshot, changes travel as segments. The log-based replay is the path that takes Parquet out of the loop, because a columnar append cannot express a removal. The cost is a scheduled window, not a tax on every request — and a tax on every request is exactly what a runtime schema charges.
-
-
-## License
-
-To be decided upon publication.
+- [Modeling Guide](docs/MODELING.md) — the normative modeling method (four layers, three read paths, covering-index restraint)
+- [Architecture](docs/ARCHITECTURE.md) — the two-layer declaration machine (derive expansion + constant tables)
+- [Key Layout](docs/internals/key-layout.md) — key-space layout and fixed face allocation
+- [Query Recipes](docs/query-recipes.md) — how merge / intersect / difference / union compose into SQL shapes

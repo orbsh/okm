@@ -965,21 +965,48 @@ The write entry point adds no new declaration kind:
 
 ```rust
 let mut x = Fragment::<G>::new([Decl::Node(G::Nodes::User, key), Decl::Edge(head)]);
-x.cluster(Cluster::new(Kind::EVENT, payload))   // None creates, Cluster::into(id) incorporates
- .reduce_node::<User>(|u| u.seen += 1)          // registered per collection: node rows differ
- .reduce_edge(|e| e.weight += 1)                // one edge payload type per graph
- .reduce_cluster(|c| c.insert("weight", …));    // a cluster's payload is dynamic
-graph.incorporate(x);                           // endpoints, edges, member rows, three reduces
+x.cluster(Cluster::new(Kind::EVENT, payload))            // None creates, Cluster::into(id) incorporates
+ .on_node_conflict::<User>(|old, _declared| User { seen: old.seen + 1 })  // per collection: node rows differ
+ .on_edge_conflict(|_stored, declared| Employment { weight: declared.weight + 1 })  // one edge payload type per graph
+ .on_cluster_conflict(|_stored, declared| {              // a cluster's payload is dynamic
+     let mut row = declared.clone();
+     row.insert("weight", …);
+     row
+ });
+graph.incorporate(x);                           // endpoints, edges, member rows, three hooks
 
 // Everything after the declarations is optional: a fragment of declarations alone writes just the nodes and edges.
 graph.incorporate(Fragment::new([Decl::Node(G::Nodes::User, key)]));
 ```
 
-`Decl` has exactly two variants; node kinds come from the enum `#[ok_nodes(..)]` generates. `None` creates and returns the id, `Some` incorporates into an existing cluster, membership is idempotent, and the three reduces run in the same commit — which is how a cluster's member count and weight are maintained, with no second read-modify-write. The other operations ride the same rows: `remove`, `incorporate(sources, into)`, `split`, `reassign`, `lookup`, `members`, `children`, `diff`.
+`Decl` has exactly two variants; node kinds come from the enum `#[ok_nodes(..)]` generates. `None` creates and returns the id, `Some` incorporates into an existing cluster, membership is idempotent, and the three conflict hooks run in the same commit — which is how a cluster's member count and weight are maintained, with no second read-modify-write. Each hook takes the STORED payload and the DECLARED one and answers the row to write, so "keep what is there", "overwrite", "take the larger stamp" are one expression each instead of a mutation of a row the callback never sees. The other operations ride the same rows: `remove`, `incorporate(sources, into)`, `split`, `reassign`, `lookup`, `members`, `children`, `diff`.
 
 `0x0D` is the same membership read backwards: `0x0B` answers "who is in this cluster", `0x0D` answers "which clusters is this edge in". Without it the second question is a suffix scan of every member row of the kind — fine once per retract, wrong once per traversal hop — and with `edge_id` leading, its entries are in the order an edge-id stream already has, so "the member edges of C that these nodes point at" is one intersection of two ordered streams (`graph.clusters_of` against a member cursor) instead of a set built on the caller's side. `member_of(kind, cluster, edge)` is the same face's exact key, one point read, which is what lets a membership test be a `.filter` inside a traversal. Its cost is stated where it is paid: one extra entry per member row on every write, and the node form of `clusters_of` is one scan per incident edge — the price of keying the face by edge.
 
 A cluster is an assertion, so `0x0A`/`0x0B` are Truth in the changelog and `0x0C`/`0x0D` are Derived and rebuildable. Deleting an edge deletes its membership rows in the same batch; a cluster below two members disappears — a node exists only as an endpoint, a cluster only with members — and those two write-time rules are what make "every member has an edge" true without a defensive shape.
+
+### The same clusters when the schema is data
+
+`okm-dynamic` is the form a store without declared Rust types uses: the schema arrives as data (`CollectionSchema`), an endpoint is a `NodeRef` and every payload is a `Dict`. It carries the **same** cluster faces — `0x0A` the cluster row with its `[parent_id u64 BE][payload]` head, `0x0B` the member edges, `0x0C` the derived child index, `0x0D` the derived edge → cluster index — because the keys are built by the same functions and the vocabulary is the same one: a cluster is still addressed by `(kind, hyper_id)`. What changes is only what this form always changes: no `#[ok_nodes]` member set to check, no declared payload type, and no node declarations at all — on this form a node IS an endpoint, so a `NodeRef` (ns + bare key bytes) is the whole address.
+
+```rust
+let mut fragment = okm_dynamic::DynFragment::new([
+    Decl::edge(DynEdge { src: alice(), dst: acme(), predicate: "works_at".into(), attrs }),
+    Decl::edge(DynEdge { src: bob(), dst: acme(), predicate: "works_at".into(), attrs }),
+]);
+fragment
+    .cluster(Cluster::new(Kind::EVENT, payload))    // None creates; Cluster::into(kind, id, …) adopts
+    .on_edge_conflict(|stored: &Dict, declared: &Dict| { … })   // Dict in, Dict out: there is no declared type
+    .on_cluster_conflict(|stored: &Dict, declared: &Dict| { … });
+graph.incorporate(fragment)?;                       // edges + clusters + hooks, ONE batch
+graph.retract(fragment)?;                           // delete_node / delete_edge / delete(cluster)
+```
+
+The two delete rules are the static form's, unchanged: deleting a **node** takes every edge incident to it — both traversal faces, the predicate faces, the payload row, the dynamic segment and those edges' membership rows — and deleting an **edge** leaves both endpoints alone, even when they are then connected to nothing. A cluster below two members stops existing, so its remaining membership rows leave too. Membership is idempotent in the same way (`(kind, cluster, edge)` twice is one row), and a re-asserted edge updates only its frames: the declaration carries a `Dict`, the reduce folds over it — on a live id it folds over the STORED map, which is what makes an update `incorporate` with a reduce instead of a verb.
+
+The reads are the same shapes, so a schema-as-data store answers the same questions: `member_of(kind, cluster, edge)` is the derived face's exact key (one point read, and therefore a `.filter` on a hop), `members(kind, cluster)` is one scan of `0x0B`, `children(kind, parent)` one scan of `0x0C`, `lookup(kind, id)` one point read of the row, and `rebuild_derived(chunk)` rebuilds `0x0C` from the cluster rows and `0x0D` from the member rows alone.
+
+Traversal is the same stream, one type for both directions: `out` / `inn` / `walk` answer a `DynEdgeStream` yielding `EdgeStep { edge_id, far, head }`, the far endpoint taken from the entry's key (no row is read to make a hop), `.by("predicate")` pushed down onto the `0x08`/`0x09` prefix rather than filtered afterwards, and `find` / `take` / `take_while` reading only up to the answer. The stream implements the same `Seekable` contract over its raw entry key, so `okm-query`'s `intersect_seek`, `difference` and `union` apply unchanged. The point for a schema-as-data store is that the **query shapes do not fork**: "which of this node's edges are in cluster C" is the same alignment of two ordered streams — a walk and a member set — whether the payloads are declared types or `Dict`s.
 
 ### What belongs in a graph
 

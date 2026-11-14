@@ -38,16 +38,16 @@ The star shape loses information the model needs: two sets over the same vertice
 ```rust
 let mut fragment = Fragment::<G>::new([Decl::Node(G::Nodes::User, key), Decl::Edge(head), …]);
 fragment.cluster(Cluster { kind, id, payload })         // id None = create, Some = merge
- .reduce_node::<User>(|u: &mut User| u.seen += 1)       // per collection: node rows are heterogeneous
- .reduce_edge(|e: &mut E| e.weight += 1)                // one payload type per graph
- .reduce_cluster(|c: &mut Dict| …);                     // clusters are dynamic
-graph.incorporate(fragment);                            // endpoints, edges, member rows, three reduces
+ .on_node_conflict::<User>(|old, _declared| User { seen: old.seen + 1 })   // per collection: node rows are heterogeneous
+ .on_edge_conflict(|_stored, declared| E { weight: declared.weight + 1 })  // one payload type per graph
+ .on_cluster_conflict(|_stored, declared| declared.clone());                // clusters are dynamic
+graph.incorporate(fragment);                            // endpoints, edges, member rows, three hooks
 
 // Only the declarations are required: a fragment with nothing attached writes just the nodes and edges.
 graph.incorporate(Fragment::new([Decl::Node(G::Nodes::User, key)]));
 ```
 
-Endpoints are created on demand, membership is idempotent (same `(kind, group, member)` upserts), and all three reduces run in the same batch — which is where ADR-0028's counters land. Other operations ride the same row kind: `remove`, `incorporate`, `split`, `reassign`, `lookup`, `members`, `diff`.
+Endpoints are created on demand, membership is idempotent (same `(kind, group, member)` upserts), and all three conflict hooks run in the same batch — which is where ADR-0028's counters land. Each hook is handed the stored payload beside the declared one and answers the row to write, so "keep", "overwrite" and "take the newest stamp" are one expression each. Other operations ride the same row kind: `remove`, `incorporate`, `split`, `reassign`, `lookup`, `members`, `diff`.
 
 **8. Four fixed faces, taken from the freed core band.** `0x0A` the cluster, `0x0B` edge members, `0x0C` the derived child index `[ns][0x0C][kind][parent][child]`, which turns "list a cluster's children" into a clean prefix scan; it is derived from `parent_id` in the cluster rows and rebuildable by scanning them. `0x0D` the derived edge → cluster index `[ns][0x0D][edge_id][kind][hyper_id]`, the same membership read the other way: `0x0B` answers "who is in this cluster", `0x0D` answers "which clusters is this edge in", and it is derived from the member rows alone. Faces rather than one face plus in-row bytes, because the model's rule is that the face states what a row is. A new row kind goes into `0x0E` Extension under a sub-kind byte. Counting families are not used for clusters: their counters are declaration order with a 4095 ceiling, while clusters are runtime-unbounded.
 
