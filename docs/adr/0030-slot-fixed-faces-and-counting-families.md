@@ -215,14 +215,12 @@ of its own, which is what this ADR's "no bands" rule exists to prevent.
 - docs/internals/key-layout and slot-mechanism carry the layout tables;
   the mechanism text there is the pair of this decision.
 
-## Allocation runs from both ends
+## What the slot space actually is
 
-The one-byte slot space is allocated from both ends instead of being carved into fixed bands:
+A slot is a `u16`, and the encoding splits it, it is not a pool of 256 numbers. `0x0000`-`0x000F` are the fixed faces. Anything with a non-zero top nibble (`slot >> 12 != 0`) is a counting family, whose low twelve bits carry the counter. The gap in between — `0x0010` through `0x0FFF` — is rejected by the delimiter, so it is not available for a new fixed face even though it looks free in a byte dump.
 
-    0x00 -> upward      core structure (primary, dynamic segment, vocabularies, graph faces, cluster faces)
-    0xFF                metadata
-    0xFE -> downward    Extension: one number per row type, each owning its own contract
+Two consequences that the earlier version of this section got wrong:
 
-Core and Extension grow towards each other and only meet if their combined count approaches 254, so a band that needs more than its original share simply takes the next number on its side. The previous rule (a fixed core band plus a single Extension number whose subkinds lived in a second byte) rationed numbers that were never scarce: 240 of them were free while Extension subkinds queued behind one byte. Position still says which kind of row this is — low numbers are core, high numbers are Extension, `0xFF` is metadata — so a key dump stays readable without a table lookup.
+- A new core row type cannot simply take `0x10`. If it is a single row per key it needs one of the sixteen fixed faces; if it is a growing family it takes a family number. There is no "grow from both ends" pool.
+- A subsystem that needs a handful of its own faces either spends fixed-face numbers (there are sixteen, several are still unassigned) or takes one family number and keeps its discriminator inside the family's low bits.
 
-A row type that is core but belongs to a subsystem (the graph's handle faces, for instance) takes the next core number rather than a subkind: one number per row type was the rule the rest of the band already followed, and the subkind byte existed only to save numbers.

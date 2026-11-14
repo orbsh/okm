@@ -73,3 +73,11 @@ What it costs and what it buys, stated so the decision can be re-measured rather
 - Lifecycle. A handle outlives its last edge only as waste; the alternative is reference counting, which is a resource the model does not otherwise have. Waste is bounded by the number of nodes that have ever had an edge, and a handle space of `2^64` makes it a space question, not a correctness one. Compaction, when it exists, reissues from zero.
 
 Ordering is issue order, not key order: a range over handles is a range over "when this node first appeared", which no face may rely on for value ordering. That is why a handle can never serve as a key-order proxy, and why the graph's own faces never claim to be sorted by node key.
+
+## Nothing local leaves the store
+
+A handle is an access structure, not data. It is derivable from the identity, so it is never written to an export: not to the lake, not to parquet, not into a Python dict. A round trip is asserted by the tuple, never by a handle, and a handle table may be allocated in any order after a restore — the only stable property is that within one store handles are monotonic and never reused.
+
+The same rule covers every interned code. A vocabulary entry exports as its **label**, not as its number: the ids are local to a store's vocabulary and a restore re-interns them, in whatever order the target's own allocation produces (ADR-0062 already rules that the label is the identity and the id is local).
+
+The reason is not purity. Local codes are what a store does to make its own access cheap; an export exists to be read by something else. A columnar format carries its own compression, and a columnar reader has the whole column in view — it belongs in the dictionary, the run lengths and the encodings that fit the actual data, not in a narrow integer whose value means something only to the store that minted it. Exporting labels and tuples keeps the file self-describing and lets the storage engine compress better than any per-value choice we could make at write time.
