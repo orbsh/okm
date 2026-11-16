@@ -79,11 +79,7 @@ impl okm_core::storage::VirtualStorage for EngineBox {
             Self::Injected(e) => e.del(key).map_err(okm_core::error::Error::Engine),
         }
     }
-    fn scan_range(
-        &self,
-        begin: &[u8],
-        end: Option<&[u8]>,
-    ) -> okm_core::engine::storage::ScanIter {
+    fn scan_range(&self, begin: &[u8], end: Option<&[u8]>) -> okm_core::engine::storage::ScanIter {
         match self {
             #[cfg(feature = "test-engines")]
             Self::Test(s) => s.scan_range(begin, end),
@@ -93,8 +89,7 @@ impl okm_core::storage::VirtualStorage for EngineBox {
                 // point read per key — the same fetch-back the trait's old
                 // default did, now stated at the one boundary that still has a
                 // key-only source. Errors ride the items (ADR-0038).
-                let mut pairs: Vec<Result<(Vec<u8>, Vec<u8>), okm_core::error::Error>> =
-                    Vec::new();
+                let mut pairs: Vec<Result<(Vec<u8>, Vec<u8>), okm_core::error::Error>> = Vec::new();
                 match e.scan_range(begin, end) {
                     Ok(keys) => {
                         for k in keys {
