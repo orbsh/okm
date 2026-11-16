@@ -77,8 +77,8 @@
 0x02       字段名词汇表            [ns][0x02][field-id]        → 名字
 0x03       字段名词汇表            [ns][0x03][名字字节]        → field-id
 0x04/0x05  谓词词汇表            [ns][0x04][predicate_id]    （ADR-0017）
-0x06–0x0D  图面                  （ADR-0017、ADR-0041、ADR-0066）
-0x0E/0x0F  句柄登记册            （图的句柄，ADR-0033）
+0x06–0x0F  图面与簇面            （ADR-0017、ADR-0041、ADR-0066）
+0x10/0x11  句柄登记册            （图的句柄，ADR-0033）
 0x1E       Extension             （okm-vector 缓存——是固定面，不是 0x0A）
 0x1F       表元信息              （ADR-0043）
 0x2nnn     词汇表：label → id    [ns][0x2nnn][...]

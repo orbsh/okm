@@ -66,27 +66,11 @@ constants, so every site that assembles a key writes a slot the same way.
 
 ### 2. The fixed-face table (1 byte, 32 numbers)
 
-```text
-0x00  primary                      document collection or edge collection
-0x01  obj dynamic segment          [ns][0x01][pkey]                            value = toc_len | blocks | values ([dynamic segment](../internals/dynamic-segment.md))
-0x02  field-name vocabulary        [ns][0x02][field-id]                        → name
-0x03  field-name vocabulary        [ns][0x03][name]                            → field-id
-0x04  predicate vocabulary         [ns][0x04][predicate_id]                    → name
-0x05  predicate vocabulary         [ns][0x05][name]                            → predicate_id
-0x06  graph out (the edge)         [ns][0x06][src ref][pred][dst ref]          (value = the edge payload; ADR-0067)
-0x07  graph in                     [ns][0x07][dst ref][pred][src ref]          (empty, derived)
-0x08  graph predicate+out          [ns][0x08][pred][src ref][dst ref]          (empty, derived)
-0x09  graph predicate+in           [ns][0x09][pred][dst ref][src ref]          (empty, derived)
-0x0A  cluster                   [ns][0x0A][kind][hyper_id]           (value = parent_id + payload; ADR-0066)
-0x0B  edge member               [ns][0x0B][kind][hyper_id][src][pred][dst]  (ADR-0066/0067)
-0x0C  child cluster index       [ns][0x0C][kind][parent][child]    (derived, rebuildable)
-0x0D  edge → cluster index      [ns][0x0D][src_h][pred][dst_h][kind][hyper_id]  (derived, rebuildable)
-0x0E  handle → node             [ns][0x0E][handle 8]             → [node_ns 2B][pkey] (authority; ADR-0067)
-0x0F  node → handle             [ns][0x0F][node_ns 2B][pkey]     → [handle 8 BE]      (derived)
-0x10–0x1D  unassigned           ONE contiguous block — the band's only reserve
-0x1E  Extension                [ns][0x1E][subkind]…      each subkind owns its contract (0x01 = vector snapshot)
-0x1F  table meta                   [ns][0x1F]                   → name → bytes map (ADR-0043)
-```
+The fixed faces are DEFINED in one file — `okm-core/src/model/layout.rs`, with
+every width beside them — and this ADR states the rules that produced them, not
+a second copy of the table. Read the numbers there; read why the band exists
+here. A face moves by editing that file, and every key builder asks it for the
+width it adds, so a renumbering is one edit and a compile.
 
 Rows are grouped by ROLE — a vocabulary precedes the faces that read its
 ids; the NUMBERS are the mechanism. 0x1F is the highest face on purpose:

@@ -35,10 +35,19 @@
 
 use crate::engine::storage::{Batch, VirtualStorage, scan_suffix_kv};
 use crate::model::index::{
-    FIELD_VOCAB_ID_SLOT, FIELD_VOCAB_NAME_SLOT, PREDICATE_VOCAB_ID_SLOT, PREDICATE_VOCAB_NAME_SLOT,
-    Slot, segment, slot, write_slot,
+    CLUSTER_KIND_ID_SLOT, CLUSTER_KIND_NAME_SLOT, FIELD_VOCAB_ID_SLOT, FIELD_VOCAB_NAME_SLOT,
+    PREDICATE_VOCAB_ID_SLOT, PREDICATE_VOCAB_NAME_SLOT, Slot, segment, slot, write_slot,
 };
 pub use okm_value::{Id, Names, Vocabulary};
+
+/// The three vocabularies' id types and widths are defined in
+/// [`crate::model::layout`], beside the slots and the handle width: each keeps
+/// its own constant, so widening the predicate id cannot silently move a field
+/// name or a cluster kind.
+pub use crate::model::layout::{
+    CLUSTER_KIND_WIDTH, ClusterKindId, FIELD_VOCAB_WIDTH, FieldNameId, PREDICATE_VOCAB_WIDTH,
+    PredicateId,
+};
 
 /// The pair of faces one vocabulary occupies. Numbers are structural
 /// (ADR-0030): a vocabulary is a pair of counting-family faces, never a band
@@ -175,7 +184,7 @@ pub fn vocab_id<S: VirtualStorage + ?Sized>(
             .ensure(&mut Faces::<_, u8>::new(store, header, faces), label)?
             .be_bytes(),
         2 => Vocabulary::<u16>::new()
-            .ensure(&mut Faces::<_, u16>::new(store, header, faces), label)?
+            .ensure(&mut Faces::<_, FieldNameId>::new(store, header, faces), label)?
             .be_bytes(),
         4 => Vocabulary::<u32>::new()
             .ensure(&mut Faces::<_, u32>::new(store, header, faces), label)?
@@ -200,6 +209,13 @@ pub const FIELD_VOCAB: VocabFaces = VocabFaces {
 pub const PREDICATE_VOCAB: VocabFaces = VocabFaces {
     id_slot: PREDICATE_VOCAB_ID_SLOT,
     name_slot: PREDICATE_VOCAB_NAME_SLOT,
+};
+/// The collection's cluster-kind vocabulary (ADR-0066): the labels an
+/// application interns for its own groupings. okm stores the dictionary and
+/// never reads a word — "community" and "flow" are the caller's nouns.
+pub const CLUSTER_KIND: VocabFaces = VocabFaces {
+    id_slot: CLUSTER_KIND_ID_SLOT,
+    name_slot: CLUSTER_KIND_NAME_SLOT,
 };
 
 /// The store door for one vocabulary: the ns header, the two faces, and a
@@ -384,7 +400,7 @@ mod tests {
     #[test]
     fn allocates_sequentially_and_is_cached() {
         let store = MemStore::new();
-        let mut door = Faces::<_, u16>::new(&store, HEADER, FIELD_VOCAB);
+        let mut door = Faces::<_, FieldNameId>::new(&store, HEADER, FIELD_VOCAB);
         let mut d = Vocabulary::<u16>::new();
         let a = d.ensure(&mut door, "alpha").unwrap();
         let b = d.ensure(&mut door, "beta").unwrap();
@@ -419,8 +435,8 @@ mod tests {
         let mut kinds = Vocabulary::<u16>::new();
         // The same label allocates in both; the same number names two
         // different things — that is precisely what the split permits.
-        let mut fd = Faces::<_, u16>::new(&store, HEADER, FIELD_VOCAB);
-        let mut kd = Faces::<_, u16>::new(&store, HEADER, PREDICATE_VOCAB);
+        let mut fd = Faces::<_, FieldNameId>::new(&store, HEADER, FIELD_VOCAB);
+        let mut kd = Faces::<_, FieldNameId>::new(&store, HEADER, PREDICATE_VOCAB);
         assert_eq!(fields.ensure(&mut fd, "since").unwrap(), 0);
         assert_eq!(kinds.ensure(&mut kd, "has").unwrap(), 0);
         assert_eq!(fields.name_of(&mut fd, 0).unwrap().unwrap(), "since");
@@ -447,13 +463,13 @@ mod tests {
         let store = MemStore::new();
         {
             let mut d = Vocabulary::<u16>::new();
-            let mut door = Faces::<_, u16>::new(&store, HEADER, PREDICATE_VOCAB);
+            let mut door = Faces::<_, FieldNameId>::new(&store, HEADER, PREDICATE_VOCAB);
             d.ensure(&mut door, "one").unwrap();
             d.ensure(&mut door, "two").unwrap();
         }
         // A brand-new cache (process restart) resumes after the max.
         let mut d2 = Vocabulary::<u16>::new();
-        let mut door = Faces::<_, u16>::new(&store, HEADER, PREDICATE_VOCAB);
+        let mut door = Faces::<_, FieldNameId>::new(&store, HEADER, PREDICATE_VOCAB);
         assert_eq!(d2.name_of(&mut door, 0).unwrap().unwrap(), "one");
         assert_eq!(d2.name_of(&mut door, 1).unwrap().unwrap(), "two");
         let fresh = d2.ensure(&mut door, "three").unwrap();
@@ -478,7 +494,7 @@ mod tests {
             0x1234u16.to_be_bytes().to_vec(),
         );
         let _ = store.commit_batch(batch);
-        let mut door = Faces::<_, u16>::new(&store, HEADER, FIELD_VOCAB);
+        let mut door = Faces::<_, FieldNameId>::new(&store, HEADER, FIELD_VOCAB);
         assert_eq!(d.name_of(&mut door, 0x1234).unwrap().unwrap(), "big");
     }
 
@@ -537,7 +553,7 @@ mod tests {
     fn an_allocated_id_is_only_evidence_after_the_commit_carrying_it() {
         let store = MemStore::new();
         let mut d = Vocabulary::<u16>::new();
-        let mut door = Faces::<_, u16>::new(&store, HEADER, FIELD_VOCAB);
+        let mut door = Faces::<_, FieldNameId>::new(&store, HEADER, FIELD_VOCAB);
         assert_eq!(d.ensure(&mut door, "alpha").unwrap(), 0);
         assert_eq!(d.pending_len(), 1, "an allocation is not evidence yet");
 
@@ -567,7 +583,7 @@ mod tests {
         // re-allocates; the fast path answers the mirror.
         let store = MemStore::new();
         let mut d = Vocabulary::<u16>::new();
-        let mut door = Faces::<_, u16>::new(&store, HEADER, FIELD_VOCAB);
+        let mut door = Faces::<_, FieldNameId>::new(&store, HEADER, FIELD_VOCAB);
         assert_eq!(d.ensure(&mut door, "alpha").unwrap(), 0);
         store
             .del(&key(HEADER, FIELD_VOCAB_NAME_SLOT, b"alpha"))

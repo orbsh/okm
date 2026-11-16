@@ -22,16 +22,17 @@
 //! requires it and verifies the checksum, which is computed at rotation, not per
 //! write.
 //!
-//! **What is captured is the TRUTH half of the batch** — primary rows (slot
-//! `0x00`), the dynamic segment (`0x01`), the two dynamic field-name faces
-//! (`0x02`/`0x03`), the two predicate faces (`0x04`/`0x05`), and both directions
-//! of every declared categorical vocabulary (families `0x2`/`0x3`, ADR-0032:
-//! the payload stores ids, so the labels are truth, not decoration). The DERIVED
-//! half is dropped — declared indexes (`0x4nnn`), reduces (`0x5nnn`), lead
-//! faces (`0x6nnn`, ADR-0054), the graph's traversal faces (`0x06`–`0x09`, rebuilt from the
-//! primary rows by `Graph::reindex`), the handle registry (`0x0E`/`0x0F`), the
-//! vector snapshot (`0x1E`) and the table meta row (`0x1F`) — as is any bare-face
-//! key (a face's singleton, e.g. a vocabulary's allocation cursor).
+//! **What is captured is the TRUTH half of the batch** — the primary rows, the
+//! dynamic segment, the three vocabularies (field names, predicates, cluster
+//! kinds: the payload stores ids, so the labels are truth, not decoration), the
+//! cluster rows and their edge members, and both directions of every declared
+//! categorical vocabulary (ADR-0032). The DERIVED half is dropped — declared
+//! indexes, reduces, lead faces, the graph's traversal faces (rebuilt from the
+//! primary rows by `Graph::reindex`), the handle registry, the cluster's child
+//! and edge → cluster indexes, the vector snapshot and the table meta row — as
+//! is any bare-face key (a face's singleton, e.g. a vocabulary's allocation
+//! cursor). Which side a slot is on is [`side_of`]'s answer, and the numbers it
+//! compares come from [`crate::model::layout`] where the whole band is defined.
 //!
 //! The rule FAILS CLOSED: an unrecognised slot is dropped. A log that is visibly
 //! incomplete can be repaired by a reconciliation scan; a lake that quietly
@@ -96,21 +97,26 @@ pub fn side_of(slots: &SlotMap, slot: u16) -> Side {
         || slot == slots.field_vocab_name
         || slot == slots.predicate_vocab_id
         || slot == slots.predicate_vocab_name
+        // The cluster-kind vocabulary (0x0A/0x0B) is a dictionary, not an
+        // inference: a label that claimed an id is an assertion, and a replay
+        // that re-interned it in another order would hand out other numbers.
+        || slot == crate::model::index::CLUSTER_KIND_ID_SLOT
+        || slot == crate::model::index::CLUSTER_KIND_NAME_SLOT
     {
         return Side::Truth;
     }
-    // The cluster band (ADR-0066): the cluster row and its edge members are
-    // ASSERTIONS — a grouping is written, not derived, and no replay of the edge
-    // rows produces it (two sets over the same edges are different sets). The
-    // child index (0x0C) is the derived half, so it stays off the log: it
+    // The cluster band (ADR-0066): the cluster row (0x0C) and its edge members
+    // (0x0D) are ASSERTIONS — a grouping is written, not derived, and no replay
+    // of the edge rows produces it (two sets over the same edges are different
+    // sets). The child index is the derived half, so it stays off the log: it
     // rebuilds from `parent_id` in the cluster rows.
     if slot == crate::model::hyper::CLUSTER_SLOT || slot == crate::model::hyper::EDGE_MEMBER_SLOT {
         return Side::Truth;
     }
     // The DERIVED half of that band, named rather than left to the family
-    // fallback below: the child index (0x0C) rebuilds from `parent_id` in the
-    // cluster rows, and the edge → cluster index (0x0D) rebuilds from the member
-    // rows on 0x0B. Neither is an assertion of its own, so neither reaches the
+    // fallback below: the child index (0x0E) rebuilds from `parent_id` in the
+    // cluster rows, and the edge → cluster index (0x0F) rebuilds from the member
+    // rows on 0x0D. Neither is an assertion of its own, so neither reaches the
     // log — replaying the truth reproduces both.
     if slot == crate::model::hyper::CHILD_INDEX_SLOT
         || slot == crate::model::hyper::EDGE_CLUSTER_SLOT

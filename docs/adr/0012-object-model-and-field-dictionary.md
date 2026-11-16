@@ -208,8 +208,8 @@ structure, while the outer object stays purely dynamic.)
 0x02       field-name vocabulary  [ns][0x02][field-id]        → name
 0x03       field-name vocabulary  [ns][0x03][name bytes]      → field-id
 0x04/0x05  predicate vocabulary   [ns][0x04][predicate_id]    (ADR-0017)
-0x06–0x0D  graph faces            (ADR-0017, ADR-0041, ADR-0066)
-0x0E/0x0F  handle registry        (graph handles, ADR-0033)
+0x06–0x0F  graph + cluster faces  (ADR-0017, ADR-0041, ADR-0066)
+0x10/0x11  handle registry        (graph handles, ADR-0033)
 0x1E       Extension              (okm-vector cache — a fixed face, not 0x0A)
 0x1F       table meta             (ADR-0043)
 0x2nnn     vocabulary, label → id [ns][0x2nnn][...]

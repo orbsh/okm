@@ -133,7 +133,10 @@ pub enum Error {
     /// `merge` / `split` / `reassign` named a cluster that no row holds and this
     /// write set does not create.
     #[error("cluster {kind}/{id} not found")]
-    ClusterNotFound { kind: u8, id: u64 },
+    ClusterNotFound {
+        kind: crate::model::layout::ClusterKindId,
+        id: u64,
+    },
     /// `hyper_id` 0 named explicitly. The cluster row's parent head reserves `0`
     /// for "no parent" (ADR-0066 §4), so no cluster may BE that number — the
     /// runtime allocation starts at 1 for the same reason.

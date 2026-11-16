@@ -78,21 +78,15 @@ pub const FAMILY_MIN: u16 = 0x2;
 /// runtime caller gets the same refusal.
 pub const fn slot(family: u16, counter: u16) -> Slot {
     assert!(
-        family >= FAMILY_MIN && family <= 0x000F,
+        family >= FAMILY_MIN && family <= crate::model::layout::SLOT_FAMILY_MAX,
         "slot family out of range: 0x2-0xF are the counting families — 0x0 is the fixed band and 0x1 would encode inside it",
     );
     assert!(
-        counter <= 0x0FFF,
+        counter <= crate::model::layout::SLOT_COUNTER_MAX,
         "slot counter out of range: the low 12 bits hold 0-4095, and a masked counter is another family member's slot",
     );
-    (family << 12) | counter
+    (family << crate::model::layout::SLOT_COUNTER_BITS) | counter
 }
-
-/// Highest fixed-face number: the whole one-byte space. A fixed face carries no
-/// counter, and keeping the faces inside `0x00`–`0x1F` is what makes "first
-/// byte < 0x20" a sufficient delimiter. `0x1F` is the table meta row, so the
-/// band's top number is also its boundary number (ADR-0030).
-pub const FIXED_FACE_MAX: Slot = 0x1F;
 
 /// Write a slot in its own width: one byte for a fixed face, two for a
 /// counting family (ADR-0030). The panic arm is a layout error, not a
@@ -102,7 +96,7 @@ pub fn write_slot(buf: &mut Vec<u8>, slot: Slot) {
         buf.push(slot as u8);
     } else {
         assert!(
-            slot >= (FAMILY_MIN << 12),
+            slot >= (FAMILY_MIN << crate::model::layout::SLOT_COUNTER_BITS),
             "slot 0x{slot:04X} is neither a fixed face (0x00-0x1F) nor a counting family (0x2000-0xFFFF): 0x0020-0x1FFF has no encoding"
         );
         buf.extend_from_slice(&slot.to_be_bytes());
@@ -114,44 +108,18 @@ pub const fn slot_len(slot: Slot) -> usize {
     if slot <= FIXED_FACE_MAX { 1 } else { 2 }
 }
 
-/// A collection's primary keys (document collection or edge collection):
-/// fixed face 0x00.
-pub const PRIMARY_SLOT: Slot = 0x00;
-/// obj dynamic segment (ADR-0012), per-row undeclared fields: fixed face 0x01.
-pub const DYNAMIC_SLOT: Slot = 0x01;
-/// Field-name vocabulary, number → name (ADR-0012): fixed face 0x02. It also
-/// carries the pair's allocation cursor as its FACE-LEVEL SINGLETON — the bare
-/// prefix `[ns][0x02]`, no suffix (ADR-0030's rule, applied by ADR-0032);
-/// `obj_vocab::cursor_key` builds that key.
-pub const FIELD_VOCAB_ID_SLOT: Slot = 0x02;
-/// Field-name vocabulary, name → number (ADR-0012): fixed face 0x03.
-pub const FIELD_VOCAB_NAME_SLOT: Slot = 0x03;
-/// Predicate vocabulary, number → name: fixed face 0x04. A collection's token
-/// vocabulary BEYOND field names — a graph's predicates, a node collection's
-/// kind tokens (ADR-0017 §3). A pair of its own, never a band inside 0x02/0x03:
-/// two allocators in one id space hand the same id to two different names
-/// silently. Carries its pair's allocation cursor at the bare prefix
-/// `[ns][0x04]`, exactly like 0x02 — same rule, same derived key.
-pub const PREDICATE_VOCAB_ID_SLOT: Slot = 0x04;
-/// Predicate vocabulary, name → number: fixed face 0x05 (the mirror of
-/// [`PREDICATE_VOCAB_ID_SLOT`]).
-pub const PREDICATE_VOCAB_NAME_SLOT: Slot = 0x05;
-/// The table's META entry (ADR-0043): fixed face 0x1F — the highest one, and
-/// deliberately so. `slot <= 0x1F` is the delimiter between the one-byte faces
-/// and the counting families, so the meta sits ON the boundary: the headroom
-/// below it (0x10–0x1D) stays one contiguous block, and no fixed face added
-/// later can ever squeeze it out.
+/// The fixed faces and the widths they compose from live in ONE place:
+/// [`crate::model::layout`] — review that file, not this one, for a number.
 ///
-/// ADDRESS: `[partition?][ns][0x1F]`, no suffix — a face-level singleton, like
-/// the vocabulary cursor at `[ns][0x02]`. VALUE: a name → bytes map
-/// ([`crate::model::meta::TableMeta`]); `version` is the one name the runtime
-/// writes (the shape the store was stamped with, `Document::LAYOUT_VERSION`).
-/// The band belongs to its owning modules: 0x06–0x0D to `model::graph` and
-/// `model::hyper`, 0x0E/0x0F to the graph's handle registry
-/// (`model::handles`), 0x1E to `okm-vector`'s Extension face (a cache, so it
-/// sits at the tail among the mnemonics rather than among the structural
-/// faces).
-pub const META_SLOT: Slot = 0x1F;
+/// They are re-exported here because `Slot`, `write_slot` and the family bases
+/// are this module's, and because every existing path
+/// (`index::PRIMARY_SLOT`, `hyper::CLUSTER_SLOT`, `handles::HANDLE_NODE_SLOT`)
+/// should keep resolving to the same constant rather than to a copy.
+pub use crate::model::layout::{
+    CLUSTER_KIND_ID_SLOT, CLUSTER_KIND_NAME_SLOT, DYNAMIC_SLOT, FIELD_VOCAB_ID_SLOT,
+    FIELD_VOCAB_NAME_SLOT, FIXED_FACE_MAX, META_SLOT, NS_WIDTH, PREDICATE_VOCAB_ID_SLOT,
+    PREDICATE_VOCAB_NAME_SLOT, PRIMARY_SLOT, U64_WIDTH,
+};
 /// Slot base available to `#[ok_index]` declaration-order allocation —
 /// counters start at 1 (0 reserved), so 4095 declared indexes per collection.
 pub const DECLARED_SLOT_BASE: Slot = slot(segment::INDEX, 1);

@@ -35,6 +35,7 @@ use okm_core::model::graph::{
     predicate_in_face_key, predicate_in_prefix, predicate_out_face_key, predicate_out_prefix,
 };
 use okm_core::model::handles::Handles;
+use okm_core::model::layout::HANDLE_WIDTH;
 use okm_core::obj_vocab::{FIELD_VOCAB, Faces, PREDICATE_VOCAB, Vocabulary};
 use okm_core::schema::CollectionSchema;
 use okm_core::storage::{Batch, ScanIter, VirtualStorage, prefix_end, scan_suffix_kv};
@@ -695,7 +696,7 @@ impl<S: VirtualStorage> Graph<S> {
             if suffix.len() != 16 {
                 continue;
             }
-            let (Some(src), Some(dst)) = (Handle::parse(&suffix[..8]), Handle::parse(&suffix[8..]))
+            let (Some(src), Some(dst)) = (Handle::parse(&suffix[..HANDLE_WIDTH]), Handle::parse(&suffix[HANDLE_WIDTH..]))
             else {
                 continue;
             };

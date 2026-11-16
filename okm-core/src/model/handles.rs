@@ -59,14 +59,11 @@
 use crate::engine::storage::{Batch, BatchStore, VirtualStorage, prefix_end, scan_suffix_kv};
 use crate::error::{Error, Result};
 use crate::model::graph::NodeRef;
-use crate::model::index::{Slot, write_slot};
+use crate::model::index::write_slot;
 
-/// `[ns][0x0E][handle u64] → [node_ns 2B][pkey]` — the forward face, which is
-/// authority. Also carries the allocation cursor as its bare-prefix singleton.
-pub const HANDLE_NODE_SLOT: Slot = 0x0E;
-/// `[ns][0x0F][node_ns 2B][pkey] → [handle u64 BE]` — the reverse direction,
-/// derived from the forward face and rebuildable from it alone.
-pub const NODE_HANDLE_SLOT: Slot = 0x0F;
+/// The registry's two faces (0x10 forward, 0x11 reverse) and the handle width are
+/// numbered in [`crate::model::layout`].
+pub use crate::model::layout::{HANDLE_NODE_SLOT, HANDLE_WIDTH, NODE_HANDLE_SLOT};
 
 /// The first handle ever issued. Zero is [`Handle::NONE`].
 pub const FIRST_HANDLE: u64 = 1;
@@ -113,7 +110,7 @@ impl Handle {
     /// or any other width is not a handle, so this answers `None` rather than
     /// inventing one.
     pub fn parse(bytes: &[u8]) -> Option<Self> {
-        let raw = <[u8; 8]>::try_from(bytes).ok()?;
+        let raw = <[u8; HANDLE_WIDTH]>::try_from(bytes).ok()?;
         let id = u64::from_be_bytes(raw);
         (id >= FIRST_HANDLE).then_some(Self(id))
     }
@@ -169,7 +166,7 @@ fn node_of(value: &[u8]) -> Option<NodeRef> {
 }
 
 fn be_u64(bytes: &[u8]) -> Option<u64> {
-    <[u8; 8]>::try_from(bytes).ok().map(u64::from_be_bytes)
+    <[u8; HANDLE_WIDTH]>::try_from(bytes).ok().map(u64::from_be_bytes)
 }
 
 /// Engine + namespace = the handle registry of one graph.

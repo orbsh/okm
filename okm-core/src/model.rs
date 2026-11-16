@@ -27,6 +27,7 @@ pub mod handles;
 pub mod hyper;
 pub mod index;
 pub mod key;
+pub mod layout;
 pub mod meta;
 pub mod obj_vocab;
 pub mod parts;

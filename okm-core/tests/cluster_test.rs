@@ -62,6 +62,16 @@ pub struct Employment {
 
 const NS: u16 = 0x0192;
 
+// The CALLER's vocabulary, defined here because a test is a caller: `Kind` is one
+// byte and okm assigns it no meaning. An application picks its own bytes beside
+// its schema (k10r: 1 = community, 5 = flow); the store never learns the words.
+const COMMUNITY: Kind = Kind(1);
+const EVENT: Kind = Kind(2);
+const SUBGRAPH: Kind = Kind(3);
+const SCOPE: Kind = Kind(4);
+const FLOW: Kind = Kind(5);
+
+
 fn person(id: u64) -> NodeRef {
     NodeRef::new(Person::NS_PREFIX, &PersonId { id }.encode())
 }
@@ -88,16 +98,13 @@ fn attrs(label: &str) -> Dict {
     map
 }
 
-fn kind_byte() -> u8 {
-    Kind::COMMUNITY.byte()
-}
-
-/// The face address, spelled out: `[ns 2B][slot][kind][hyper_id][tail…]`.
+/// The face address, spelled out: `[ns 2B][slot][kind 2B][hyper_id][tail…]` —
+/// the kind is an interned id, so it is two bytes, exactly like a predicate.
 fn key(slot: u8, hyper_id: u64, tail: &[u8]) -> Vec<u8> {
-    let mut k = Vec::with_capacity(3 + 1 + 8 + tail.len());
+    let mut k = Vec::with_capacity(3 + 2 + 8 + tail.len());
     k.extend_from_slice(&NS.to_be_bytes());
     k.push(slot);
-    k.push(kind_byte());
+    k.extend_from_slice(&COMMUNITY.id().to_be_bytes());
     k.extend_from_slice(&hyper_id.to_be_bytes());
     k.extend_from_slice(tail);
     k
@@ -170,7 +177,7 @@ fn every_row_kind_round_trips_at_the_layout_the_adr_states() {
         let mut fragment =
             Fragment::<Employment>::new([edge(person(1), org(9)), edge(person(2), org(9))]);
         fragment
-            .cluster(Cluster::new(Kind::COMMUNITY, attrs("acme")))
+            .cluster(Cluster::new(COMMUNITY, attrs("acme")))
             .on_edge_conflict(|_stored, _declared| Employment { weight: 7 });
         let report = g
             .incorporate(fragment)
@@ -183,7 +190,7 @@ fn every_row_kind_round_trips_at_the_layout_the_adr_states() {
         );
         assert_eq!(report.hyper_ids.len(), 1, "{engine}: one id per cluster");
         let id = report.hyper_ids[0];
-        let cluster = ClusterRef::new(Kind::COMMUNITY, id);
+        let cluster = ClusterRef::new(COMMUNITY, id);
 
         // The edge rows themselves are the ordinary graph rows: the hook ran, so
         // the payload is the fragment's, not a default.
@@ -195,12 +202,12 @@ fn every_row_kind_round_trips_at_the_layout_the_adr_states() {
         // 0x0A — the cluster row: `[parent u64 BE][dynamic payload]`, and NOTHING
         // longer lives under it (no member row shares this face).
         let row = store
-            .get(&key(0x0A, id, &[]))
+            .get(&key(0x0C, id, &[]))
             .expect("read")
             .unwrap_or_else(|| panic!("{engine}: cluster row"));
         assert_eq!(&row[..8], &0u64.to_be_bytes(), "{engine}: root head");
         assert_eq!(
-            store.get(&key(0x0A, id, &[0x00])).expect("read"),
+            store.get(&key(0x0C, id, &[0x00])).expect("read"),
             None,
             "{engine}: the cluster row is the only row of its face"
         );
@@ -229,7 +236,7 @@ fn every_row_kind_round_trips_at_the_layout_the_adr_states() {
                 "{engine}: a member row's tail is the fixed-width handle row"
             );
             assert_eq!(
-                store.get(&key(0x0B, id, &spelled.wire())).expect("read"),
+                store.get(&key(0x0D, id, &spelled.wire())).expect("read"),
                 Some(Vec::new()),
                 "{engine}: a member row carries no value — the edge does"
             );
@@ -238,7 +245,7 @@ fn every_row_kind_round_trips_at_the_layout_the_adr_states() {
         // 0x0C is the child index — no parent, so no child row, and nothing of
         // the removed node-member face may reappear here.
         assert!(
-            face(&store, 0x0C).is_empty(),
+            face(&store, 0x0E).is_empty(),
             "{engine}: no parent, no child"
         );
     }
@@ -255,22 +262,22 @@ fn derived_face_rebuilds_to_exactly_what_the_write_path_wrote() {
         // A parent cluster, then a child under it, so 0x0C has a row.
         let mut fragment =
             Fragment::<Employment>::new([edge(person(1), org(1)), edge(person(2), org(2))]);
-        fragment.cluster(Cluster::new(Kind::COMMUNITY, attrs("parent")));
+        fragment.cluster(Cluster::new(COMMUNITY, attrs("parent")));
         let parent = g
             .incorporate(fragment)
             .unwrap_or_else(|e| panic!("{engine}: parent: {e}"))
             .hyper_ids[0];
         let mut fragment =
             Fragment::<Employment>::new([edge(person(3), org(3)), edge(person(3), org(4))]);
-        fragment.cluster(Cluster::new(Kind::COMMUNITY, attrs("child")).under(parent));
+        fragment.cluster(Cluster::new(COMMUNITY, attrs("child")).under(parent));
         let child = g
             .incorporate(fragment)
             .unwrap_or_else(|e| panic!("{engine}: child: {e}"))
             .hyper_ids[0];
 
-        let cluster = ClusterRef::new(Kind::COMMUNITY, child);
+        let cluster = ClusterRef::new(COMMUNITY, child);
         let members_before = members(&store, engine, cluster);
-        let children_before = face(&store, 0x0C);
+        let children_before = face(&store, 0x0E);
         assert_eq!(children_before.len(), 1, "{engine}: one child row");
 
         let report = hyper(&store)
@@ -279,7 +286,7 @@ fn derived_face_rebuilds_to_exactly_what_the_write_path_wrote() {
         assert_eq!(report.clusters, 2, "{engine}: two cluster rows were walked");
 
         assert_eq!(
-            face(&store, 0x0C),
+            face(&store, 0x0E),
             children_before,
             "{engine}: 0x0C rebuilt to the same bytes the write path produced"
         );
@@ -304,12 +311,12 @@ fn membership_is_idempotent() {
         let mut g = graph(&store);
         let mut fragment =
             Fragment::<Employment>::new([edge(person(1), org(1)), edge(person(2), org(2))]);
-        fragment.cluster(Cluster::new(Kind::COMMUNITY, Dict::new()));
+        fragment.cluster(Cluster::new(COMMUNITY, Dict::new()));
         let report = g
             .incorporate(fragment)
             .unwrap_or_else(|e| panic!("{engine}: commit: {e}"));
-        let cluster = ClusterRef::new(Kind::COMMUNITY, report.hyper_ids[0]);
-        let before = face(&store, 0x0B);
+        let cluster = ClusterRef::new(COMMUNITY, report.hyper_ids[0]);
+        let before = face(&store, 0x0D);
         let keys = report.edges.clone();
 
         // The same (kind, cluster, edge) triple twice: naming the two edges
@@ -320,7 +327,7 @@ fn membership_is_idempotent() {
                 Decl::edge(head(person(1), org(1))),
                 Decl::edge(head(person(2), org(2))),
             ]);
-            fragment.cluster(Cluster::into(Kind::COMMUNITY, cluster.id, Dict::new()));
+            fragment.cluster(Cluster::into(COMMUNITY, cluster.id, Dict::new()));
             let again = g
                 .incorporate(fragment)
                 .unwrap_or_else(|e| panic!("{engine}: re-assert: {e}"));
@@ -331,7 +338,7 @@ fn membership_is_idempotent() {
             );
         }
         assert_eq!(
-            face(&store, 0x0B),
+            face(&store, 0x0D),
             before,
             "{engine}: member rows unchanged"
         );
@@ -399,7 +406,7 @@ fn a_refused_batch_leaves_nothing() {
             "{engine}: no edge landed"
         );
         assert!(
-            face(&store, 0x01).is_empty() && face(&store, 0x0B).is_empty(),
+            face(&store, 0x01).is_empty() && face(&store, 0x0D).is_empty(),
             "{engine}: no face landed either"
         );
 
@@ -408,7 +415,7 @@ fn a_refused_batch_leaves_nothing() {
         // row lands with an honest count of one, and its single member row with
         // it — this fragment is accepted, not refused.
         let mut fragment = Fragment::<Employment>::new([edge(person(1), org(1))]);
-        fragment.cluster(Cluster::new(Kind::COMMUNITY, Dict::new()));
+        fragment.cluster(Cluster::new(COMMUNITY, Dict::new()));
         let report = g
             .incorporate(fragment)
             .expect("a one-member cluster is a scope, not a refusal");
@@ -417,7 +424,7 @@ fn a_refused_batch_leaves_nothing() {
             1,
             "{engine}: the edge that would have been its member landed"
         );
-        let one = ClusterRef::new(Kind::COMMUNITY, report.hyper_ids[0]);
+        let one = ClusterRef::new(COMMUNITY, report.hyper_ids[0]);
         assert_eq!(
             hyper(&store)
                 .lookup(one)
@@ -447,13 +454,13 @@ fn a_cluster_created_with_no_members_at_all_is_a_scope() {
         // a statement — "this subject is sensitive, do not ask" — so it is a
         // legal write, and the row it makes says zero.
         let mut fragment = Fragment::<Employment>::new([]);
-        fragment.cluster(Cluster::new(Kind::SCOPE, attrs("do-not-ask")));
+        fragment.cluster(Cluster::new(SCOPE, attrs("do-not-ask")));
         let report = g
             .incorporate(fragment)
             .expect("an empty scope is a declared scope");
         assert_eq!(report.hyper_ids.len(), 1, "{engine}: one id allocated");
         assert!(report.edges.is_empty(), "{engine}: no edge declared");
-        let scope = ClusterRef::new(Kind::SCOPE, report.hyper_ids[0]);
+        let scope = ClusterRef::new(SCOPE, report.hyper_ids[0]);
 
         let row = hyper(&store).lookup(scope).expect("lookup").expect("row");
         assert_eq!(row.member_count(), 0, "{engine}: zero is the honest count");
@@ -467,12 +474,12 @@ fn a_cluster_created_with_no_members_at_all_is_a_scope() {
             "{engine}: an empty member list, not an error"
         );
         assert_eq!(
-            hyper(&store).clusters(Kind::SCOPE).expect("clusters"),
+            hyper(&store).clusters(SCOPE).expect("clusters"),
             vec![scope.id],
             "{engine}: and the kind scan still lists it"
         );
         assert!(
-            face(&store, 0x0B).is_empty(),
+            face(&store, 0x0D).is_empty(),
             "{engine}: nothing was invented to join it to the graph"
         );
     }
@@ -486,14 +493,14 @@ fn an_explicitly_declared_empty_cluster_survives_a_rebuild() {
         // the child index is derived from the cluster rows, so the rebuild has to
         // work off rows whose member face is empty.
         let mut fragment = Fragment::<Employment>::new([]);
-        fragment.cluster(Cluster::new(Kind::SCOPE, attrs("parent")));
+        fragment.cluster(Cluster::new(SCOPE, attrs("parent")));
         let parent = g.incorporate(fragment).expect("parent").hyper_ids[0];
         let mut fragment = Fragment::<Employment>::new([]);
-        fragment.cluster(Cluster::new(Kind::SCOPE, attrs("child")).under(parent));
+        fragment.cluster(Cluster::new(SCOPE, attrs("child")).under(parent));
         let child = g.incorporate(fragment).expect("child").hyper_ids[0];
         assert_eq!(
             hyper(&store)
-                .children(Kind::SCOPE, parent)
+                .children(SCOPE, parent)
                 .expect("children"),
             vec![child],
             "{engine}: the child index was written with the rows"
@@ -505,14 +512,14 @@ fn an_explicitly_declared_empty_cluster_survives_a_rebuild() {
 
         for (id, label) in [(parent, "parent"), (child, "child")] {
             let row = hyper(&store)
-                .lookup(ClusterRef::new(Kind::SCOPE, id))
+                .lookup(ClusterRef::new(SCOPE, id))
                 .expect("lookup")
                 .unwrap_or_else(|| panic!("{engine}: {label} survived the rebuild"));
             assert_eq!(row.member_count(), 0, "{engine}: {label} still says zero");
         }
         assert_eq!(
             hyper(&store)
-                .children(Kind::SCOPE, parent)
+                .children(SCOPE, parent)
                 .expect("children"),
             vec![child],
             "{engine}: the derived child index rebuilt from the rows alone"
@@ -554,7 +561,7 @@ fn a_node_exists_only_as_an_endpoint() {
             edge(person(3), org(3)),
             edge(person(4), org(4)),
         ]);
-        fragment.cluster(Cluster::new(Kind::COMMUNITY, Dict::new()));
+        fragment.cluster(Cluster::new(COMMUNITY, Dict::new()));
         let report = g
             .incorporate(fragment)
             .expect("an endpoint may be declared");
@@ -576,9 +583,9 @@ fn an_edge_delete_takes_exactly_its_rows() {
             edge(person(2), org(2)),
             edge(person(3), org(3)),
         ]);
-        fragment.cluster(Cluster::new(Kind::COMMUNITY, attrs("a")));
+        fragment.cluster(Cluster::new(COMMUNITY, attrs("a")));
         let first = g.incorporate(fragment).expect("a");
-        let a = ClusterRef::new(Kind::COMMUNITY, first.hyper_ids[0]);
+        let a = ClusterRef::new(COMMUNITY, first.hyper_ids[0]);
         let shared: Vec<EdgeKey> = first.edges[1..].to_vec();
         drop(first);
 
@@ -587,12 +594,12 @@ fn an_edge_delete_takes_exactly_its_rows() {
         // cluster's id is explicit because the members move into it in the SAME
         // batch that creates it — an id allocated by that batch could not be
         // named before the call.
-        let b = ClusterRef::new(Kind::COMMUNITY, 50);
+        let b = ClusterRef::new(COMMUNITY, 50);
         let fragment = Fragment::<Employment>::new([edge(person(4), org(4))]);
         let fourth = g.incorporate(fragment).expect("fourth").edges[0].clone();
         // `0` is the head's "no parent" value, so it is nobody's id.
         let mut fragment = Fragment::<Employment>::new([]);
-        fragment.cluster(Cluster::into(Kind::COMMUNITY, 0, Dict::new()));
+        fragment.cluster(Cluster::into(COMMUNITY, 0, Dict::new()));
         let err = g.incorporate(fragment).expect_err("hyper_id 0 is reserved");
         assert!(
             matches!(err, Error::ReservedClusterId),
@@ -608,7 +615,7 @@ fn an_edge_delete_takes_exactly_its_rows() {
         }
         let mut fragment = Fragment::<Employment>::new(moved);
         fragment
-            .cluster(Cluster::into(Kind::COMMUNITY, b.id, attrs("b")))
+            .cluster(Cluster::into(COMMUNITY, b.id, attrs("b")))
             .remove(a);
         g.incorporate(fragment).expect("move");
         // A lost two members and kept one — and it KEEPS ITS ROW: a scope is not
@@ -707,7 +714,7 @@ fn the_declarations_alone_are_a_whole_write() {
             "{engine}: no cluster was declared, so no id was allocated"
         );
         assert!(
-            face(&store, 0x0A).is_empty() && face(&store, 0x0B).is_empty(),
+            face(&store, 0x0C).is_empty() && face(&store, 0x0D).is_empty(),
             "{engine}: no cluster row and no member row without a declaration"
         );
         assert!(
@@ -728,7 +735,7 @@ fn the_three_conflict_hooks_run_in_the_write_fragment() {
         let mut fragment =
             Fragment::<Employment>::new([edge(person(1), org(1)), edge(person(2), org(1))]);
         fragment
-            .cluster(Cluster::new(Kind::COMMUNITY, Dict::new()))
+            .cluster(Cluster::new(COMMUNITY, Dict::new()))
             .on_node_conflict::<Person>(|old, _declared| Person { seen: old.seen + 1 })
             .on_edge_conflict(|_stored, _declared| Employment { weight: 1 })
             .on_cluster_conflict(|_stored, declared| {
@@ -737,7 +744,7 @@ fn the_three_conflict_hooks_run_in_the_write_fragment() {
                 row
             });
         let report = g.incorporate(fragment).expect("commit");
-        let cluster = ClusterRef::new(Kind::COMMUNITY, report.hyper_ids[0]);
+        let cluster = ClusterRef::new(COMMUNITY, report.hyper_ids[0]);
 
         let people = Person::collection(store.clone());
         for id in [1u64, 2] {
@@ -824,10 +831,10 @@ fn a_cluster_hook_keeps_the_stored_payload_when_the_declared_one_is_older() {
         let mut fragment =
             Fragment::<Employment>::new([edge(person(1), org(1)), edge(person(2), org(1))]);
         fragment
-            .cluster(Cluster::new(Kind::COMMUNITY, stamped))
+            .cluster(Cluster::new(COMMUNITY, stamped))
             .on_cluster_conflict(newest);
         let report = g.incorporate(fragment).expect("first write");
-        let cluster = ClusterRef::new(Kind::COMMUNITY, report.hyper_ids[0]);
+        let cluster = ClusterRef::new(COMMUNITY, report.hyper_ids[0]);
         assert_eq!(
             hyper(&store)
                 .lookup(cluster)
@@ -845,7 +852,7 @@ fn a_cluster_hook_keeps_the_stored_payload_when_the_declared_one_is_older() {
         older.insert("ts".to_string(), Variant::U64(4));
         let mut fragment = Fragment::<Employment>::new([edge(person(3), org(1))]);
         fragment
-            .cluster(Cluster::into(Kind::COMMUNITY, cluster.id, older))
+            .cluster(Cluster::into(COMMUNITY, cluster.id, older))
             .on_cluster_conflict(newest);
         g.incorporate(fragment).expect("second write");
 
@@ -873,14 +880,14 @@ fn merge_is_a_verb_and_a_split_is_the_same_fragment_composed() {
         let mut g = graph(&store);
         let mut fragment =
             Fragment::<Employment>::new([edge(person(1), org(1)), edge(person(2), org(2))]);
-        fragment.cluster(Cluster::new(Kind::COMMUNITY, attrs("left")));
+        fragment.cluster(Cluster::new(COMMUNITY, attrs("left")));
         let left = g.incorporate(fragment).expect("left");
         let mut fragment =
             Fragment::<Employment>::new([edge(person(3), org(3)), edge(person(4), org(4))]);
-        fragment.cluster(Cluster::new(Kind::COMMUNITY, attrs("right")));
+        fragment.cluster(Cluster::new(COMMUNITY, attrs("right")));
         let right = g.incorporate(fragment).expect("right");
-        let a = ClusterRef::new(Kind::COMMUNITY, left.hyper_ids[0]);
-        let b = ClusterRef::new(Kind::COMMUNITY, right.hyper_ids[0]);
+        let a = ClusterRef::new(COMMUNITY, left.hyper_ids[0]);
+        let b = ClusterRef::new(COMMUNITY, right.hyper_ids[0]);
 
         // Two clusters over disjoint edges. "What differs between them" is two
         // `members()` scans and a set operation on the caller's side — the
@@ -914,10 +921,10 @@ fn merge_is_a_verb_and_a_split_is_the_same_fragment_composed() {
         }
         let mut fragment = Fragment::<Employment>::new(decls);
         fragment
-            .cluster(Cluster::new(Kind::COMMUNITY, attrs("split")))
+            .cluster(Cluster::new(COMMUNITY, attrs("split")))
             .remove(a);
         let report = g.incorporate(fragment).expect("split");
-        let c = ClusterRef::new(Kind::COMMUNITY, report.hyper_ids[0]);
+        let c = ClusterRef::new(COMMUNITY, report.hyper_ids[0]);
         assert_eq!(members(&store, engine, c), taken, "{engine}: moved");
         assert_eq!(members(&store, engine, a).len(), 2, "{engine}: left behind");
         assert_eq!(
@@ -951,14 +958,14 @@ fn a_kinds_cluster_scan_returns_clusters_and_nothing_else() {
         let mut g = graph(&store);
         let mut fragment =
             Fragment::<Employment>::new([edge(person(1), org(1)), edge(person(2), org(2))]);
-        fragment.cluster(Cluster::new(Kind::COMMUNITY, attrs("parent")));
+        fragment.cluster(Cluster::new(COMMUNITY, attrs("parent")));
         let parent = g.incorporate(fragment).expect("parent").hyper_ids[0];
         let mut fragment =
             Fragment::<Employment>::new([edge(person(3), org(3)), edge(person(4), org(4))]);
-        fragment.cluster(Cluster::new(Kind::COMMUNITY, attrs("child")).under(parent));
+        fragment.cluster(Cluster::new(COMMUNITY, attrs("child")).under(parent));
         let child = g.incorporate(fragment).expect("child").hyper_ids[0];
 
-        let listed = hyper(&store).clusters(Kind::COMMUNITY).expect("clusters");
+        let listed = hyper(&store).clusters(COMMUNITY).expect("clusters");
         assert_eq!(
             listed,
             vec![parent, child],
@@ -966,18 +973,18 @@ fn a_kinds_cluster_scan_returns_clusters_and_nothing_else() {
         );
         // The member and child rows live in other faces, so the same scan is
         // blind to them by construction.
-        assert_eq!(face(&store, 0x0B).len(), 4, "{engine}: member rows exist");
-        assert_eq!(face(&store, 0x0C).len(), 1, "{engine}: child rows exist");
+        assert_eq!(face(&store, 0x0D).len(), 4, "{engine}: member rows exist");
+        assert_eq!(face(&store, 0x0E).len(), 1, "{engine}: child rows exist");
         assert_eq!(
             hyper(&store)
-                .children(Kind::COMMUNITY, parent)
+                .children(COMMUNITY, parent)
                 .expect("children"),
             vec![child],
             "{engine}: one scan of 0x0C"
         );
         assert_eq!(
             hyper(&store)
-                .parent(ClusterRef::new(Kind::COMMUNITY, child))
+                .parent(ClusterRef::new(COMMUNITY, child))
                 .expect("parent"),
             parent,
             "{engine}: the head is the parent, one point read"
@@ -986,21 +993,21 @@ fn a_kinds_cluster_scan_returns_clusters_and_nothing_else() {
         // Moving the child under the other root rewrites the derived index.
         let mut fragment =
             Fragment::<Employment>::new([edge(person(5), org(5)), edge(person(6), org(6))]);
-        fragment.cluster(Cluster::new(Kind::COMMUNITY, attrs("other")));
+        fragment.cluster(Cluster::new(COMMUNITY, attrs("other")));
         let other = g.incorporate(fragment).expect("other").hyper_ids[0];
         let mut fragment = Fragment::<Employment>::new([]);
-        fragment.cluster(Cluster::into(Kind::COMMUNITY, child, Dict::new()).under(other));
+        fragment.cluster(Cluster::into(COMMUNITY, child, Dict::new()).under(other));
         g.incorporate(fragment).expect("reparent");
         assert!(
             hyper(&store)
-                .children(Kind::COMMUNITY, parent)
+                .children(COMMUNITY, parent)
                 .expect("children")
                 .is_empty(),
             "{engine}: the old child row is gone"
         );
         assert_eq!(
             hyper(&store)
-                .children(Kind::COMMUNITY, other)
+                .children(COMMUNITY, other)
                 .expect("children"),
             vec![child],
             "{engine}: the new child row is there"
@@ -1009,7 +1016,7 @@ fn a_kinds_cluster_scan_returns_clusters_and_nothing_else() {
         // nothing (a name both carry would be overwritten).
         assert_eq!(
             hyper(&store)
-                .lookup(ClusterRef::new(Kind::COMMUNITY, child))
+                .lookup(ClusterRef::new(COMMUNITY, child))
                 .expect("lookup")
                 .expect("row")
                 .payload
@@ -1036,9 +1043,9 @@ fn deleting_a_node_takes_every_edge_incident_to_it() {
             edge(person(2), org(1)),
             edge(person(3), org(3)),
         ]);
-        fragment.cluster(Cluster::new(Kind::COMMUNITY, Dict::new()));
+        fragment.cluster(Cluster::new(COMMUNITY, Dict::new()));
         let report = g.incorporate(fragment).expect("write");
-        let cluster = ClusterRef::new(Kind::COMMUNITY, report.hyper_ids[0]);
+        let cluster = ClusterRef::new(COMMUNITY, report.hyper_ids[0]);
         let first = report.edges[0].clone();
         let second = report.edges[1].clone();
         let shared = report.edges[2].clone();
@@ -1131,9 +1138,9 @@ fn deleting_an_edge_leaves_both_endpoints_alone() {
             edge(person(1), org(2)),
             edge(person(2), org(3)),
         ]);
-        fragment.cluster(Cluster::new(Kind::COMMUNITY, Dict::new()));
+        fragment.cluster(Cluster::new(COMMUNITY, Dict::new()));
         let report = g.incorporate(fragment).expect("write");
-        let cluster = ClusterRef::new(Kind::COMMUNITY, report.hyper_ids[0]);
+        let cluster = ClusterRef::new(COMMUNITY, report.hyper_ids[0]);
         let doomed = report.edges[0].clone();
         let kept = report.edges[1].clone();
 
@@ -1197,7 +1204,7 @@ fn deleting_a_node_that_no_edge_names_is_a_no_op() {
         ]))
         .expect("write");
         let primary_before = face(&store, 0x00);
-        let members_before = face(&store, 0x0B);
+        let members_before = face(&store, 0x0D);
 
         // A node exists only as an endpoint, so a node no edge names is not in
         // the graph: there is nothing to cascade from.
@@ -1216,7 +1223,7 @@ fn deleting_a_node_that_no_edge_names_is_a_no_op() {
             "{engine}: not one edge row moved"
         );
         assert_eq!(
-            face(&store, 0x0B),
+            face(&store, 0x0D),
             members_before,
             "{engine}: no membership row moved either"
         );
@@ -1229,13 +1236,13 @@ fn retracting_what_is_absent_reports_zero() {
         let mut g = graph(&store);
         let mut fragment =
             Fragment::<Employment>::new([edge(person(1), org(1)), edge(person(2), org(2))]);
-        fragment.cluster(Cluster::new(Kind::COMMUNITY, attrs("kept")));
+        fragment.cluster(Cluster::new(COMMUNITY, attrs("kept")));
         let report = g.incorporate(fragment).expect("write");
-        let cluster = ClusterRef::new(Kind::COMMUNITY, report.hyper_ids[0]);
+        let cluster = ClusterRef::new(COMMUNITY, report.hyper_ids[0]);
 
         let primary_before = face(&store, 0x00);
-        let clusters_before = face(&store, 0x0A);
-        let members_before = face(&store, 0x0B);
+        let clusters_before = face(&store, 0x0C);
+        let members_before = face(&store, 0x0D);
 
         // An edge no row holds, a node no edge names, a cluster that was never
         // created: three absences, three zeroes — and not a row written or
@@ -1245,7 +1252,7 @@ fn retracting_what_is_absent_reports_zero() {
         fragment
             .delete_edge(head(person(4), org(4)))
             .delete_node(org(99))
-            .delete(ClusterRef::new(Kind::COMMUNITY, 999));
+            .delete(ClusterRef::new(COMMUNITY, 999));
         let retracted = g.retract(fragment).expect("retract");
 
         assert_eq!(
@@ -1255,12 +1262,12 @@ fn retracting_what_is_absent_reports_zero() {
         );
         assert_eq!(face(&store, 0x00), primary_before, "{engine}: edges intact");
         assert_eq!(
-            face(&store, 0x0A),
+            face(&store, 0x0C),
             clusters_before,
             "{engine}: clusters intact"
         );
         assert_eq!(
-            face(&store, 0x0B),
+            face(&store, 0x0D),
             members_before,
             "{engine}: memberships intact"
         );
@@ -1322,12 +1329,12 @@ fn an_update_is_a_reduce_folded_over_a_named_edge() {
         let mut fragment =
             Fragment::<Employment>::new([edge(person(1), org(1)), edge(person(1), org(2))]);
         fragment
-            .cluster(Cluster::new(Kind::COMMUNITY, Dict::new()))
+            .cluster(Cluster::new(COMMUNITY, Dict::new()))
             .on_edge_conflict(|_stored, _declared| Employment { weight: 5 });
         let report = g.incorporate(fragment).expect("write");
         let target = report.edges[0].clone();
         let other = report.edges[1].clone();
-        let members_before = face(&store, 0x0B);
+        let members_before = face(&store, 0x0D);
         let keys_before = g.edges().expect("edges");
 
         // The update: declare the SAME tuple again, with a conflict hook that
@@ -1359,7 +1366,7 @@ fn an_update_is_a_reduce_folded_over_a_named_edge() {
             "{engine}: the edge the fragment did not name is untouched"
         );
         assert_eq!(
-            face(&store, 0x0B),
+            face(&store, 0x0D),
             members_before,
             "{engine}: membership rows did not move"
         );
@@ -1447,7 +1454,7 @@ impl Seekable for MemberClusters {
     }
 }
 
-/// 0x0D is written with the member rows, answers membership as ONE point read,
+/// 0x0F is written with the member rows, answers membership as ONE point read,
 /// and leaves again when the membership does — retract included.
 #[test]
 fn the_edge_index_answers_membership_and_leaves_with_the_member_rows() {
@@ -1458,21 +1465,21 @@ fn the_edge_index_answers_membership_and_leaves_with_the_member_rows() {
             edge(person(2), org(2)),
             edge(person(3), org(3)),
         ]);
-        fragment.cluster(Cluster::new(Kind::COMMUNITY, attrs("acme")));
+        fragment.cluster(Cluster::new(COMMUNITY, attrs("acme")));
         let report = g
             .incorporate(fragment)
             .unwrap_or_else(|e| panic!("{engine}: commit: {e}"));
         let id = report.hyper_ids[0];
-        let cluster = ClusterRef::new(Kind::COMMUNITY, id);
+        let cluster = ClusterRef::new(COMMUNITY, id);
         let keys = report.edges.clone();
 
         // The layout the ADR states, byte for byte:
-        // `[ns][0x0D][src_h][pred][dst_h][kind][hyper]`.
+        // `[ns][0x0F][src_h][pred][dst_h][kind][hyper]`.
         let mut spelled = Vec::new();
         spelled.extend_from_slice(&NS.to_be_bytes());
-        spelled.push(0x0D);
+        spelled.push(0x0F);
         row_of(&g, &keys[0]).write(&mut spelled);
-        spelled.push(kind_byte());
+        spelled.extend_from_slice(&COMMUNITY.id().to_be_bytes());
         spelled.extend_from_slice(&id.to_be_bytes());
         assert_eq!(
             store.get(&spelled).expect("read"),
@@ -1480,24 +1487,24 @@ fn the_edge_index_answers_membership_and_leaves_with_the_member_rows() {
             "{engine}: the edge → cluster row is one empty-valued entry"
         );
         assert_eq!(
-            face(&store, 0x0D).len(),
+            face(&store, 0x0F).len(),
             3,
             "{engine}: one derived row per member row"
         );
 
         // Membership is one point read, and the KIND is part of the key.
         assert!(
-            g.member_of(Kind::COMMUNITY, id, &keys[1])
+            g.member_of(COMMUNITY, id, &keys[1])
                 .unwrap_or_else(|e| panic!("{engine}: member_of: {e}")),
             "{engine}: a member answers true"
         );
         assert!(
-            !g.member_of(Kind::COMMUNITY, id, &EdgeKey::new(person(4), 999, org(4)))
+            !g.member_of(COMMUNITY, id, &EdgeKey::new(person(4), 999, org(4)))
                 .unwrap_or_else(|e| panic!("{engine}: member_of: {e}")),
             "{engine}: an edge that is not a member answers false"
         );
         assert!(
-            !g.member_of(Kind::EVENT, id, &keys[1])
+            !g.member_of(EVENT, id, &keys[1])
                 .unwrap_or_else(|e| panic!("{engine}: member_of: {e}")),
             "{engine}: the same id under another kind is a different cluster"
         );
@@ -1517,7 +1524,7 @@ fn the_edge_index_answers_membership_and_leaves_with_the_member_rows() {
             .unwrap_or_else(|e| panic!("{engine}: retract: {e}"));
 
         assert!(
-            !g.member_of(Kind::COMMUNITY, id, &keys[0])
+            !g.member_of(COMMUNITY, id, &keys[0])
                 .unwrap_or_else(|e| panic!("{engine}: member_of: {e}")),
             "{engine}: the mirror left with the member row"
         );
@@ -1531,7 +1538,7 @@ fn the_edge_index_answers_membership_and_leaves_with_the_member_rows() {
             "{engine}: the authority still holds the surviving members"
         );
         assert_eq!(
-            face(&store, 0x0D).len(),
+            face(&store, 0x0F).len(),
             2,
             "{engine}: and the derived face followed it exactly"
         );
@@ -1552,12 +1559,12 @@ fn the_edge_index_rebuilds_from_the_member_rows_alone() {
         // Two clusters of different kinds over the same edges: six member rows,
         // so the face cannot be rebuilt correctly by accident.
         fragment
-            .cluster(Cluster::new(Kind::COMMUNITY, attrs("acme")))
-            .cluster(Cluster::new(Kind::EVENT, attrs("event")));
+            .cluster(Cluster::new(COMMUNITY, attrs("acme")))
+            .cluster(Cluster::new(EVENT, attrs("event")));
         g.incorporate(fragment)
             .unwrap_or_else(|e| panic!("{engine}: commit: {e}"));
 
-        let written = face(&store, 0x0D);
+        let written = face(&store, 0x0F);
         assert_eq!(written.len(), 6, "{engine}: three edges, two clusters");
 
         // Wipe the derived face by hand — the state an interrupted rebuild, a
@@ -1566,7 +1573,7 @@ fn the_edge_index_rebuilds_from_the_member_rows_alone() {
             store.del(key).expect("delete");
         }
         assert!(
-            face(&store, 0x0D).is_empty(),
+            face(&store, 0x0F).is_empty(),
             "{engine}: the face really is gone"
         );
 
@@ -1578,7 +1585,7 @@ fn the_edge_index_rebuilds_from_the_member_rows_alone() {
             "{engine}: the rebuild walked the member rows"
         );
         assert_eq!(
-            face(&store, 0x0D),
+            face(&store, 0x0F),
             written,
             "{engine}: 0x0D rebuilt to the same bytes the write path produced"
         );
@@ -1601,12 +1608,12 @@ fn traversal_and_membership_intersect_on_the_derived_face() {
             .unwrap_or_else(|e| panic!("{engine}: plain: {e}"));
         let mut grouped =
             Fragment::<Employment>::new([edge(person(1), org(2)), edge(person(2), org(2))]);
-        grouped.cluster(Cluster::new(Kind::COMMUNITY, attrs("org2")));
+        grouped.cluster(Cluster::new(COMMUNITY, attrs("org2")));
         let report = g
             .incorporate(grouped)
             .unwrap_or_else(|e| panic!("{engine}: grouped: {e}"));
         let id = report.hyper_ids[0];
-        let cluster = ClusterRef::new(Kind::COMMUNITY, id);
+        let cluster = ClusterRef::new(COMMUNITY, id);
 
         let out_of_p1 = g
             .out_edges(&person(1))
@@ -1648,7 +1655,7 @@ fn traversal_and_membership_intersect_on_the_derived_face() {
             .out(&person(1))
             .filter(|step| {
                 g.member_of(
-                    Kind::COMMUNITY,
+                    COMMUNITY,
                     id,
                     &g.edge_key(step).expect("a step resolves"),
                 )
@@ -1668,6 +1675,146 @@ fn traversal_and_membership_intersect_on_the_derived_face() {
         assert!(
             g.clusters_of(&plain.edges[1]).next().is_none(),
             "{engine}: an ungrouped edge belongs to no cluster"
+        );
+    }
+}
+
+// ---------------------------------------------------------------------------
+// 9. A flow is a kind of its own, and one edge may sit in several clusters
+// ---------------------------------------------------------------------------
+
+/// The shape a scheduler needs, and the reason `FLOW` is not `SUBGRAPH`: the SAME
+/// edge can be a member of a discovered community and of a declared flow at once,
+/// and which is which is answered by the kind byte in the key — not by a second
+/// table, and not by a node recording "my cluster".
+#[test]
+fn one_edge_belongs_to_a_community_and_a_flow_at_once() {
+    for (engine, store) in TestStore::matrix() {
+        let mut g = graph(&store);
+
+        let mut first = Fragment::<Employment>::new([edge(person(1), org(9))]);
+        first
+            .cluster(Cluster::new(COMMUNITY, attrs("bin")))
+            .on_edge_conflict(|_stored, _declared| Employment { weight: 1 });
+        let bin = g
+            .incorporate(first)
+            .unwrap_or_else(|e| panic!("{engine}: commit: {e}"));
+        let community = ClusterRef::new(COMMUNITY, bin.hyper_ids[0]);
+        let shared = bin.edges[0].clone();
+
+        let mut second = Fragment::<Employment>::new([edge(person(1), org(9))]);
+        second.cluster(Cluster::new(FLOW, attrs("login")));
+        let flow_report = g
+            .incorporate(second)
+            .unwrap_or_else(|e| panic!("{engine}: commit: {e}"));
+        let flow = ClusterRef::new(FLOW, flow_report.hyper_ids[0]);
+
+        assert_ne!(
+            FLOW.id(),
+            SUBGRAPH.id(),
+            "{engine}: a flow is not a subgraph"
+        );
+        assert_eq!(
+            flow_report.hyper_ids[0],
+            bin.hyper_ids[0],
+            "{engine}: the id spaces are independent, so equal ids are legal"
+        );
+
+        // Both memberships stand, on the same edge, with the same row identity.
+        assert_eq!(
+            members(&store, engine, community),
+            vec![shared.clone()],
+            "{engine}: the community still holds it"
+        );
+        assert_eq!(
+            members(&store, engine, flow),
+            vec![shared.clone()],
+            "{engine}: the flow holds it too"
+        );
+
+        // The edge side answers both, ordered by (kind, id) — COMMUNITY (1)
+        // before FLOW (5) — which is how a reader filters candidates by kind
+        // instead of keeping an index of its own.
+        let kinds: Vec<(u16, u64)> = g
+            .clusters_of(&shared)
+            .map(|cluster| (cluster.kind.id(), cluster.id))
+            .collect();
+        assert_eq!(
+            kinds,
+            vec![
+                (COMMUNITY.id(), community.id),
+                (FLOW.id(), flow.id)
+            ],
+            "{engine}: one scan of 0x0F answers \"which clusters is this edge in\""
+        );
+
+        assert!(
+            g.member_of(FLOW, flow.id, &shared).expect("read"),
+            "{engine}: the point form agrees"
+        );
+        assert_eq!(
+            hyper(&store)
+                .lookup(flow)
+                .expect("read")
+                .map(|row| row.member_count()),
+            Some(1),
+            "{engine}: the count lives on the cluster row, so no member tally is stored"
+        );
+    }
+}
+
+// ---------------------------------------------------------------------------
+// 10. The kind vocabulary: the caller names its groupings, the store counts them
+// ---------------------------------------------------------------------------
+
+/// The dictionary okm OWNS and the words it does not: a label is interned once
+/// per namespace, first-seen-claims-next, and never renumbered. Two applications
+/// may mean different things by the same id, and the store cannot tell — which is
+/// the point.
+#[test]
+fn a_kind_is_interned_once_and_read_back_by_number() {
+    for (engine, store) in TestStore::matrix() {
+        let mut hyper = hyper(&store);
+
+        let community = hyper.kind_id("community").expect("intern");
+        let flow = hyper.kind_id("flow").expect("intern");
+        assert_ne!(community, flow, "{engine}: two labels, two ids");
+        assert_eq!(
+            hyper.kind_id("community").expect("intern again"),
+            community,
+            "{engine}: a label seen twice keeps its number"
+        );
+        assert_eq!(
+            hyper.kind_label(community).expect("read"),
+            Some("community".to_string())
+        );
+        assert_eq!(
+            hyper.kind_label(Kind(999)).expect("read"),
+            None,
+            "{engine}: a number nobody minted has no label"
+        );
+        assert_eq!(
+            hyper.kinds().expect("list"),
+            vec![(community.id(), "community".to_string()), (flow.id(), "flow".to_string())],
+            "{engine}: listing is one scan, id-ordered"
+        );
+
+        // The interned id is what the rows carry, and the vocabulary is per-ns:
+        // another namespace starts its own numbering at zero.
+        let mut fragment = Fragment::<Employment>::new([edge(person(1), org(1))]);
+        fragment.cluster(Cluster::new(flow, attrs("login")));
+        let mut g = graph(&store);
+        let report = g.incorporate(fragment).expect("commit");
+        let cluster = ClusterRef::new(flow, report.hyper_ids[0]);
+        assert_eq!(
+            members(&store, engine, cluster).len(),
+            1,
+            "{engine}: the interned kind addresses a real cluster"
+        );
+        assert_eq!(
+            face(&store, 0x0B).len(),
+            2,
+            "{engine}: the label face (0x0B) holds exactly the two words; the cursor sits on 0x0A"
         );
     }
 }

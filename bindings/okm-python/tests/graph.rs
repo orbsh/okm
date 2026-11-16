@@ -46,6 +46,16 @@ use okm_dynamic::{Cluster, ClusterRef, Decl, Dict, DynEdge, DynFragment, Kind, V
 
 /// The graph table's ns — a second table in the store, beside the collection's.
 const NS: u16 = 0x0190;
+
+// The CALLER's vocabulary, defined here because a test is a caller: `Kind` is one
+// byte and okm assigns it no meaning. An application picks its own bytes beside
+// its schema (k10r: 1 = community, 5 = flow); the store never learns the words.
+const COMMUNITY: Kind = Kind(1);
+const EVENT: Kind = Kind(2);
+const SUBGRAPH: Kind = Kind(3);
+const SCOPE: Kind = Kind(4);
+const FLOW: Kind = Kind(5);
+
 /// The document collection's ns: same store, different table.
 const DOC_NS: u16 = 7;
 
@@ -283,7 +293,7 @@ fn a_write_is_visible_after_incorporate() {
         Decl::edge(edge(person(2), org(9), "works_at")),
     ]);
     fragment.cluster(Cluster::new(
-        Kind::COMMUNITY,
+        COMMUNITY,
         attrs(&[("label", Variant::Str("acme".into()))]),
     ));
     let report = g
@@ -315,7 +325,7 @@ fn a_write_is_visible_after_incorporate() {
 
     // The cluster: its row, its members (in key order) and its count.
     let row = g
-        .lookup_dyn(Kind::COMMUNITY, cluster)
+        .lookup_dyn(COMMUNITY, cluster)
         .expect("lookup")
         .expect("the cluster row");
     assert_eq!(row.parent, 0);
@@ -325,26 +335,26 @@ fn a_write_is_visible_after_incorporate() {
         "the Dict payload round-trips through the field vocabulary"
     );
     assert_eq!(
-        g.members_dyn(Kind::COMMUNITY, cluster).expect("members"),
+        g.members_dyn(COMMUNITY, cluster).expect("members"),
         report.edges,
         "one scan of the authority face, and it answers the same tuples"
     );
     assert_eq!(
-        g.member_count_dyn(Kind::COMMUNITY, cluster).expect("count"),
+        g.member_count_dyn(COMMUNITY, cluster).expect("count"),
         2
     );
     assert_eq!(
-        g.clusters_dyn(Kind::COMMUNITY).expect("clusters"),
+        g.clusters_dyn(COMMUNITY).expect("clusters"),
         vec![cluster]
     );
     assert_eq!(
         g.all_clusters_dyn().expect("all"),
-        vec![ClusterRef::new(Kind::COMMUNITY, cluster)]
+        vec![ClusterRef::new(COMMUNITY, cluster)]
     );
     // The reverse direction: which clusters does an edge belong to?
     assert_eq!(
         g.clusters_of_dyn(&report.edges[1]).expect("clusters_of"),
-        vec![ClusterRef::new(Kind::COMMUNITY, cluster)]
+        vec![ClusterRef::new(COMMUNITY, cluster)]
     );
     assert!(
         g.clusters_of_dyn(&key(&g, person(9), org(9), "works_at"))
@@ -610,7 +620,7 @@ fn member_of_answers_before_and_after_a_retract() {
         Decl::edge(edge(person(2), org(2), "works_at")),
         Decl::edge(edge(person(3), org(3), "works_at")),
     ]);
-    fragment.cluster(Cluster::new(Kind::COMMUNITY, Dict::new()));
+    fragment.cluster(Cluster::new(COMMUNITY, Dict::new()));
     let report = g
         .incorporate_dyn(fragment)
         .unwrap_or_else(|e| panic!("incorporate: {e}"));
@@ -619,14 +629,14 @@ fn member_of_answers_before_and_after_a_retract() {
 
     for key in &keys {
         assert!(
-            g.member_of_dyn(Kind::COMMUNITY, cluster, key)
+            g.member_of_dyn(COMMUNITY, cluster, key)
                 .expect("member_of"),
             "every edge of the batch is a member"
         );
     }
     assert!(
         !g.member_of_dyn(
-            Kind::COMMUNITY,
+            COMMUNITY,
             cluster,
             &EdgeKey::new(person(4), keys[0].predicate, org(4)),
         )
@@ -634,7 +644,7 @@ fn member_of_answers_before_and_after_a_retract() {
         "a tuple no cluster holds"
     );
     assert!(
-        !g.member_of_dyn(Kind::EVENT, cluster, &keys[0]).expect("member_of"),
+        !g.member_of_dyn(EVENT, cluster, &keys[0]).expect("member_of"),
         "membership is per KIND — the same tuple on another kind is another cluster"
     );
 
@@ -648,19 +658,19 @@ fn member_of_answers_before_and_after_a_retract() {
     assert_eq!(removed.edges, 1);
     assert_eq!(removed.memberships, 1, "one membership row swept");
     assert!(
-        !g.member_of_dyn(Kind::COMMUNITY, cluster, &keys[1]).expect("member_of"),
+        !g.member_of_dyn(COMMUNITY, cluster, &keys[1]).expect("member_of"),
         "the retracted edge is no longer a member"
     );
     assert!(
-        g.member_of_dyn(Kind::COMMUNITY, cluster, &keys[0]).expect("member_of"),
+        g.member_of_dyn(COMMUNITY, cluster, &keys[0]).expect("member_of"),
         "the others still are"
     );
     assert_eq!(
-        g.members_dyn(Kind::COMMUNITY, cluster).expect("members"),
+        g.members_dyn(COMMUNITY, cluster).expect("members"),
         vec![keys[0].clone(), keys[2].clone()]
     );
     assert_eq!(
-        g.member_count_dyn(Kind::COMMUNITY, cluster).expect("count"),
+        g.member_count_dyn(COMMUNITY, cluster).expect("count"),
         2,
         "the row's count was re-stamped"
     );
@@ -679,21 +689,21 @@ fn member_of_answers_before_and_after_a_retract() {
         .unwrap_or_else(|e| panic!("retract: {e}"));
     assert_eq!(removed.memberships, 1, "one membership row swept");
     assert!(
-        g.member_of_dyn(Kind::COMMUNITY, cluster, &keys[0]).expect("member_of"),
+        g.member_of_dyn(COMMUNITY, cluster, &keys[0]).expect("member_of"),
         "the remaining edge is still a member of a one-member cluster"
     );
     assert!(
-        g.lookup_dyn(Kind::COMMUNITY, cluster)
+        g.lookup_dyn(COMMUNITY, cluster)
             .expect("lookup")
             .is_some(),
         "the scope outlives its members"
     );
     assert_eq!(
-        g.members_dyn(Kind::COMMUNITY, cluster).expect("members"),
+        g.members_dyn(COMMUNITY, cluster).expect("members"),
         vec![keys[0].clone()]
     );
     assert_eq!(
-        g.member_count_dyn(Kind::COMMUNITY, cluster).expect("count"),
+        g.member_count_dyn(COMMUNITY, cluster).expect("count"),
         1,
         "the row's count is honest"
     );
@@ -723,12 +733,12 @@ fn a_key_set_intersects_then_fetches_in_one_call() {
         Decl::edge(edge(person(1), org(1), "works_at")),
         Decl::edge(edge(person(1), org(2), "works_at")),
     ]);
-    fragment.cluster(Cluster::new(Kind::COMMUNITY, Dict::new()));
+    fragment.cluster(Cluster::new(COMMUNITY, Dict::new()));
     let grouped = g
         .incorporate_dyn(fragment)
         .unwrap_or_else(|e| panic!("cluster: {e}"));
     let cluster = grouped.hyper_ids[0];
-    let members = g.members_dyn(Kind::COMMUNITY, cluster).expect("members");
+    let members = g.members_dyn(COMMUNITY, cluster).expect("members");
 
     // The walk's own face keys — the position okm-query's operators speak.
     let steps = walk(&g, &person(1));

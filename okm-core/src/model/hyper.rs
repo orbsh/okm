@@ -7,12 +7,11 @@
 //! community detection reads as a core. So the set IS rows — one row per member,
 //! in a face of its own — and the graph's topology is untouched.
 //!
-//! ```text
-//! 0x0A  cluster row      [ns][0x0A][kind][hyper_id]                    → [parent u64 BE][dynamic payload]
-//! 0x0B  edge member      [ns][0x0B][kind][hyper_id][src][pred][dst]    → empty
-//! 0x0C  child cluster    [ns][0x0C][kind][parent_id][hyper_id]         → empty, derived
-//! 0x0D  edge → cluster   [ns][0x0D][src][pred][dst][kind][hyper_id]    → empty, derived
-//! ```
+//!
+//! Every face number and every width this module builds a key from comes from
+//! [`crate::model::layout`] — one table for the whole engine, and the only place
+//! a number is written down. This module says what the rows MEAN; that one says
+//! where they are.
 //!
 //! A member is an edge, and an edge is its tuple `(src, predicate, dst)` — there
 //! is no edge number to carry (ADR-0067). The tuple's widths come from the
@@ -21,15 +20,15 @@
 //!
 //! # What is authority and what is an index
 //!
-//! `0x0A` (the cluster) and `0x0B` (its edge members) are truth: a cluster's
+//! The cluster row and its edge members are truth: a cluster's
 //! existence and its membership are assertions, and a recompute writes a NEW
-//! cluster id rather than overwriting one. `0x0C` and `0x0D` are derived and
-//! rebuildable — `0x0C` from `parent_id` in the cluster rows, `0x0D` from the
+//! cluster id rather than overwriting one. `0x0E` and `0x0F` are derived and
+//! rebuildable — `0x0E` from `parent_id` in the cluster rows, `0x0F` from the
 //! member rows themselves — so a miss on either is a freshness problem, never a
 //! correctness one ([`Hyperedges::rebuild_derived`] is the repair verb).
 //!
-//! `0x0D` is the same fact as `0x0B` read the other way: `0x0B` is
-//! `[kind][cluster][edge]` ("who is in this cluster"), `0x0D` is
+//! `0x0F` is the same fact as `0x0D` read the other way: `0x0D` is
+//! `[kind][cluster][edge]` ("who is in this cluster"), `0x0F` is
 //! `[edge][kind][cluster]` ("which clusters is this edge in"). It exists
 //! because a **traversal is ordered by the tuple** and so is this face — the
 //! edge leads, so both are in the same order and intersectable by key
@@ -78,8 +77,10 @@
 //!     Decl::edge(EdgeHead { src: alice(), dst: acme(), predicate: "works_at".into() }),
 //!     Decl::edge(EdgeHead { src: bob(), dst: acme(), predicate: "works_at".into() }),
 //! ]);
+//! // `Kind(1)` is whatever this application calls its first cluster kind — the byte is the
+//! // caller's, and okm never learns the word for it.
 //! fragment
-//!     .cluster(Cluster::new(Kind::COMMUNITY, attrs("acme")))
+//!     .cluster(Cluster::new(Kind(1), attrs("acme")))
 //!     .on_node_conflict::<Person>(|old, _declared| Person { seen: old.seen + 1 })
 //!     .on_edge_conflict(|old, declared| Employment { weight: old.weight.max(declared.weight) })
 //!     .on_cluster_conflict(|old, declared| {
@@ -138,56 +139,44 @@ use crate::model::graph::{
 };
 use crate::model::handles::Handles;
 use crate::model::index::{Document, PRIMARY_SLOT, Slot, write_slot};
-use crate::model::obj_vocab::{FIELD_VOCAB, Faces, Vocabulary};
+use crate::model::layout::U64_WIDTH;
+use crate::model::layout::{CLUSTER_KIND_WIDTH, ClusterKindId};
+use crate::model::obj_vocab::{CLUSTER_KIND, FIELD_VOCAB, Faces, Names, Vocabulary};
 
-/// Fixed face 0x0A: the cluster row itself, one key SHORTER than its members —
-/// `[ns][0x0A][kind][hyper_id]` → `[parent u64 BE][dynamic payload]`.
-///
-/// Nothing in this face shares a prefix below a cluster row (members live on
-/// `0x0B`/`0x0C`), so a scan of `[ns][0x0A][kind]` needs no length test — the
-/// structural difference the vocabulary cursor's face (0x02) cannot claim.
-pub const CLUSTER_SLOT: Slot = 0x0A;
-/// Fixed face 0x0B: one row per member EDGE — the authority for membership.
-pub const EDGE_MEMBER_SLOT: Slot = 0x0B;
-/// Fixed face 0x0C: the derived child index `[kind][parent][child]`, derived from
-/// `parent_id` in the cluster rows so "list a cluster's children" is one clean
-/// prefix scan instead of a walk over every cluster of the kind.
-pub const CHILD_INDEX_SLOT: Slot = 0x0C;
-/// Fixed face 0x0D: the derived EDGE → CLUSTER index
-/// `[ns][0x0D][src_h][pred][dst_h][kind][hyper_id]` — the reverse direction of
-/// `0x0B`, derived from the member rows so it rebuilds from `0x0B` alone.
-///
-/// The row leads on purpose: the face is then ordered the way a traversal face
-/// is, so a perceptive caller can align the two with `okm_query`'s set operators
-/// instead of materializing a set. `(kind, hyper_id)` follow, so a membership
-/// test for a known `(kind, cluster, edge)` is one exact key — [`member_of`] is
-/// that read.
-pub const EDGE_CLUSTER_SLOT: Slot = 0x0D;
+/// The cluster faces (0x0C–0x0F) and the kind vocabulary that leads them
+/// (0x0A/0x0B) are numbered in [`crate::model::layout`] — the band table lives
+/// there, once.
+pub use crate::model::layout::{CHILD_INDEX_SLOT, CLUSTER_SLOT, EDGE_CLUSTER_SLOT, EDGE_MEMBER_SLOT};
 
 /// Payload name carrying the number of member EDGES, maintained by the write
 /// path. Reserved: the writer stamps it last, after `on_cluster_conflict` runs.
 pub const MEMBER_COUNT: &str = "members";
 
-/// The cluster's kind: a one-byte CLOSED vocabulary (community / event /
-/// subgraph / scope), kept in the key so one face serves every kind. Byte `0` is
-/// the unnamed value the type defaults to; the constants below are the
-/// vocabulary this build knows.
+
+/// The cluster's kind: an interned id (0x0A/0x0B), two bytes in the key like a
+/// predicate's.
+///
+/// **The vocabulary belongs to the caller.** okm assigns no meaning to a number:
+/// "community" and "flow" are one application's nouns, and another application is
+/// free to intern the same numbers for something else. What okm owns is the
+/// dictionary — the pair of faces and the append-only cursor — never the words.
+/// A database that shipped its callers' noun list as an enum would know its
+/// application's business.
+///
+/// Zero is the unnamed value the type defaults to; a caller that never interns
+/// anything can still pass `Kind(0)` and get a face nobody else uses.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, PartialOrd, Ord, Hash)]
-pub struct Kind(pub u8);
+pub struct Kind(pub ClusterKindId);
 
 impl Kind {
-    /// Discovered grouping (label propagation, a community detector).
-    pub const COMMUNITY: Kind = Kind(0x01);
-    /// A moment's evidence: the assertions one event was read from.
-    pub const EVENT: Kind = Kind(0x02);
-    /// A declared subgraph: a named slice of the edge set.
-    pub const SUBGRAPH: Kind = Kind(0x03);
-    /// A boundary: the assertions one access scope covers.
-    pub const SCOPE: Kind = Kind(0x04);
-
-    /// The key byte.
-    pub fn byte(self) -> u8 {
+    /// The key's two bytes, big-endian — the same encoding a predicate id gets.
+    pub fn id(self) -> ClusterKindId {
         self.0
+    }
+
+    /// The segment as it lands in a key.
+    fn write(self, buf: &mut Vec<u8>) {
+        buf.extend_from_slice(&self.0.to_be_bytes());
     }
 }
 
@@ -326,16 +315,16 @@ fn push_u64(buf: &mut Vec<u8>, value: u64) {
     buf.extend_from_slice(&value.to_be_bytes());
 }
 
-/// `[ns][0x0A][kind][hyper_id]` — the cluster row, one key shorter than its
+/// The cluster row — `[ns][CLUSTER_SLOT][kind][hyper_id]`, one key shorter than its
 /// members.
 pub fn cluster_key(ns: &[u8; 2], kind: Kind, id: u64) -> Vec<u8> {
     let mut key = face_prefix(ns, CLUSTER_SLOT);
-    key.push(kind.0);
+    kind.write(&mut key);
     push_u64(&mut key, id);
     key
 }
 
-/// `[ns][0x0B][kind][hyper_id][src_h][pred][dst_h]` — one member edge, by the
+/// The member row — cluster prefix then the edge tuple — by the
 /// same row identity the traversal faces use (ADR-0067's boundary-only handle).
 pub fn edge_member_key(ns: &[u8; 2], cluster: ClusterRef, row: &HandleKey) -> Vec<u8> {
     let mut key = members_prefix(ns, cluster);
@@ -343,40 +332,40 @@ pub fn edge_member_key(ns: &[u8; 2], cluster: ClusterRef, row: &HandleKey) -> Ve
     key
 }
 
-/// `[ns][0x0C][kind][parent_id][hyper_id]` — the child index, one row per
+/// The child index, one row per
 /// (parent, child) pair.
 pub fn child_key(ns: &[u8; 2], kind: Kind, parent: u64, child: u64) -> Vec<u8> {
     let mut key = face_prefix(ns, CHILD_INDEX_SLOT);
-    key.push(kind.0);
+    kind.write(&mut key);
     push_u64(&mut key, parent);
     push_u64(&mut key, child);
     key
 }
 
-/// `[ns][0x0A][kind]` — every cluster of one kind.
+/// Every cluster of one kind.
 pub fn clusters_prefix(ns: &[u8; 2], kind: Kind) -> Vec<u8> {
     let mut key = face_prefix(ns, CLUSTER_SLOT);
-    key.push(kind.0);
+    kind.write(&mut key);
     key
 }
 
-/// `[ns][0x0B][kind][hyper_id]` — every member edge of one cluster.
+/// Every member edge of one cluster.
 pub fn members_prefix(ns: &[u8; 2], cluster: ClusterRef) -> Vec<u8> {
     let mut key = face_prefix(ns, EDGE_MEMBER_SLOT);
-    key.push(cluster.kind.0);
+    cluster.kind.write(&mut key);
     push_u64(&mut key, cluster.id);
     key
 }
 
-/// `[ns][0x0C][kind][parent_id]` — every child of one cluster.
+/// Every child of one cluster.
 pub fn children_prefix(ns: &[u8; 2], kind: Kind, parent: u64) -> Vec<u8> {
     let mut key = face_prefix(ns, CHILD_INDEX_SLOT);
-    key.push(kind.0);
+    kind.write(&mut key);
     push_u64(&mut key, parent);
     key
 }
 
-/// `[ns][0x0D][src_h][pred][dst_h][kind][hyper_id]` — one edge's membership in
+/// One edge's membership in
 /// one cluster, derived from the member row that says the same thing the other
 /// way round.
 ///
@@ -384,12 +373,12 @@ pub fn children_prefix(ns: &[u8; 2], kind: Kind, parent: u64) -> Vec<u8> {
 /// stream. `(kind, hyper_id)` after it, so the triple is one exact key.
 pub fn edge_cluster_key(ns: &[u8; 2], row: &HandleKey, cluster: ClusterRef) -> Vec<u8> {
     let mut key = edge_clusters_prefix(ns, row);
-    key.push(cluster.kind.0);
+    cluster.kind.write(&mut key);
     push_u64(&mut key, cluster.id);
     key
 }
 
-/// `[ns][0x0D][src_h][pred][dst_h]` — every cluster one edge belongs to.
+/// Every cluster one edge belongs to.
 pub fn edge_clusters_prefix(ns: &[u8; 2], row: &HandleKey) -> Vec<u8> {
     let mut key = face_prefix(ns, EDGE_CLUSTER_SLOT);
     row.write(&mut key);
@@ -407,7 +396,7 @@ pub fn cluster_value(parent: u64, payload: &[u8]) -> Vec<u8> {
 }
 
 fn parse_head(value: &[u8]) -> Result<(u64, &[u8])> {
-    if value.len() < 8 {
+    if value.len() < U64_WIDTH {
         return Err(Error::Corrupt {
             what: format!(
                 "a cluster row is {} byte(s); its parent head is 8",
@@ -415,13 +404,17 @@ fn parse_head(value: &[u8]) -> Result<(u64, &[u8])> {
             ),
         });
     }
-    let mut head = [0u8; 8];
-    head.copy_from_slice(&value[..8]);
-    Ok((u64::from_be_bytes(head), &value[8..]))
+    let mut head = [0u8; U64_WIDTH];
+    head.copy_from_slice(&value[..U64_WIDTH]);
+    Ok((u64::from_be_bytes(head), &value[U64_WIDTH..]))
+}
+
+fn be_vocab(bytes: &[u8]) -> Option<ClusterKindId> {
+    bytes.try_into().ok().map(ClusterKindId::from_be_bytes)
 }
 
 fn be_u64(bytes: &[u8]) -> Option<u64> {
-    <[u8; 8]>::try_from(bytes).ok().map(u64::from_be_bytes)
+    <[u8; U64_WIDTH]>::try_from(bytes).ok().map(u64::from_be_bytes)
 }
 
 fn hex(bytes: &[u8]) -> String {
@@ -597,6 +590,36 @@ impl<S: VirtualStorage> Hyperedges<S> {
         &self.store
     }
 
+    /// Intern the caller's label as a cluster kind (0x0A/0x0B): first seen claims
+    /// the next id, append-only, never renumbered — the same door predicates come
+    /// through (0x04/0x05), and the reason both are `u16` and both lead their
+    /// faces. okm stores the word and never reads it: the vocabulary is the
+    /// caller's, and "community" is nobody's business but the application's.
+    pub fn kind_id(&mut self, label: &str) -> Result<Kind> {
+        let mut door = Faces::<_, ClusterKindId>::new(&self.store, &self.ns, CLUSTER_KIND);
+        let mut vocab = Vocabulary::<ClusterKindId>::new();
+        Ok(Kind(vocab.ensure(&mut door, label)?))
+    }
+
+    /// The label a kind was interned under — `None` for a number nobody minted.
+    pub fn kind_label(&mut self, kind: Kind) -> Result<Option<String>> {
+        let mut door = Faces::<_, ClusterKindId>::new(&self.store, &self.ns, CLUSTER_KIND);
+        let mut vocab = Vocabulary::<ClusterKindId>::new();
+        vocab.name_of(&mut door, kind.0)
+    }
+
+    /// Every kind this namespace has interned, id-ordered: one prefix scan of
+    /// 0x0A. A listing, never an inference walked back from the cluster rows.
+    pub fn kinds(&mut self) -> Result<Vec<(ClusterKindId, String)>> {
+        let mut door = Faces::<_, ClusterKindId>::new(&self.store, &self.ns, CLUSTER_KIND);
+        let mut pairs: Vec<(ClusterKindId, String)> = Names::scan(&mut door)?
+            .into_iter()
+            .map(|(label, id)| (id, label))
+            .collect();
+        pairs.sort_by_key(|(id, _)| *id);
+        Ok(pairs)
+    }
+
     /// One cluster row: its parent and payload. `None` = no such cluster.
     pub fn lookup(&self, cluster: ClusterRef) -> Result<Option<ClusterRow>> {
         let Some(raw) = self
@@ -630,11 +653,12 @@ impl<S: VirtualStorage> Hyperedges<S> {
         let prefix = face_prefix(&self.ns, CLUSTER_SLOT);
         let mut out = Vec::new();
         for (suffix, _) in scan_suffix_kv(&self.store, &prefix)? {
-            if suffix.len() != 9 {
+            if suffix.len() != CLUSTER_KIND_WIDTH + U64_WIDTH {
                 continue;
             }
-            if let Some(id) = be_u64(&suffix[1..]) {
-                out.push(ClusterRef::new(Kind(suffix[0]), id));
+            if let (Some(kind), Some(id)) = (be_vocab(&suffix[..CLUSTER_KIND_WIDTH]), be_u64(&suffix[CLUSTER_KIND_WIDTH..]))
+            {
+                out.push(ClusterRef::new(Kind(kind), id));
             }
         }
         Ok(out)
@@ -749,13 +773,16 @@ impl<S: VirtualStorage> Hyperedges<S> {
         {
             let (key, value) = item?;
             let suffix = &key[prefix.len()..];
-            if suffix.len() != 9 {
+            if suffix.len() != CLUSTER_KIND_WIDTH + U64_WIDTH {
                 continue;
             }
-            let kind = Kind(suffix[0]);
-            let Some(id) = be_u64(&suffix[1..]) else {
+            let Some(kind) = be_vocab(&suffix[..CLUSTER_KIND_WIDTH]) else {
                 continue;
             };
+            let Some(id) = be_u64(&suffix[CLUSTER_KIND_WIDTH..]) else {
+                continue;
+            };
+            let kind = Kind(kind);
             let (parent, _) = parse_head(&value)?;
             if parent != 0 {
                 batch.put(child_key(&self.ns, kind, parent, id), Vec::new());
@@ -780,14 +807,17 @@ impl<S: VirtualStorage> Hyperedges<S> {
             let (key, _) = item?;
             let suffix = &key[prefix.len()..];
             // `[kind][hyper_id]` then the fixed-width row identity.
-            if suffix.len() != 9 + HandleKey::WIDTH {
+            if suffix.len() != CLUSTER_KIND_WIDTH + U64_WIDTH + HandleKey::WIDTH {
                 continue;
             }
-            let Some(id) = be_u64(&suffix[1..9]) else {
+            let Some(kind) = be_vocab(&suffix[..CLUSTER_KIND_WIDTH]) else {
                 continue;
             };
-            let cluster = ClusterRef::new(Kind(suffix[0]), id);
-            let Some(row) = HandleKey::parse(&suffix[9..]) else {
+            let Some(id) = be_u64(&suffix[CLUSTER_KIND_WIDTH..CLUSTER_KIND_WIDTH + U64_WIDTH]) else {
+                continue;
+            };
+            let cluster = ClusterRef::new(Kind(kind), id);
+            let Some(row) = HandleKey::parse(&suffix[CLUSTER_KIND_WIDTH + U64_WIDTH..]) else {
                 continue;
             };
             batch.put(edge_cluster_key(&self.ns, &row, cluster), Vec::new());
@@ -1024,10 +1054,13 @@ impl<'a, S: VirtualStorage> ClusterStream<'a, S> {
     /// else. A suffix of another width is not this face's and is skipped.
     fn decode(&self, key: &[u8]) -> Option<ClusterRef> {
         let suffix = key.get(self.suffix_at..)?;
-        if suffix.len() != 9 {
+        if suffix.len() != CLUSTER_KIND_WIDTH + U64_WIDTH {
             return None;
         }
-        Some(ClusterRef::new(Kind(suffix[0]), be_u64(&suffix[1..])?))
+        Some(ClusterRef::new(
+            Kind(be_vocab(&suffix[..CLUSTER_KIND_WIDTH])?),
+            be_u64(&suffix[CLUSTER_KIND_WIDTH..])?,
+        ))
     }
 
     /// Put the next answer on top, or clear it when there is none left.
@@ -1696,7 +1729,7 @@ impl<G: GraphEncode + Default> Fragment<G> {
         // ---- 3. Cluster ids: allocated at run time, per kind ----
         // Every kind this fragment can allocate in: the ones it declares and the
         // ones its ops move members in or out of.
-        let mut kinds: BTreeSet<u8> = BTreeSet::new();
+        let mut kinds: BTreeSet<ClusterKindId> = BTreeSet::new();
         for cluster in &self.clusters {
             kinds.insert(cluster.kind.0);
         }
@@ -1716,7 +1749,7 @@ impl<G: GraphEncode + Default> Fragment<G> {
                 }
             }
         }
-        let mut next_id: BTreeMap<u8, u64> = BTreeMap::new();
+        let mut next_id: BTreeMap<ClusterKindId, u64> = BTreeMap::new();
         for kind in kinds {
             let base = next_free_cluster(graph.store(), &ns, Kind(kind))?;
             next_id.insert(kind, base);
@@ -1749,7 +1782,7 @@ impl<G: GraphEncode + Default> Fragment<G> {
         }
 
         // ---- 4. The plan: one record per cluster this batch touches ----
-        let mut plan: BTreeMap<(u8, u64), ClusterPlan> = BTreeMap::new();
+        let mut plan: BTreeMap<(ClusterKindId, u64), ClusterPlan> = BTreeMap::new();
         for (cluster, id) in self.clusters.iter().zip(&assigned) {
             let entry = plan.entry((cluster.kind.0, *id)).or_default();
             entry.declared = true;
@@ -1815,7 +1848,7 @@ impl<G: GraphEncode + Default> Fragment<G> {
         graph: &Graph<S, G>,
         ns: &[u8; 2],
         endpoints: &BTreeSet<(u16, Vec<u8>)>,
-        plan: BTreeMap<(u8, u64), ClusterPlan>,
+        plan: BTreeMap<(ClusterKindId, u64), ClusterPlan>,
         batch: &mut Batch,
     ) -> Result<usize> {
         let mut deleted_members = 0usize;
@@ -2038,20 +2071,23 @@ impl<S: VirtualStorage, G: GraphEncode + Default> Graph<S, G> {
         // found by SUFFIX. There is no reverse index, and none is needed — this
         // runs once per retract, not once per edge. Both sides are row
         // identities, so the containment test is a byte comparison.
-        let mut plan: BTreeMap<(u8, u64), ClusterPlan> = BTreeMap::new();
+        let mut plan: BTreeMap<(ClusterKindId, u64), ClusterPlan> = BTreeMap::new();
         let prefix = face_prefix(&ns, EDGE_MEMBER_SLOT);
         for (suffix, _) in scan_suffix_kv(self.store(), &prefix)? {
-            if suffix.len() != 9 + HandleKey::WIDTH {
+            if suffix.len() != CLUSTER_KIND_WIDTH + U64_WIDTH + HandleKey::WIDTH {
                 continue;
             }
-            let Some(id) = be_u64(&suffix[1..9]) else {
+            let Some(kind) = be_vocab(&suffix[..CLUSTER_KIND_WIDTH]) else {
                 continue;
             };
-            let Some(row) = HandleKey::parse(&suffix[9..]) else {
+            let Some(id) = be_u64(&suffix[CLUSTER_KIND_WIDTH..CLUSTER_KIND_WIDTH + U64_WIDTH]) else {
+                continue;
+            };
+            let Some(row) = HandleKey::parse(&suffix[CLUSTER_KIND_WIDTH + U64_WIDTH..]) else {
                 continue;
             };
             if doomed.contains(&row) {
-                plan.entry((suffix[0], id)).or_default().remove.insert(row);
+                plan.entry((kind, id)).or_default().remove.insert(row);
             }
         }
         // A cluster `delete` in the fragment rides the same plan; `remove` is
@@ -2087,34 +2123,48 @@ impl<S: VirtualStorage, G: GraphEncode + Default> Graph<S, G> {
 
 #[cfg(test)]
 mod tests {
+use crate::model::handles::HANDLE_WIDTH;
+use crate::model::index::{CLUSTER_KIND_ID_SLOT, CLUSTER_KIND_NAME_SLOT};
+
+// The CALLER's vocabulary, defined here because a test is a caller: `Kind` is one
+// interned id and okm assigns it no meaning. An application picks its own numbers
+// beside its schema (k10r: community and flow); the store never learns the words.
+const COMMUNITY: Kind = Kind(1);
+const EVENT: Kind = Kind(2);
     use super::*;
 
     #[test]
-    fn the_three_faces_are_the_fixed_band_the_adr_numbered() {
-        assert_eq!(CLUSTER_SLOT, 0x0A);
-        assert_eq!(EDGE_MEMBER_SLOT, 0x0B);
-        assert_eq!(CHILD_INDEX_SLOT, 0x0C);
+    fn the_faces_are_the_fixed_band_the_adr_numbered() {
+        // The vocabulary leads, then the clusters: 0x0A/0x0B are the dictionary
+        // for the 0x0C–0x0F faces, the way 0x04/0x05 lead 0x06–0x09.
+        assert_eq!(CLUSTER_KIND_ID_SLOT, 0x0A);
+        assert_eq!(CLUSTER_KIND_NAME_SLOT, 0x0B);
+        assert_eq!(CLUSTER_SLOT, 0x0C);
+        assert_eq!(EDGE_MEMBER_SLOT, 0x0D);
+        assert_eq!(CHILD_INDEX_SLOT, 0x0E);
+        assert_eq!(EDGE_CLUSTER_SLOT, 0x0F);
     }
 
     #[test]
     fn a_member_key_carries_the_whole_identity_after_the_cluster_prefix() {
         let ns = [0x00u8, 0x21];
-        let cluster = ClusterRef::new(Kind::COMMUNITY, 7);
-        // [ns 2][0x0A][kind 1][id 8] = 12 bytes. A member row is that prefix
+        let cluster = ClusterRef::new(COMMUNITY, 7);
+        // [ns 2][0x0C][kind 2][id 8] = 13 bytes. A member row is that prefix
         // plus the edge's stored identity `[src_h 8][pred 2][dst_h 8]` — the
         // FIXED-WIDTH handle row (ADR-0067's boundary-only handle), not the
         // ref-and-pkey tuple: a member table's key width never reaches this
         // face, so its width is the same eighteen bytes in every graph.
         let row = HandleKey::new(Handle::new(1), 3, Handle::new(2));
-        assert_eq!(cluster_key(&ns, Kind::COMMUNITY, 7).len(), 12);
-        assert_eq!(HandleKey::WIDTH, 18);
+        let head = 3 + CLUSTER_KIND_WIDTH + U64_WIDTH; // ns, slot, kind, hyper_id
+        assert_eq!(cluster_key(&ns, COMMUNITY, 7).len(), head);
+        assert_eq!(HandleKey::WIDTH, 2 * HANDLE_WIDTH + CLUSTER_KIND_WIDTH);
         assert_eq!(
             edge_member_key(&ns, cluster, &row).len(),
-            12 + 18,
+            head + HandleKey::WIDTH,
             "a member row is the cluster prefix plus the eighteen-byte handle row"
         );
         assert_eq!(
-            &edge_member_key(&ns, cluster, &row)[12..],
+            &edge_member_key(&ns, cluster, &row)[head..],
             &[
                 0, 0, 0, 0, 0, 0, 0, 1, // src handle 1
                 0, 3, // predicate
@@ -2124,12 +2174,12 @@ mod tests {
         );
         assert!(edge_member_key(&ns, cluster, &row).starts_with(&members_prefix(&ns, cluster)));
         assert!(
-            !edge_member_key(&ns, cluster, &row).starts_with(&cluster_key(&ns, Kind::COMMUNITY, 7))
+            !edge_member_key(&ns, cluster, &row).starts_with(&cluster_key(&ns, COMMUNITY, 7))
         );
         // Every scan prefix is the whole key of its own row kind.
-        assert_eq!(clusters_prefix(&ns, Kind::COMMUNITY).len(), 4);
-        assert_eq!(members_prefix(&ns, cluster).len(), 12);
-        assert_eq!(children_prefix(&ns, Kind::COMMUNITY, 1).len(), 12);
+        assert_eq!(clusters_prefix(&ns, COMMUNITY).len(), 3 + CLUSTER_KIND_WIDTH);
+        assert_eq!(members_prefix(&ns, cluster).len(), head);
+        assert_eq!(children_prefix(&ns, COMMUNITY, 1).len(), head);
     }
 
     #[test]
@@ -2154,12 +2204,12 @@ mod tests {
     #[test]
     fn a_child_row_is_the_prefix_then_the_child_id() {
         let ns = [0x10u8, 0x00];
-        let key = child_key(&ns, Kind::EVENT, 3, 42);
-        let prefix = children_prefix(&ns, Kind::EVENT, 3);
+        let key = child_key(&ns, EVENT, 3, 42);
+        let prefix = children_prefix(&ns, EVENT, 3);
         assert!(key.starts_with(&prefix));
         // The face byte is the one the child index moved down to.
         assert_eq!(u16::from(key[2]), CHILD_INDEX_SLOT);
-        assert_eq!(&key[3], &Kind::EVENT.byte());
+        assert_eq!(&key[3..3 + CLUSTER_KIND_WIDTH], &EVENT.id().to_be_bytes());
         let suffix = &key[prefix.len()..];
         // [child 8]
         assert_eq!(suffix.len(), 8);

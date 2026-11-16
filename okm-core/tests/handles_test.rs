@@ -115,7 +115,7 @@ fn head_of(g: &mut Graph<TestStore, Employment>, key: &okm_core::EdgeKey) -> Edg
 // ---- the registry's key space, spelled out ----
 
 /// A face prefix: `[ns 2B][slot]` — one byte for a fixed face, two for a
-/// counting family. Both registry faces are FIXED faces (`0x0E`, `0x0F`), and
+/// counting family. Both registry faces are FIXED faces (`0x10`, `0x11`), and
 /// the prefix is built with the crate's own writer so the test cannot disagree
 /// with the layout it is pinning.
 fn face_prefix(slot: u16) -> Vec<u8> {
@@ -127,7 +127,7 @@ fn face_prefix(slot: u16) -> Vec<u8> {
 /// Every `(key, value)` row of one face, in key order.
 ///
 /// The forward face is the one face that also carries a FACE-LEVEL SINGLETON —
-/// the allocation cursor at the bare prefix `[ns][0x0E]` — so it is not a
+/// the allocation cursor at the bare prefix `[ns][0x10]` — so it is not a
 /// row and is skipped here; every real row sits exactly eight bytes past the
 /// prefix (ADR-0030's "a face-level singleton is not a band").
 fn face(store: &TestStore, slot: u16) -> Vec<(Vec<u8>, Vec<u8>)> {
@@ -148,14 +148,14 @@ fn cursor(store: &TestStore) -> Option<u64> {
     ))
 }
 
-/// `[ns][0x0E][handle u64]` — the forward row.
+/// `[ns][0x10][handle u64]` — the forward row.
 fn forward_key(handle: u64) -> Vec<u8> {
     let mut key = face_prefix(HANDLE_NODE_SLOT);
     key.extend_from_slice(&handle.to_be_bytes());
     key
 }
 
-/// `[ns][0x0F][node_ns 2B][pkey]` — the reverse row.
+/// `[ns][0x11][node_ns 2B][pkey]` — the reverse row.
 fn reverse_key(node: &NodeRef) -> Vec<u8> {
     let mut key = face_prefix(NODE_HANDLE_SLOT);
     key.extend_from_slice(&node.wire());
@@ -251,7 +251,7 @@ fn verify_issue_once(store: &TestStore, engine: &str) {
     // them, Extension and the meta at the tail (ADR-0030).
     assert_eq!(
         (HANDLE_NODE_SLOT, NODE_HANDLE_SLOT),
-        (0x0E, 0x0F),
+        (0x10, 0x11),
         "{engine}: the registry took the two faces right after the core"
     );
     assert_eq!(

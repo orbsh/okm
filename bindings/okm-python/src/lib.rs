@@ -1161,26 +1161,17 @@ pub mod pyo3_impl {
         Ok(dict.into_any().unbind())
     }
 
-    /// A cluster kind by byte or by the vocabulary's name: the four the ADR
-    /// fixes, spelled the way a reader of the docs would spell them.
+    /// A cluster kind by its byte. The vocabulary is the CALLER's: okm assigns no
+    /// meaning to a byte, so this takes an int and nothing else — an application
+    /// that wants names defines them beside its schema.
     fn kind_of(obj: &Bound<'_, PyAny>, what: &str) -> PyResult<Kind> {
-        if let Ok(name) = obj.extract::<String>() {
-            return match name.to_ascii_lowercase().as_str() {
-                "community" => Ok(Kind::COMMUNITY),
-                "event" => Ok(Kind::EVENT),
-                "subgraph" => Ok(Kind::SUBGRAPH),
-                "scope" => Ok(Kind::SCOPE),
-                other => Err(PyValueError::new_err(format!(
-                    "{what}: kind is community / event / subgraph / scope or its byte, got `{other}`"
-                ))),
-            };
-        }
-        let byte: u8 = obj.extract().map_err(|_| {
+        let id = obj.extract::<u16>().map_err(|_| {
             PyTypeError::new_err(format!(
-                "{what}: kind is an int or one of community / event / subgraph / scope"
+                "{what}: kind is an interned id (0-65535); the meaning of each value belongs to \
+                 the caller, and the labels live in the collection's cluster-kind vocabulary"
             ))
         })?;
-        Ok(Kind(byte))
+        Ok(Kind(id))
     }
 
     /// One `{name: value}` dict → the dynamic segment's `Dict`. Every name here
@@ -1659,7 +1650,7 @@ pub mod pyo3_impl {
 
     fn cluster_ref_to_py(py: Python<'_>, cluster: &ClusterRef) -> PyResult<Py<PyAny>> {
         let dict = pyo3::types::PyDict::new(py);
-        dict.set_item("kind", cluster.kind.byte())?;
+        dict.set_item("kind", cluster.kind.id())?;
         dict.set_item("id", cluster.id)?;
         Ok(dict.into_any().unbind())
     }
@@ -2096,7 +2087,7 @@ pub mod pyo3_impl {
             };
             Python::attach(|py| {
                 let dict = pyo3::types::PyDict::new(py);
-                dict.set_item("kind", kind.byte())?;
+                dict.set_item("kind", kind.id())?;
                 dict.set_item("id", id)?;
                 dict.set_item("parent", row.parent)?;
                 dict.set_item("member_count", row.member_count())?;

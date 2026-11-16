@@ -23,15 +23,10 @@ use okm_core::engine::storage::{Batch, VirtualStorage, scan_suffix_kv};
 use crate::codec::{Codec, Reader, put_u16};
 use crate::hnsw::{Hnsw, HnswParams};
 
-/// Fixed face 0x1E — Extension (ADR-0066 §8): the band once the core faces and
-/// the handles were placed, and the band whose sub-kinds each own their own
-/// durability contract. Every entry under it is `[ns 2B][0x1E][sub-kind]…`.
-///
-/// `0x1E` sits at the tail of the thirty-two-face band next to the meta row
-/// (`0x1F`) so the two mnemonics — E for Extension, F for the final face — stay
-/// the band's tail; `0x10`–`0x1D` is the one contiguous reserve below them
-/// (ADR-0030).
-pub const VECTOR_INDEX_SLOT: u8 = 0x1E;
+/// The Extension face's number is `okm_core::model::layout`'s like every other
+/// face's; this is the vector cache's name for it. Its sub-kinds each own their
+/// own durability contract: every entry is `[ns][0x1E][sub-kind]…`.
+pub const VECTOR_INDEX_SLOT: u8 = okm_core::model::layout::EXTENSION_SLOT as u8;
 
 /// Sub-kind 0x01 of face 0x1E: the built graph per shard, one blob each —
 /// `[ns 2B][0x1E][0x01][shard u16 BE] → blob`.

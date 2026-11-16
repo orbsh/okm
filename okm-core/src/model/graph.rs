@@ -24,17 +24,9 @@
 //!
 //! # Slot layout (fixed faces within the edge ns, ADR-0030/ADR-0017 §3)
 //!
-//! ```text
-//! 0x01    dynamic segment   [src_h][pred][dst_h]            → the edge's open attributes (nTLV)
-//! 0x02/0x03  field-name vocabulary (the attributes' own names ↔ ids)
-//! 0x04/0x05  PREDICATE VOCABULARY      (predicate name ↔ predicate_vocab_id)
-//! 0x06    out               [src_h][pred][dst_h]            → the edge payload
-//! 0x07    in                [dst_h][pred][src_h]            → empty
-//! 0x08    predicate+out     [pred][src_h][dst_h]            → empty
-//! 0x09    predicate+in      [pred][dst_h][src_h]            → empty
-//! 0x0E    handle → node     [handle u64]                    → [node_ns 2B][pkey]
-//! 0x0F    node → handle     [node_ns 2B][pkey]              → [handle u64]
-//! ```
+//! The numbers and widths are [`crate::model::layout`]'s — one table for the
+//! whole engine, the only place a number is written down.
+//!
 //!
 //! **The interior is handles, not refs** (ADR-0067, "a boundary-only handle"):
 //! `_h` is eight bytes of the graph's own numbering, issued the first time a
@@ -76,6 +68,9 @@ use crate::engine::storage::{
     Batch, BatchStore, ScanIter, VirtualStorage, prefix_end, scan_suffix_kv,
 };
 use crate::model::handles::Handles;
+use crate::model::layout::{
+    FieldNameId, HANDLE_WIDTH, PREDICATE_VOCAB_WIDTH, PredicateId,
+};
 pub use crate::model::handles::{
     FIRST_HANDLE, HANDLE_NODE_SLOT, Handle, NODE_HANDLE_SLOT, handle_key, node_handle_key,
 };
@@ -89,15 +84,11 @@ use okm_value::{Dict, decode_named};
 /// It is the traversal face AND the row: a prefix on `src` is "all of a node's
 /// out-edges", a prefix on `src + predicate` is the typed subset, and the whole
 /// tuple is the assertion (ADR-0067).
-pub const EDGE_OUT_SLOT: Slot = 0x06;
-/// Fixed face 0x07: the in-edge traversal, `[dst][predicate][src]` → empty.
-pub const EDGE_IN_SLOT: Slot = 0x07;
-/// Fixed face 0x08: predicate-leading out edges — `[predicate][src][dst]`.
-/// Its bare `[predicate]` prefix is the predicate index the graph used to keep
-/// in its own slot.
-pub const EDGE_PREDICATE_OUT_SLOT: Slot = 0x08;
-/// Fixed face 0x09: predicate-leading in edges — `[predicate][dst][src]`.
-pub const EDGE_PREDICATE_IN_SLOT: Slot = 0x09;
+/// The graph's four traversal faces (0x06–0x09) are numbered in
+/// [`crate::model::layout`], where the whole band is written down once.
+pub use crate::model::layout::{
+    EDGE_IN_SLOT, EDGE_OUT_SLOT, EDGE_PREDICATE_IN_SLOT, EDGE_PREDICATE_OUT_SLOT,
+};
 
 /// An endpoint reference: `[ns 2B BE][pkey]`.
 ///
@@ -240,12 +231,12 @@ pub struct EdgeKey {
     pub src: NodeRef,
     /// The predicate's vocabulary id (0x04/0x05) — a declaration-time value
     /// once the write has interned the name.
-    pub predicate: u16,
+    pub predicate: PredicateId,
     pub dst: NodeRef,
 }
 
 impl EdgeKey {
-    pub fn new(src: NodeRef, predicate: u16, dst: NodeRef) -> Self {
+    pub fn new(src: NodeRef, predicate: PredicateId, dst: NodeRef) -> Self {
         Self {
             src,
             predicate,
@@ -338,15 +329,15 @@ impl KeyEncode for EdgeKey {
 pub struct HandleKey {
     pub src: Handle,
     /// The predicate's vocabulary id (0x04/0x05).
-    pub predicate: u16,
+    pub predicate: PredicateId,
     pub dst: Handle,
 }
 
 impl HandleKey {
     /// The row's exact width: two handles and the predicate.
-    pub const WIDTH: usize = 18;
+    pub const WIDTH: usize = 2 * HANDLE_WIDTH + PREDICATE_VOCAB_WIDTH;
 
-    pub const fn new(src: Handle, predicate: u16, dst: Handle) -> Self {
+    pub const fn new(src: Handle, predicate: PredicateId, dst: Handle) -> Self {
         Self {
             src,
             predicate,
@@ -385,8 +376,10 @@ impl HandleKey {
             return None;
         }
         Some(Self {
-            src: Handle::parse(&bytes[..8])?,
-            predicate: u16::from_be_bytes([bytes[8], bytes[9]]),
+            src: Handle::parse(&bytes[..HANDLE_WIDTH])?,
+            predicate: PredicateId::from_be_bytes(
+                bytes[HANDLE_WIDTH..HANDLE_WIDTH + PREDICATE_VOCAB_WIDTH].try_into().ok()?,
+            ),
             dst: Handle::parse(&bytes[10..])?,
         })
     }
@@ -415,7 +408,7 @@ pub fn in_prefix(ns: &[u8; 2], dst: Handle) -> Vec<u8> {
 }
 
 /// `[ns][0x08][pred][src_h]` — one node's predicate-qualified out face.
-pub fn predicate_out_prefix(ns: &[u8; 2], predicate: u16, src: Handle) -> Vec<u8> {
+pub fn predicate_out_prefix(ns: &[u8; 2], predicate: PredicateId, src: Handle) -> Vec<u8> {
     let mut key = face_key(ns, EDGE_PREDICATE_OUT_SLOT);
     key.extend_from_slice(&predicate.to_be_bytes());
     src.write(&mut key);
@@ -423,7 +416,7 @@ pub fn predicate_out_prefix(ns: &[u8; 2], predicate: u16, src: Handle) -> Vec<u8
 }
 
 /// `[ns][0x09][pred][dst_h]` — one node's predicate-qualified in face.
-pub fn predicate_in_prefix(ns: &[u8; 2], predicate: u16, dst: Handle) -> Vec<u8> {
+pub fn predicate_in_prefix(ns: &[u8; 2], predicate: PredicateId, dst: Handle) -> Vec<u8> {
     let mut key = face_key(ns, EDGE_PREDICATE_IN_SLOT);
     key.extend_from_slice(&predicate.to_be_bytes());
     dst.write(&mut key);
@@ -589,7 +582,7 @@ impl HandleCache {
 /// read-only handle still answers typed scans (the cache loads on probe).
 pub struct Graph<S, E: GraphEncode> {
     store: S,
-    vocab: Vocabulary<u16>,
+    vocab: Vocabulary<PredicateId>,
     /// The ns the edge tables live under. `E::NS_PREFIX` unless a caller moved
     /// the whole graph — the restore's mapping (ADR-0062): an edge's endpoints
     /// carry the ns in their refs, so the graph moves as one.
@@ -856,7 +849,7 @@ impl<S: VirtualStorage, E: GraphEncode> Graph<S, E> {
     /// id space would hand the same id to two names.
     fn predicate_vocab_id(&mut self, predicate: &str) -> crate::error::Result<u16> {
         let Self { store, vocab, .. } = self;
-        let mut door = Faces::<_, u16>::new(&*store, &self.ns, PREDICATE_VOCAB);
+        let mut door = Faces::<_, PredicateId>::new(&*store, &self.ns, PREDICATE_VOCAB);
         vocab.ensure(&mut door, predicate)
     }
 
@@ -864,14 +857,14 @@ impl<S: VirtualStorage, E: GraphEncode> Graph<S, E> {
     /// nobody wrote this predicate, so no edge can carry it.
     fn vocab_lookup(&mut self, predicate: &str) -> crate::error::Result<Option<u16>> {
         let Self { store, vocab, .. } = self;
-        let mut door = Faces::<_, u16>::new(&*store, &self.ns, PREDICATE_VOCAB);
+        let mut door = Faces::<_, PredicateId>::new(&*store, &self.ns, PREDICATE_VOCAB);
         vocab.id_of(&mut door, predicate)
     }
 
     /// Resolve predicate id → name for display/diagnostics.
     pub fn predicate_vocab_name(&mut self, id: u16) -> crate::error::Result<Option<String>> {
         let Self { store, vocab, .. } = self;
-        let mut door = Faces::<_, u16>::new(&*store, &self.ns, PREDICATE_VOCAB);
+        let mut door = Faces::<_, PredicateId>::new(&*store, &self.ns, PREDICATE_VOCAB);
         vocab.name_of(&mut door, id)
     }
 
@@ -971,7 +964,7 @@ impl<S: VirtualStorage, E: GraphEncode> Graph<S, E> {
         };
         let mut dict = Vocabulary::<u16>::new();
         let mut door =
-            Faces::<_, u16>::new(&self.store, &self.ns, crate::model::obj_vocab::FIELD_VOCAB);
+            Faces::<_, FieldNameId>::new(&self.store, &self.ns, crate::model::obj_vocab::FIELD_VOCAB);
         let mut failed: Option<crate::error::Error> = None;
         let frames = decode_named(&raw, &mut |id| match dict.name_of(&mut door, id) {
             Ok(name) => name,
@@ -1055,7 +1048,7 @@ impl<S: VirtualStorage, E: GraphEncode> Graph<S, E> {
         let body = {
             let mut dict = Vocabulary::<u16>::new();
             let mut door =
-                Faces::<_, u16>::new(&self.store, &self.ns, crate::model::obj_vocab::FIELD_VOCAB);
+                Faces::<_, FieldNameId>::new(&self.store, &self.ns, crate::model::obj_vocab::FIELD_VOCAB);
             let mut resolver = |name: &str| dict.ensure(&mut door, name);
             okm_value::encode(fields, &mut resolver)?
         };
@@ -1354,7 +1347,7 @@ impl<S: VirtualStorage, E: GraphEncode> Graph<S, E> {
             if suffix.len() != 16 {
                 continue;
             }
-            let (Some(src), Some(dst)) = (Handle::parse(&suffix[..8]), Handle::parse(&suffix[8..]))
+            let (Some(src), Some(dst)) = (Handle::parse(&suffix[..HANDLE_WIDTH]), Handle::parse(&suffix[HANDLE_WIDTH..]))
             else {
                 continue;
             };
@@ -1616,7 +1609,7 @@ pub struct HopHead {
     pub dst_handle: Handle,
     /// The predicate's vocabulary id — name resolution is one vocabulary read
     /// away ([`Graph::predicate_vocab_name`]).
-    pub predicate: u16,
+    pub predicate: PredicateId,
 }
 
 /// One hop, as the traversal entry itself states it.
@@ -1955,7 +1948,7 @@ fn predicate_id_in<S: VirtualStorage + ?Sized>(
     predicate: &str,
 ) -> crate::error::Result<Option<u16>> {
     let mut cache = Vocabulary::<u16>::new();
-    let mut door = Faces::<_, u16>::new(store, ns, PREDICATE_VOCAB);
+    let mut door = Faces::<_, PredicateId>::new(store, ns, PREDICATE_VOCAB);
     cache.id_of(&mut door, predicate)
 }
 

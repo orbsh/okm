@@ -2,12 +2,9 @@
 //! `model::hyper` — same four faces, same key shapes, same rules, `Dict`
 //! payloads everywhere.
 //!
-//! ```text
-//! 0x0A  cluster row      [ns][0x0A][kind][hyper_id]                          → [parent u64 BE][dynamic payload]
-//! 0x0B  edge member      [ns][0x0B][kind][hyper_id][src_h][pred][dst_h]      → empty
-//! 0x0C  child cluster    [ns][0x0C][kind][parent_id][hyper_id]               → empty, derived
-//! 0x0D  edge → cluster   [ns][0x0D][src_h][pred][dst_h][kind][hyper_id]      → empty, derived
-//! ```
+//! The face numbers and widths come from `okm_core::model::layout` — one table
+//! for the whole engine; this module mirrors the typed `hyper` layer for the
+//! dynamic (schema-less) graph and never re-derives a number.
 //!
 //! A member is an edge, and an edge is its ROW identity (ADR-0067): the rows
 //! above hold `[src_h][pred][dst_h]` — eighteen bytes, the graph's own handles,
@@ -61,12 +58,14 @@ use okm_core::model::graph::{
     EdgeKey, Handle, HandleKey, NodeRef, in_prefix, out_prefix, parse_predicate_far,
 };
 use okm_core::model::handles::Handles;
+use okm_core::model::index::U64_WIDTH;
 use okm_core::model::hyper::{
     CHILD_INDEX_SLOT, CLUSTER_SLOT, EDGE_CLUSTER_SLOT, EDGE_MEMBER_SLOT, child_key,
     children_prefix, cluster_key, cluster_value, clusters_prefix, edge_cluster_key,
     edge_clusters_prefix, edge_member_key, members_prefix,
 };
-use okm_core::model::obj_vocab::{FIELD_VOCAB, Faces, Vocabulary};
+use okm_core::model::layout::{CLUSTER_KIND_WIDTH, ClusterKindId};
+use okm_core::model::obj_vocab::{FIELD_VOCAB, Faces, FieldNameId, Vocabulary};
 use okm_core::storage::{Batch, BatchStore, VirtualStorage, prefix_end, scan_suffix_kv};
 use okm_value::{Dict, Variant, decode_named};
 
@@ -93,8 +92,12 @@ fn face_prefix(ns: &[u8; 2], slot: u16) -> Vec<u8> {
     key
 }
 
+fn be_vocab(bytes: &[u8]) -> Option<ClusterKindId> {
+    bytes.try_into().ok().map(ClusterKindId::from_be_bytes)
+}
+
 fn be_u64(bytes: &[u8]) -> Option<u64> {
-    <[u8; 8]>::try_from(bytes).ok().map(u64::from_be_bytes)
+    <[u8; U64_WIDTH]>::try_from(bytes).ok().map(u64::from_be_bytes)
 }
 
 fn count_of(payload: &Dict, name: &str) -> u64 {
@@ -111,7 +114,7 @@ fn count_of(payload: &Dict, name: &str) -> u64 {
 /// parent head, then the payload. `0` is the reserved "no parent" value, not a
 /// nullable flag, so the head is always eight bytes.
 fn parse_head(value: &[u8]) -> Result<(u64, &[u8]), String> {
-    if value.len() < 8 {
+    if value.len() < U64_WIDTH {
         return Err(format!(
             "a cluster row is {} byte(s); its parent head is 8",
             value.len()
@@ -131,7 +134,7 @@ fn encode_dict<S: VirtualStorage + ?Sized>(
     dict: &Dict,
 ) -> Result<Vec<u8>, String> {
     let mut cache = Vocabulary::<u16>::new();
-    let mut door = Faces::<_, u16>::new(store, ns, FIELD_VOCAB);
+    let mut door = Faces::<_, FieldNameId>::new(store, ns, FIELD_VOCAB);
     let mut resolver = |name: &str| cache.ensure(&mut door, name);
     okm_value::encode(dict, &mut resolver).map_err(|e| e.to_string())
 }
@@ -144,7 +147,7 @@ fn decode_dict<S: VirtualStorage + ?Sized>(
     raw: &[u8],
 ) -> Result<Dict, String> {
     let mut cache = Vocabulary::<u16>::new();
-    let mut door = Faces::<_, u16>::new(store, ns, FIELD_VOCAB);
+    let mut door = Faces::<_, FieldNameId>::new(store, ns, FIELD_VOCAB);
     let mut failed: Option<String> = None;
     let frames = decode_named(raw, &mut |id| match cache.name_of(&mut door, id) {
         Ok(name) => name,
@@ -342,11 +345,12 @@ impl<S: VirtualStorage> Graph<S> {
         let prefix = face_prefix(&ns, CLUSTER_SLOT);
         let mut out = Vec::new();
         for (suffix, _) in scan_suffix_kv(self.store_ref(), &prefix).map_err(|e| e.to_string())? {
-            if suffix.len() != 9 {
+            if suffix.len() != CLUSTER_KIND_WIDTH + U64_WIDTH {
                 continue;
             }
-            if let Some(id) = be_u64(&suffix[1..]) {
-                out.push(ClusterRef::new(Kind(suffix[0]), id));
+            if let (Some(kind), Some(id)) = (be_vocab(&suffix[..CLUSTER_KIND_WIDTH]), be_u64(&suffix[CLUSTER_KIND_WIDTH..]))
+            {
+                out.push(ClusterRef::new(Kind(kind), id));
             }
         }
         Ok(out)
@@ -435,10 +439,13 @@ impl<S: VirtualStorage> Graph<S> {
             scan_suffix_kv(self.store_ref(), &edge_clusters_prefix(&ns, &row))
                 .map_err(|e| e.to_string())?
                 .into_iter()
-                .filter_map(|(suffix, _)| match suffix.split_first() {
+                .filter_map(|(suffix, _)| {
                     // `[kind][hyper_id]` — anything else is a foreign entry.
-                    Some((kind, id)) => be_u64(id).map(|id| ClusterRef::new(Kind(*kind), id)),
-                    None => None,
+                    if suffix.len() != CLUSTER_KIND_WIDTH + U64_WIDTH {
+                        return None;
+                    }
+                    let kind = be_vocab(&suffix[..CLUSTER_KIND_WIDTH])?;
+                    be_u64(&suffix[CLUSTER_KIND_WIDTH..]).map(|id| ClusterRef::new(Kind(kind), id))
                 })
                 .collect(),
         )
@@ -500,13 +507,16 @@ impl<S: VirtualStorage> Graph<S> {
         for item in store.scan_range(&prefix, end.as_deref()) {
             let (key, value) = item.map_err(|e| e.to_string())?;
             let suffix = &key[prefix.len()..];
-            if suffix.len() != 9 {
+            if suffix.len() != CLUSTER_KIND_WIDTH + U64_WIDTH {
                 continue;
             }
-            let kind = Kind(suffix[0]);
-            let Some(id) = be_u64(&suffix[1..]) else {
+            let Some(kind) = be_vocab(&suffix[..CLUSTER_KIND_WIDTH]) else {
                 continue;
             };
+            let Some(id) = be_u64(&suffix[CLUSTER_KIND_WIDTH..]) else {
+                continue;
+            };
+            let kind = Kind(kind);
             let (parent, _) = parse_head(&value)?;
             if parent != 0 {
                 batch.put(child_key(&ns, kind, parent, id), Vec::new());
@@ -532,16 +542,19 @@ impl<S: VirtualStorage> Graph<S> {
             let (key, _) = item.map_err(|e| e.to_string())?;
             let suffix = &key[prefix.len()..];
             // `[kind][hyper_id]` then the fixed-width row identity.
-            if suffix.len() != 9 + HandleKey::WIDTH {
+            if suffix.len() != CLUSTER_KIND_WIDTH + U64_WIDTH + HandleKey::WIDTH {
                 continue;
             }
-            let Some(id) = be_u64(&suffix[1..9]) else {
+            let Some(kind) = be_vocab(&suffix[..CLUSTER_KIND_WIDTH]) else {
                 continue;
             };
-            let Some(row) = HandleKey::parse(&suffix[9..]) else {
+            let Some(id) = be_u64(&suffix[CLUSTER_KIND_WIDTH..CLUSTER_KIND_WIDTH + U64_WIDTH]) else {
                 continue;
             };
-            let cluster = ClusterRef::new(Kind(suffix[0]), id);
+            let Some(row) = HandleKey::parse(&suffix[CLUSTER_KIND_WIDTH + U64_WIDTH..]) else {
+                continue;
+            };
+            let cluster = ClusterRef::new(Kind(kind), id);
             batch.put(edge_cluster_key(&ns, &row, cluster), Vec::new());
             report.members += 1;
             if batch.ops.len() >= chunk {
@@ -844,7 +857,7 @@ impl DynFragment {
         }
 
         // ---- 2. Cluster ids: allocated at run time, per kind ----
-        let mut kinds: BTreeSet<u8> = BTreeSet::new();
+        let mut kinds: BTreeSet<ClusterKindId> = BTreeSet::new();
         for cluster in &self.clusters {
             kinds.insert(cluster.kind.0);
         }
@@ -855,7 +868,7 @@ impl DynFragment {
                 }
             }
         }
-        let mut next_id: BTreeMap<u8, u64> = BTreeMap::new();
+        let mut next_id: BTreeMap<ClusterKindId, u64> = BTreeMap::new();
         for kind in kinds {
             next_id.insert(kind, next_free_cluster(graph.store_ref(), &ns, Kind(kind))?);
         }
@@ -889,7 +902,7 @@ impl DynFragment {
         }
 
         // ---- 3. The plan: one record per cluster this batch touches ----
-        let mut plan: BTreeMap<(u8, u64), Plan> = BTreeMap::new();
+        let mut plan: BTreeMap<(ClusterKindId, u64), Plan> = BTreeMap::new();
         for (cluster, id) in self.clusters.iter().zip(&assigned) {
             let entry = plan.entry((cluster.kind.0, *id)).or_default();
             entry.declared = true;
@@ -931,7 +944,7 @@ impl DynFragment {
         &mut self,
         graph: &Graph<S>,
         ns: &[u8; 2],
-        plan: BTreeMap<(u8, u64), Plan>,
+        plan: BTreeMap<(ClusterKindId, u64), Plan>,
         batch: &mut Batch,
     ) -> Result<usize, String> {
         let mut deleted_members = 0usize;
@@ -1172,23 +1185,26 @@ impl<S: VirtualStorage> Graph<S> {
         // found by SUFFIX. The authority is the face that states membership;
         // `0x0D` is derived and may be stale, so a delete never consults it.
         // Both sides are rows, so the containment test is a byte comparison.
-        let mut plan: BTreeMap<(u8, u64), Plan> = BTreeMap::new();
+        let mut plan: BTreeMap<(ClusterKindId, u64), Plan> = BTreeMap::new();
         if !doomed.is_empty() {
             let prefix = face_prefix(&ns, EDGE_MEMBER_SLOT);
             for (suffix, _) in
                 scan_suffix_kv(self.store_ref(), &prefix).map_err(|e| e.to_string())?
             {
-                if suffix.len() != 9 + HandleKey::WIDTH {
+                if suffix.len() != CLUSTER_KIND_WIDTH + U64_WIDTH + HandleKey::WIDTH {
                     continue;
                 }
-                let Some(id) = be_u64(&suffix[1..9]) else {
+                let Some(id) = be_u64(&suffix[CLUSTER_KIND_WIDTH..CLUSTER_KIND_WIDTH + U64_WIDTH]) else {
                     continue;
                 };
-                let Some(row) = HandleKey::parse(&suffix[9..]) else {
+                let Some(row) = HandleKey::parse(&suffix[CLUSTER_KIND_WIDTH + U64_WIDTH..]) else {
                     continue;
                 };
                 if doomed.contains(&row) {
-                    plan.entry((suffix[0], id)).or_default().remove.insert(row);
+                    let Some(kind) = be_vocab(&suffix[..CLUSTER_KIND_WIDTH]) else {
+                    continue;
+                };
+                plan.entry((kind, id)).or_default().remove.insert(row);
                 }
             }
         }

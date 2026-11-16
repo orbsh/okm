@@ -510,15 +510,16 @@ fn every_slot_is_classified_and_only_the_truth_half_is_carried() {
 
     // The fixed faces an export carries, by number: primary row, dynamic
     // segment, field-name vocabulary both ways, predicate vocabulary both ways,
-    // and the cluster band's authority half — the cluster row (0x0A) and its
-    // edge members (0x0B), which are assertions the edge rows cannot reproduce
-    // (ADR-0066). Everything else in 0x00–0x1F is derived — the graph's
-    // traversal faces (0x06–0x09), the handle registry (0x0E/0x0F), the
-    // cluster's child index (0x0C), its edge → cluster index (0x0D), the vector
-    // snapshot (0x1E), the table meta row (0x1F) — and the reserve between the
-    // handles and Extension (0x10–0x1D) is unassigned, so it is classified
-    // derived only because the whole unclaimed band is.
-    let fixed_truth = [0x00u16, 0x01, 0x02, 0x03, 0x04, 0x05, 0x0A, 0x0B];
+    // the cluster-kind vocabulary both ways (0x0A/0x0B — a dictionary is an
+    // assertion), and the cluster band's authority half — the cluster row (0x0C)
+    // and its edge members (0x0D), which are assertions the edge rows cannot
+    // reproduce (ADR-0066). Everything else in 0x00–0x1F is derived — the
+    // graph's traversal faces (0x06–0x09), the cluster's child index (0x0E), its
+    // edge → cluster index (0x0F), the handle registry (0x10/0x11), the vector
+    // snapshot (0x1E), the table meta row (0x1F) — and the reserve above the
+    // handles (0x12–0x1D) is unassigned, so it is classified derived only
+    // because the whole unclaimed band is.
+    let fixed_truth = [0x00u16, 0x01, 0x02, 0x03, 0x04, 0x05, 0x0A, 0x0B, 0x0C, 0x0D];
     for slot in 0u16..=0x1F {
         let want = if fixed_truth.contains(&slot) {
             Side::Truth

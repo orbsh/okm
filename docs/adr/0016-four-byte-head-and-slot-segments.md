@@ -39,7 +39,8 @@ family and ADR-0033 widened the fixed-face band. Segment dispatch — `slot >> 1
 ADR-0030 owns the full assignment and the fixed-face table. A fixed face is not
 a slot with a counter: it is one byte, `0x00–0x1F`, its own number and no
 segment — primary `0x00`, the dynamic segment `0x01`, both vocabularies
-`0x02–0x05`, the graph's faces `0x06–0x0D`, the handle registry `0x0E`/`0x0F`,
+`0x02–0x05`, the graph's faces and the cluster band `0x06–0x0F`, the handle
+registry `0x10`/`0x11`,
 the Extension `0x1E`, the table meta `0x1F`.
 
 - **Segment extraction is structural**: `slot >> 12` on a counting family. A
