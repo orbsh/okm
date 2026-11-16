@@ -124,7 +124,7 @@ impl StorageRegistry {
         f(&bound)
     }
 
-    /// Install the ten script-facing functions over THIS registry into
+    /// Install the eleven script-facing functions over THIS registry into
     /// a VM. All address the collection by its declared name:
     /// - `(collection-put! name pkey doc)` → void (declared names rewrite
     ///   that field of the row, other names ride the dynamic segment; the one
@@ -135,6 +135,10 @@ impl StorageRegistry {
     /// - `(collection-keys name)` → vector of pkey byte vectors, one per
     ///   document in the whole store (no decoded document, no slot, no prefix;
     ///   the producer a key set is built from),
+    /// - `(collection-index-keys name slot prefix)` → vector of ENTRY-key byte
+    ///   vectors for one declared face (`[ns][slot][field values][pkey]`, no
+    ///   field or document decode) — the same range `collection-scan!` reads,
+    ///   answered as keys, so a key set can be built from an index,
     /// - `(collection-reduce-get! name group-hash)` → acc bytes or void
     /// - `(collection-scan-reduces! name slot)` → vector of `[group acc]`
     /// - `(collection-ensure-layout! name)` → hash of the table's record
@@ -237,6 +241,36 @@ impl StorageRegistry {
                         .lock()
                         .unwrap_or_else(std::sync::PoisonError::into_inner)
                         .scan_document_keys()?;
+                    Ok(vector_of(
+                        keys.into_iter().map(vec_to_steel).collect::<Vec<_>>(),
+                    ))
+                })
+            }
+        });
+        // The INDEX-SIDE key producer: one declared face's raw ENTRY KEYS inside
+        // a prefix, straight from `scan_access_method_keys` — the range
+        // `collection-scan!` reads documents from, answered as keys with no
+        // field and no document decode.
+        //
+        // An entry key is the face prefix (`[ns][slot]`), then the declared
+        // indexed fields' encodings, then the document's pkey tail. Those bytes
+        // are NOT `collection-keys`' bytes and not even the whole of a pkey:
+        // the same document appears under every face it was indexed on, at a
+        // different key per face. So this is the producer for "which documents
+        // does this face say", and the identity it names is the key's TAIL —
+        // the last `key_len` bytes, which is what `key-fetch!` reads at a
+        // collection site. Narrow in the key space, then take the tail — that
+        // is the two-step flow, and it decodes nothing to get here.
+        vm.register_fn("collection-index-keys", {
+            let reg = reg.clone();
+            move |name: String, slot: i64, prefix: SteelVal| -> Result<SteelVal, String> {
+                let prefix = steel_bytes_to_vec(&prefix)?;
+                reg.with_bound(&name, |b| {
+                    let keys = b
+                        .table
+                        .lock()
+                        .unwrap_or_else(std::sync::PoisonError::into_inner)
+                        .scan_access_method_keys(slot as u16, &prefix)?;
                     Ok(vector_of(
                         keys.into_iter().map(vec_to_steel).collect::<Vec<_>>(),
                     ))
@@ -377,6 +411,15 @@ impl StorageRegistry {
         vm.register_fn("collection-keys", |_: String| -> Result<SteelVal, String> {
             Err("okm: collection-keys called outside a session — introspection only".to_string())
         });
+        vm.register_fn(
+            "collection-index-keys",
+            |_: String, _: i64, _: SteelVal| -> Result<SteelVal, String> {
+                Err(
+                    "okm: collection-index-keys called outside a session — introspection only"
+                        .to_string(),
+                )
+            },
+        );
         vm.register_fn(
             "collection-reduce-get!",
             |_: String, _: SteelVal| -> Result<SteelVal, String> {

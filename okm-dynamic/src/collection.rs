@@ -620,6 +620,38 @@ impl<S: VirtualStorage> DynamicCollection<S> {
         scan_access_method(&self.store, &self.schema, &self.ns, index, encoded_prefix)
     }
 
+    /// Access-method scan answering the RAW ENTRY KEYS of one declared face —
+    /// [`scan`](Self::scan)'s range and prefix rule, stopping before the key
+    /// decode.
+    ///
+    /// An entry key is `[ns][slot][indexed field values][pkey]`: the face
+    /// prefix, the declared fields' encodings, then the document's identity
+    /// tail. It is not a document key — `scan_document_keys` answers pkeys,
+    /// and no field bytes of the face appear in one — so this is the
+    /// INDEX-SIDE key producer: build a key set from one face, narrow it
+    /// against another producer, and pay a decode only for the survivors.
+    /// Same face lookup and same error strings as [`scan`](Self::scan); a
+    /// declared face with a prefix nothing matches is an empty answer, not an
+    /// error (an unknown slot still names no face and stays the loud one).
+    pub fn scan_access_method_keys(
+        &self,
+        index_slot: u16,
+        encoded_prefix: &[u8],
+    ) -> Result<Vec<Vec<u8>>, String> {
+        let index = self
+            .indexes
+            .iter()
+            .find(|i| i.slot == index_slot)
+            .ok_or_else(|| format!("no access method with slot {index_slot}"))?;
+        crate::index::scan_access_method_keys(
+            &self.store,
+            &self.schema,
+            &self.ns,
+            index,
+            encoded_prefix,
+        )
+    }
+
     /// Every document's KEY (the pkey bytes), in key order: the rows (slot 0)
     /// merged with the segments that have NO row (slot 1) — the dynamic face's
     /// twin of `okm_core::Collection::scan_document_keys`.

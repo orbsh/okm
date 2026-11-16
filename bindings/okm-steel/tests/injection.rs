@@ -987,6 +987,12 @@ fn key_sets_intersect_then_fetch_in_one_call() {
 /// script writes no key bytes of its own), narrowed against another set, and
 /// the survivors fetched as documents.
 ///
+/// Then the same flow from the OTHER producer: a declared index face answers
+/// its raw entry keys (`collection-index-keys`), so a set can be built from
+/// what an access method says, narrowed against the document-key list and
+/// fetched — the index scan decodes no document, and only the survivors are
+/// read.
+///
 /// Three claims are counted or compared, not narrated: the store holds two
 /// slots per document while the key list answers ONE key each (the scan merges
 /// the row and the segment); the scanned list is the encoded pkeys, key for
@@ -1068,6 +1074,91 @@ fn key_set_of_fetches_documents_and_a_released_handle_is_refused() {
         "two point reads per FETCHED key — the row and its dynamic segment are \
          one document — so the intersection's one key plus the difference's two \
          cost six, while the algebra, which touched all three, cost nothing"
+    );
+
+    // Stage four: the OTHER producer — an index face. `collection-index-keys`
+    // answers the face's raw ENTRY keys (`[ns][slot][field values][pkey]`), so
+    // a set can be built from what an access method says without decoding a
+    // document. The identity a face names is the key's TAIL, which is why the
+    // script takes the last twelve bytes before building the set: entry keys
+    // and pkeys are different key spaces, and intersecting them directly
+    // answers nothing (asserted, so the difference stays visible).
+    //
+    // One read here, and it is the BOUNDARY's: a host `Engine` answers a scan
+    // as keys only, so the adapter reads each entry's value back and drops it
+    // (the same cost `collection-keys` pays). No document is decoded, and the
+    // algebra over the sets reads nothing at all.
+    engine.reset();
+    let out = vm
+        .run(
+            r#"
+(define tail-of (lambda (k) (vector-copy k (- (vector-length k) 12) (vector-length k))))
+(define ekeys (collection-index-keys "Counters" 16385 (list->vector (list 0 0 0 4))))
+(define ek-set (key-set-of ekeys))
+(define raw (key-set-and! ek-set all))
+(define idx (key-set-of (map tail-of ekeys)))
+(define from-index (key-set-and! idx all))
+(assert! (= (vector-length ekeys) 1))
+(assert! (= (vector-length (vector-ref ekeys 0)) 20))
+(assert! (= (vector-length (key-fetch! raw "Counters")) 0))
+(key-set-close! raw)
+(key-set-close! ek-set)
+'produced
+"#,
+        )
+        .expect("the index-side producer and its set");
+    assert_eq!(last_sym(out), "produced");
+    assert_eq!(
+        engine.gets(),
+        1,
+        "the index scan's one entry costs the boundary's read-back and nothing \
+         else; the algebra and the disjoint fetch read nothing"
+    );
+
+    // ... and the survivors of the intersection are ordinary documents.
+    engine.reset();
+    let out = vm
+        .run(
+            r#"
+(define index-rows (key-fetch! from-index "Counters"))
+(assert! (= (vector-length index-rows) 1))
+(assert! (equal? (vector-ref (vector-ref index-rows 0) 0) bob))
+(assert! (string=? (hash-ref (vector-ref (vector-ref index-rows 0) 1) "name") "bob"))
+(key-set-close! idx)
+(key-set-close! from-index)
+'fetched
+"#,
+        )
+        .expect("the index-derived fetch");
+    assert_eq!(last_sym(out), "fetched");
+    assert_eq!(
+        engine.gets(),
+        2,
+        "one point read per surviving key: the row and its dynamic segment are \
+         one document, and the index side of the flow fetched no document at all"
+    );
+
+    // The entry key is the documented layout, byte for byte: the face prefix
+    // `[ns 0x00 0x29][slot 0x40 0x01]`, the declared field `level` (u32 BE), the
+    // pkey tail — which is bob's own `collection-keys` bytes.
+    let out = vm
+        .run(r#"(list ekeys bob)"#)
+        .expect("the entry keys and the pkey");
+    let Some(SteelVal::ListV(halves)) = out.last() else {
+        panic!("expected the entry keys and the pkey, got {:?}", out.last());
+    };
+    let halves: Vec<SteelVal> = halves.iter().cloned().collect();
+    let entry_keys = key_list(&halves[0]);
+    let bob_key = bytes_of(&halves[1]);
+    assert_eq!(
+        entry_keys,
+        vec![{
+            let mut expected = vec![0u8, 41, 0x40, 0x01, 0, 0, 0, 4];
+            expected.extend_from_slice(&bob_key);
+            expected
+        }],
+        "the entry key is [ns][slot][level u32][pkey]: the face prefix, the \
+         declared field, then the document's own key bytes"
     );
 
     // The scan answered exactly the pkeys the codec produced — no index entry,

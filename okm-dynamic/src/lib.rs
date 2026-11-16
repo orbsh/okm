@@ -77,6 +77,7 @@ pub use graph::{DynEdge, DynEdgeStream, Graph, edge_face_prefix, edge_step, pred
 pub use index::{
     AccessMethod, AccessMethodKind, Admits, FuncDerive, decode_includes, index_entries,
     path_index_entries, scan_access_method, scan_access_method_covered, scan_access_method_exact,
+    scan_access_method_keys,
 };
 pub use okm_core::decode::{decode_key, decode_payload, resolve_vocab_labels};
 pub use okm_core::model::graph::{Direction, EdgeStep, HopHead};

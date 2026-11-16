@@ -33,13 +33,18 @@
 //! expected rows. A name injected as BOTH a collection and a graph is refused —
 //! the caller has to say which rows it meant.
 //!
-//! **Where the keys come from.** Three producers, and only one of them reads
-//! documents:
+//! **Where the keys come from.** Four producers, none of which decodes a
+//! document:
 //!
 //! - `key-collect!` drains a walk cursor — face entry keys;
 //! - `key-set-of` takes key bytes the script already holds;
 //! - `collection-keys` answers every document pkey in a collection, so a whole
-//!   table becomes a set without the script encoding a single key.
+//!   table becomes a set without the script encoding a single key;
+//! - `collection-index-keys` answers one declared face's raw ENTRY keys inside
+//!   a prefix — the index side of the same idea. Those keys carry the face
+//!   prefix and the indexed fields in front of the pkey tail, so they are a key
+//!   space of their own (the identity is the tail); the two producers answer
+//!   different bytes for the same document by design.
 //!
 //! `collection-scan!` is NOT a producer: it answers DECODED documents, and a
 //! document hash carries no key (`KeySet` is a key container, not a row

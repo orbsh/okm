@@ -282,6 +282,161 @@ fn dynamic_covered_str_include_decodes_the_trailing_remainder() {
     assert_eq!(names, vec!["短", "更长的名字"]);
 }
 
+/// The INDEX-SIDE key producer: one face, `scan`'s range and prefix rule,
+/// answered as raw ENTRY KEYS (`[ns][slot][field values][pkey]`) with no key
+/// decode at all.
+///
+/// The lock is a cross-check in both directions, so the two doors can never
+/// drift: every key the new method answers is the probe prefix in front of the
+/// identity `scan` decoded, and decoding each answered key's tail answers
+/// exactly the key map `scan` returned. The face is composite (two declared
+/// fields) and four rows share a level, so a hit's key really does carry a
+/// multi-field segment in front of the pkey.
+#[test]
+fn dynamic_index_keys_answer_the_entry_keys_scan_decodes() {
+    let t = DynamicCollection::new(
+        TestStore::slatedb_mem(),
+        41,
+        schema(),
+        vec![AccessMethod::plain(
+            0x4003,
+            vec!["level".into(), "score".into()],
+            vec![],
+        )],
+    );
+    t.put(&key_bytes(1, 10), &values(4, 100, "a")).unwrap();
+    t.put(&key_bytes(1, 11), &values(4, 200, "b")).unwrap();
+    t.put(&key_bytes(2, 12), &values(4, 100, "c")).unwrap();
+    t.put(&key_bytes(1, 13), &values(9, 100, "d")).unwrap();
+
+    // The whole field segment of the composite face: level 4, score 100.
+    let mut probe = 4u32.to_be_bytes().to_vec();
+    probe.extend_from_slice(&100u16.to_be_bytes());
+
+    let hits = t.scan(0x4003, &probe).unwrap();
+    assert_eq!(hits.len(), 2, "rows (1,10) and (2,12)");
+
+    let keys = t.scan_access_method_keys(0x4003, &probe).unwrap();
+    assert_eq!(
+        keys.len(),
+        hits.len(),
+        "one entry key per hit, in the scan's own order"
+    );
+
+    // The face prefix: `[ns][slot]`, then the probe the caller encoded.
+    let mut face = 41u16.to_be_bytes().to_vec();
+    okm_core::write_slot(&mut face, 0x4003);
+    face.extend_from_slice(&probe);
+    let expected: Vec<Vec<u8>> = hits
+        .iter()
+        .map(|hit| {
+            let org_id = u32::try_from(identity_of(hit, "org_id")).unwrap();
+            let user_id = identity_of(hit, "user_id");
+            let mut ekey = face.clone();
+            ekey.extend_from_slice(&UserKey { org_id, user_id }.encode());
+            ekey
+        })
+        .collect();
+    assert_eq!(
+        keys, expected,
+        "an entry key is the face prefix plus the identity `scan` decoded"
+    );
+
+    // ... and from the other side: the answered key's tail IS the pkey, so it
+    // decodes to the same map, and nothing of the field segment leaks into it.
+    let key_len = schema().key_len;
+    for (ekey, hit) in keys.iter().zip(&hits) {
+        assert_eq!(ekey.len(), face.len() + key_len);
+        assert_eq!(
+            &ekey[..face.len()],
+            face.as_slice(),
+            "every key of one range shares the prefix"
+        );
+        assert_eq!(
+            &okm_dynamic::decode_key(&schema(), &ekey[ekey.len() - key_len..]).unwrap(),
+            hit,
+            "the identity tail decodes to the key the scan answered"
+        );
+    }
+
+    // A prefix nothing starts with is an EMPTY answer on both doors — a query
+    // with no hits is ordinary, never an error.
+    let mut missing = 7u32.to_be_bytes().to_vec();
+    missing.extend_from_slice(&100u16.to_be_bytes());
+    assert!(
+        t.scan_access_method_keys(0x4003, &missing)
+            .unwrap()
+            .is_empty()
+    );
+    assert!(t.scan(0x4003, &missing).unwrap().is_empty());
+
+    // An undeclared slot names NO face, so it stays the loud error `scan`
+    // answers — same string, because it is the same lookup. A probe wider than
+    // the declared field segment is a caller bug on both doors too.
+    for bad in [0x4099u16, 0x4001] {
+        assert_eq!(
+            t.scan_access_method_keys(bad, &probe).unwrap_err(),
+            t.scan(bad, &probe).unwrap_err(),
+            "one face lookup, one error string"
+        );
+    }
+    assert!(
+        t.scan_access_method_keys(0x4003, &[0u8; 7])
+            .unwrap_err()
+            .contains("scan prefix exceeds")
+    );
+}
+
+/// A face that declares `includes` answers the same entry keys whether or not
+/// `scan_covered` ran: the covered read touches the entry VALUE, and the key is
+/// the same bytes either way — a projection choice, not a different range.
+#[test]
+fn dynamic_index_keys_match_a_covered_face() {
+    let t = dynamic_table(TestStore::slatedb_mem());
+    t.put(&key_bytes(1, 10), &values(4, 100, "a")).unwrap();
+    t.put(&key_bytes(1, 11), &values(9, 100, "b")).unwrap();
+    t.put(&key_bytes(1, 12), &values(4, 200, "c")).unwrap();
+
+    // by_score (slot 0x4002) declares includes(level): the entry value carries
+    // `level`, the entry key carries `score` and the identity.
+    let probe = 100u16.to_be_bytes().to_vec();
+    let before = t.scan_access_method_keys(0x4002, &probe).unwrap();
+    let covered = t.scan_covered(0x4002, &probe).unwrap();
+    let after = t.scan_access_method_keys(0x4002, &probe).unwrap();
+    assert_eq!(before, after, "the covered read changes no key");
+    assert_eq!(covered.len(), before.len(), "same range, same hits");
+
+    let key_len = schema().key_len;
+    for (ekey, (hit, includes)) in before.iter().zip(&covered) {
+        assert_eq!(
+            &okm_dynamic::decode_key(&schema(), &ekey[ekey.len() - key_len..]).unwrap(),
+            hit,
+            "the covered scan's key half is the identity the entry key carries"
+        );
+        assert!(
+            includes.get("level").is_some(),
+            "the covered field lives in the VALUE, not in the key"
+        );
+        // `[ns 2B][slot 2B][score u16][pkey]`: the indexed field's own bytes,
+        // right after the face prefix.
+        assert_eq!(&ekey[4..6], 100u16.to_be_bytes().as_slice());
+        assert!(
+            ekey.len() > key_len,
+            "an entry key is longer than the pkey it ends with"
+        );
+    }
+}
+
+/// One identity field out of a decoded key map, whatever integer width the
+/// schema encodes it at.
+fn identity_of(key: &Dict, name: &str) -> u64 {
+    match key.get(name) {
+        Some(Value::U32(v)) => *v as u64,
+        Some(Value::U64(v)) => *v,
+        other => panic!("unexpected key field `{name}`: {other:?}"),
+    }
+}
+
 #[test]
 fn dynamic_overwrite_sweeps_stale_entries() {
     let t = dynamic_table(TestStore::slatedb_mem());

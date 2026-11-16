@@ -557,6 +557,26 @@ pub fn scan_access_method_exact<S: VirtualStorage>(
     scan_access_method_filtered(store, schema, ns, index, encoded_prefix, true)
 }
 
+/// The ENTRY KEYS one access method answers within a prefix — the scan-and-
+/// assemble half of [`scan_access_method`], stopping before `decode_key`.
+///
+/// One range, three readings: this door answers the keys themselves
+/// (`[ns][slot][indexed field values][pkey]`), [`scan_access_method`] decodes
+/// each key's identity tail into a document key, and
+/// [`scan_access_method_covered`] additionally reads the entry value. The
+/// point of answering the keys undecoded is the two-step query: build a key
+/// set from one face, narrow it against another producer, and pay the decode
+/// only for the survivors.
+pub fn scan_access_method_keys<S: VirtualStorage>(
+    store: &S,
+    schema: &CollectionSchema,
+    ns: &[u8],
+    index: &AccessMethod,
+    encoded_prefix: &[u8],
+) -> Result<Vec<Vec<u8>>, String> {
+    scan_access_method_entry_keys(store, schema, ns, index, encoded_prefix, false)
+}
+
 fn scan_access_method_filtered<S: VirtualStorage>(
     store: &S,
     schema: &CollectionSchema,
@@ -565,6 +585,28 @@ fn scan_access_method_filtered<S: VirtualStorage>(
     encoded_prefix: &[u8],
     exact: bool,
 ) -> Result<Vec<Dict>, String> {
+    let kl = schema.key_len;
+    scan_access_method_entry_keys(store, schema, ns, index, encoded_prefix, exact)?
+        .into_iter()
+        .map(|ekey| {
+            crate::decode_key(schema, &ekey[ekey.len() - kl..])
+                .map_err(|e: crate::CodecError| e.to_string())
+        })
+        .collect()
+}
+
+/// The stored entry keys `[ns][slot][indexed field values][pkey]` in key order,
+/// one per matching entry and no field decoding — the probe, when there is one,
+/// is a leftmost prefix of the field segment. Shared by all three readings so
+/// the range, the prefix rule and the false-hit test exist once.
+fn scan_access_method_entry_keys<S: VirtualStorage>(
+    store: &S,
+    schema: &CollectionSchema,
+    ns: &[u8],
+    index: &AccessMethod,
+    encoded_prefix: &[u8],
+    exact: bool,
+) -> Result<Vec<Vec<u8>>, String> {
     let p = entry_scan_prefix(schema, ns, index, encoded_prefix)?;
     let kl = schema.key_len;
     let mut out = Vec::new();
@@ -582,18 +624,20 @@ fn scan_access_method_filtered<S: VirtualStorage>(
         if !matched {
             continue;
         }
-        let start = suffix.len() - kl;
-        out.push(
-            crate::decode_key(schema, &suffix[start..])
-                .map_err(|e: crate::CodecError| e.to_string())?,
-        );
+        // The scan answers the SUFFIX (the range prefix stripped by the
+        // store), and an entry key is the range prefix put back in front of
+        // it — the same bytes the store holds.
+        let mut ekey = Vec::with_capacity(p.len() + suffix.len());
+        ekey.extend_from_slice(&p);
+        ekey.extend_from_slice(&suffix);
+        out.push(ekey);
     }
     Ok(out)
 }
 
 /// The scan prefix `[ns][slot][probe]` for one access method, after checking
-/// the probe against the index-field segment's width. Shared by the key-only
-/// scan and the covered scan — one range, two readings.
+/// the probe against the index-field segment's width. Shared by every reading
+/// of a face — one range, three projections of it.
 ///
 /// `encoded_prefix` is the leftmost prefix of the indexed-field segment,
 /// already encoded (empty slice = whole index). Func indexes have no
