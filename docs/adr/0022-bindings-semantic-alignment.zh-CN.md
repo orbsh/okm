@@ -61,5 +61,6 @@ ADR-0008 的 exactly-once 关切由**部署形态契约**保全，而非由实�
 
 - okm-dynamic 增加携带 callable 的面：`AccessMethod` 增加 func/admits 变体；`DynamicCollection::put`/`delete` 增加 reduce 调用纪律。字节布局的工作量小（编码器已存在）；正确性住在调用纪律里。
 - okm-dynamic doc comment 与 PLAN 条目中的「永久上限」措辞修正为本 ADR 的有范围裁决：**subscribe 排除；其余在部署形态契约下皆可 callable 实现**。
+- **Steel 没有 callable 面，且是有意为之——不要重新撞这堵墙。** steel-core 0.7 的原生 fn 只拿到自己声明的参数（无法调用传入的 `SteelVal::Closure`，`call_function` 非公开，`Engine` 也不是 `Send + Sync + 'static`，因此捕获不了），所以 func 索引与 callable reduce 只存在于 Python 侧；Steel 的遍历是一枚拉取游标（`graph-hop-open` / `-next!` / `-close!`），而不是每跳回调：回调形状被写进过 PLAN、尝试过，并因六条 API 事实而关闭，不是因为偏好。
 - ADR-0008 不修改：其事件层设计对 Rust 原生路径成立，其 exactly-once 不变量正是本 ADR 以部署形态契约（而非实现语言禁令）重新推导的东西。
 - 「暂不、非永不」：subscribe 对齐。若宿主语言的消费者故事出现（摊位 要在进程内消费 reduce 组事件），以订阅协议为设计面重新开启。

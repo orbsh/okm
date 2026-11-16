@@ -6,11 +6,14 @@
 //! strings are strings; the schema kind drives coercion at encode time,
 //! same as the PyO3 binding.
 //!
-//! ADR-0022 scope applies identically: encode/decode plus the
-//! callable-implementable semantics (reduce, func/partial indexes via
-//! host callables); subscribe stays excluded.
+//! ADR-0022 scope applies identically: encode/decode, the collection face,
+//! the meta verbs and the graph hop cursor. Subscribe stays excluded, and so
+//! do the CALLABLE surfaces (func/partial indexes, callable reduce) — not by
+//! choice: steel-core 0.7 hands a native fn only its declared arguments and
+//! gives it no way to apply a `SteelVal::Closure` or reach the VM, so those
+//! stay Python-only (ADR-0022's consequences record the wall).
 use okm_core::schema::CollectionSchema;
-use okm_dynamic::{decode_key, decode_payload, encode_key, encode_payload, Value, Dict};
+use okm_dynamic::{decode_key, decode_payload, encode_key, encode_payload, Dict, Value};
 use std::sync::Arc;
 use steel::rvals::SteelHashMap;
 use steel::steel_vm::engine::Engine;
@@ -21,6 +24,7 @@ use steel::{
 };
 
 pub mod collection;
+pub mod hop;
 
 /// The shared injection machinery (engine face + entry parsing) rides
 /// through here so carriers need one dependency (okm-steel), not two —
@@ -137,10 +141,7 @@ fn find_field<'a>(
 }
 
 /// Hash-map (steel `hash?`) → Dict with kind coercion.
-pub(crate) fn steel_hash_to_map(
-    schema: &CollectionSchema,
-    v: &SteelVal,
-) -> Result<Dict, String> {
+pub(crate) fn steel_hash_to_map(schema: &CollectionSchema, v: &SteelVal) -> Result<Dict, String> {
     let SteelVal::HashMapV(map) = v else {
         return Err(format!("values must be a hash (define/hash), got {v:?}"));
     };

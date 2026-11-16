@@ -416,7 +416,7 @@ pub fn register_codec_stubs(vm: &mut Engine) {
 
 /// SteelVal bytes (vector of integers 0-255) → Vec<u8> — the existing
 /// codec-surface byte convention (steel's ByteVector field is private).
-fn steel_bytes_to_vec(v: &SteelVal) -> Result<Vec<u8>, String> {
+pub(crate) fn steel_bytes_to_vec(v: &SteelVal) -> Result<Vec<u8>, String> {
     let SteelVal::VectorV(vec) = v else {
         return Err("bytes must be a vector of integers 0-255".to_string());
     };
@@ -430,7 +430,7 @@ fn steel_bytes_to_vec(v: &SteelVal) -> Result<Vec<u8>, String> {
     Ok(out)
 }
 
-fn vec_to_steel(b: Vec<u8>) -> SteelVal {
+pub(crate) fn vec_to_steel(b: Vec<u8>) -> SteelVal {
     SteelVal::VectorV(steel::rvals::SteelVector::from(steel::gc::Gc::new(
         b.into_iter()
             .map(|x| SteelVal::IntV(x as isize))
@@ -444,9 +444,6 @@ fn vector_of(items: Vec<SteelVal>) -> SteelVal {
     )))
 }
 
-fn hash_to_map(
-    schema: &okm_core::schema::CollectionSchema,
-    v: &SteelVal,
-) -> Result<Dict, String> {
+fn hash_to_map(schema: &okm_core::schema::CollectionSchema, v: &SteelVal) -> Result<Dict, String> {
     crate::steel_hash_to_map(schema, v)
 }
