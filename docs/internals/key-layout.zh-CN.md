@@ -1,5 +1,7 @@
 # Key 布局：ns 前缀与 slot 分派
 
+> **Languages:** [English](key-layout.md) (primary) · [中文](key-layout.zh-CN.md)
+
 本文是机制与实现细节文档：所有落进 engine 的 key 的第一级布局——2 字节 ns 前缀怎么编码、文档与关系表怎么共用这一级、slot 怎么接在后面。slot 的分配纪律与 append-only 契约见[slot 机制](slot-mechanism.zh-CN.md)；决策记录见 [ADR-0002](../adr/0002-namespace-dictionary.md)、[ADR-0005](../adr/0005-secondary-index-slots.md)、[ADR-0016](../adr/0016-four-byte-head-and-slot-segments.zh-CN.md)（条目头，其固定面部分已被取代）、[ADR-0030](../adr/0030-slot-fixed-faces-and-counting-families.zh-CN.md)——现行分配：固定面一字节，计数族保留 2 字节 slot。
 
 ## 声明位置：ns 挂在文档上，不挂在 Key 上

@@ -1,5 +1,7 @@
 # 索引机制：条目、扫描与回表
 
+> **Languages:** [English](index-mechanism.md) (primary) · [中文](index-mechanism.zh-CN.md)
+
 本文是机制与实现细节文档：`#[ok_index]` 声明展开成什么、条目怎么编码、`scan::<I>` 与 `scan_covered` 怎么工作。建模纪律见[建模指南](../MODELING.zh-CN.md)（访问方法强制、覆盖索引克制）；slot/ns 推导见[slot 机制](slot-mechanism.zh-CN.md)。
 
 ## 声明展开
@@ -14,7 +16,7 @@ __OkmIndex_{Row}_{name}      // 机械拼接，无大小写转换
 
 ```text
 type Key / type Document     关联的主键与文档类型
-const SLOT                   声明序序位（1, 2, …；0 = 主表），4 字节头后 2 字节 BE
+const SLOT                   声明序序位（0x4001, 0x4002, …；0x0000 = 主表），ns 头 2 字节之后 2 字节 BE
 const FIELDS                 索引字段（排序序）
 const INCLUDES               覆盖字段（进 value，不参与排序）
 const KEY_PREFIX             主键尾段截断子集（空 = 全长）
@@ -32,7 +34,7 @@ entry key   [ table_ns 2B BE ][ slot 2B BE ][ 索引字段 BE ][ 主键前缀 ]
 entry value [ includes 字段 TLV ]                （无 includes = 空）
 ```
 
-- **索引字段段**：`FIELDS` 按声明序逐个编码，首位 = 分组维度（最左前缀匹配的物理基础）。**至多一个变长字段且必须紧贴主键前缀之前**：定宽段从右往左依次切分（主键 `KEY_LEN` 提供右手锚点），剩下整块是唯一变长段，长度由右侧定宽边界反推、不需存储；两个变长段之间无边界字节，derive 编译期拒绝（MODELING「数据段」节）。变长段不在末位则前缀语义破坏（裸字节无终结符，`"beijing"` 命中 `"beijing2"`）。
+- **索引字段段**：`FIELDS` 按声明序逐个编码，首位 = 分组维度（最左前缀匹配的物理基础）。**至多一个变长字段且必须紧贴主键前缀之前**：定宽段从右往左依次切分（主键 `KEY_LEN` 提供右手锚点），剩下整块是唯一变长段，长度由右侧定宽边界反推、不需存储；两个变长段之间无边界字节，derive 编译期拒绝（MODELING「行与索引」节）。变长段不在末位则前缀语义破坏（裸字节无终结符，`"beijing"` 命中 `"beijing2"`）。
 - **主键前缀**：默认全长主键编码（`KEY_LEN` 编译期锁死）；`key(...)` 声明截断到命名子集。尾段永远可解——它就是主键编码，布局在声明系统内。
 - **函数索引**（`func(path)`）：`path` 返回值的每个元素经 `IndexFuncResult` 编码为一条 entry 的数据段——返回形态是 `IntoIterator`（ADR-0055），单值写成单元素数组（一条 entry，经典函数索引如归一化），`Vec<V>`/切片/迭代器一行展开为 N 条（多值 regime：tokenize 倒排、多值字段、时间分桶），空迭代器 = 该行不产生任何 entry。查询侧探针调用同一路径，一条声明驱动两侧。展开细节见[函数索引机制](func-index-mechanism.zh-CN.md)。
 - **部分索引**（`where(path)`）：行级谓词，`path(&document)` 为 false 的行在本索引里不存在（Postgres 式 partial index）。两种索引形态都可用——`fields(...)` 与 `func(...)` 各自叠加谓词，谓词读哪些列不受限制（不必是索引字段）。
@@ -78,7 +80,7 @@ if !Self::admits(document) { return Vec::new(); }
 
 谓词翻转（行从被接纳入索引变为被拒绝）不在谓词的作用范围内：条目由索引字段决定地址，谓词只决定"这次写不写"，所以 `put` 覆盖写不会清理旧条目（与「值变化留下悬挂条目」是同一既有契约，见[建模指南](../MODELING.zh-CN.md)）。删除集合由**存储的那一行**派生（`purge` 内部 get），所以清理悬挂条目需要"生成它的那一行"，而 2026-10-23 起没有任何动词收它——覆盖写走 `merge` / `replace`，它们在替换前对存储行扫面。
 
-## scan::<I>：前缀扫描 + 回表
+## `scan::<I>`：前缀扫描 + 回表
 
 ```text
 t.scan::<I>(&encoded)
@@ -91,7 +93,7 @@ t.scan::<I>(&encoded)
           taken <  KEY_LEN → row = None（截断前缀无法回表）
 ```
 
-扫描只有三个词：前缀 `scan`、等值 `scan_exact`、区间 `scan_range`——都返回迭代器（逐条 `Result`），要整批就自己 `collect`。返回调用方点名的那几部分：扫描动词的类型参数是一个**载荷元组**（`parts::Fields` / `parts::Key` / `parts::Row` / `parts::Include`，`parts::__` 占位），顺序由调用方给。`(Fields, Key, Row)` 就是完整的一次回表扫描；`(Fields, Key)` 不读 payload——join 的第一步只需要这两样；`(Key, Include)` 是覆盖扫描。没点名的部分不进单态化后的函数体，所以"读出来再丢掉"这种次序不会发生，除非调用方自己要了 `Row`。
+扫描只有三个词：前缀 `scan`、等值 `scan_exact`、区间 `scan_range`——都返回迭代器（逐条 `Result`），要整批就自己 `collect`。返回调用方点名的那几部分：扫描动词的类型参数是一个**载荷元组**（`parts::Fields` / `parts::Key` / `parts::Row` / `parts::Include`，未点名的部分就不进元组），顺序由调用方给。`(Fields, Key, Row)` 就是完整的一次回表扫描；`(Fields, Key)` 不读 payload——join 的第一步只需要这两样；`(Key, Include)` 是覆盖扫描。没点名的部分不进单态化后的函数体，所以"读出来再丢掉"这种次序不会发生，除非调用方自己要了 `Row`。
 
 第一个元素是**这一条按之排序的那一段**解出来的值：
 `fields(...)` 声明得到 derive 生成的字段结构（每个字段按行里的类型解码），`func(...)` 索引的段是
@@ -105,7 +107,7 @@ t.scan::<I>(&encoded)
 
 回表是每个命中一次点读，帮上忙的是命中**按主键序到达**：条目按 `[索引字段][主键前缀]` 聚簇，主表按 `[主键]` 聚簇，于是**等值前缀固定 leading 字段时**，这一组的点读在主表上单调前进（递增块序），而不是散开。扫描序仍然先按索引字段——只有在一个固定的字段元组内部才按主键，所以这是局部的有序，不是「主键有序的一条流」：跨 leading 字段的区间读、只钉部分 leading 字段的组、多值 `func` 索引、`key(...)` 截断都不满足它。需要归并的地方由调用方自己按 join 键显式排序（`okm_query` 的 `merge` / `intersect` 把「输入有序」当契约且不检查，无序输入会静默少键），所以这些形状要显式送一次排序、局部性论证也不适用。量化分析见[建模指南「设计约束对性能的影响」](../MODELING.zh-CN.md)。
 
-## scan_exact：全字段等值
+## `scan_exact`：全字段等值
 
 同一个长度量换个比较：`suffix.len() == taken` ⇒ 探针吃尽整个字段段 ⇒ **值恰好等于探针**。
 
@@ -121,7 +123,7 @@ t.scan_exact::<I>(&encoded)
 
 动态侧是同一判据的逐字对应：`okm_dynamic::scan_access_method` / `scan_access_method_exact` → `DynamicCollection::scan` / `scan_exact` → Python binding 的 `Collection.scan` / `scan_exact`（`accept_embedded.py` 锁一条 spill 断言）。
 
-## scan_covered：覆盖扫描
+## `scan_covered`：覆盖扫描
 
 `includes(...)` 字段复制进条目 value，`scan_covered::<I>` 免回表：
 
@@ -148,4 +150,4 @@ store.scan_suffix_kv(&p)            连 key 与 value 一起取
 
 ## 两种"一对多"的分野
 
-同表 payload 维度 → `fields(...)`（本文机制）；跨表实体关系 → `JunctionEncode` 双向边（见[建模指南「多对多关系」](../MODELING.zh-CN.md)）。二者机制同构（次级 key 布局指向身份），分界在数据源：索引 = 本行 payload 的派生视图，边 = 一等的关系数据。
+同表 payload 维度 → `fields(...)`（本文机制）；跨表实体关系 → 关系表（键就是那对身份，反向方向是同一条 ns 里的一条声明索引，见[建模指南「多对多关系」](../MODELING.zh-CN.md)）。二者机制同构（次级 key 布局指向身份），分界在数据源：索引 = 本行 payload 的派生视图，关系表 = 一等的关系数据。

@@ -1,5 +1,7 @@
 # Dynamic segment: the block table and the value area
 
+> **Languages:** [English](dynamic-segment.md) (primary) · [中文](dynamic-segment.zh-CN.md)
+
 Mechanism/implementation document for the value stored under slot `0x01` — the bytes at rest, the ordering contract a reader depends on, the size envelope the shape is built for, and what the same value costs once it crosses a serde boundary. The decision and everything it refused are in [ADR-0057](../adr/0057-the-dynamic-segment-gets-a-block-table.md); the field-name vocabulary and the value types are in ADR-0012; where the key sits is [key layout](key-layout.md). 中文版：[dynamic-segment.zh-CN.md](dynamic-segment.zh-CN.md). An entry's head is ONE byte ([ADR-0060](../adr/0060-the-entry-header-is-one-byte.md)): the length lives in the type byte for short bodies, and the three fixed-width types carry no length at all. A store written before this change is wiped, not migrated — nothing in the bytes distinguishes the two layouts.
 
 ## Where it lives, and who writes it

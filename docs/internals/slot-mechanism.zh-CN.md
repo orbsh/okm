@@ -1,5 +1,7 @@
 # Slot 机制：派生条目的命名空间内分派
 
+> **Languages:** [English](slot-mechanism.md) (primary) · [中文](slot-mechanism.zh-CN.md)
+
 本文是机制与实现细节文档：slot 如何把派生条目分派进 2 字节命名空间、约束是什么、为什么这样设计。建模纪律见[建模指南](../MODELING.zh-CN.md)；决策记录见 [ADR-0005](../adr/0005-secondary-index-slots.md)、[ADR-0016](../adr/0016-four-byte-head-and-slot-segments.zh-CN.md)（条目头加宽，其固定面部分已被取代）、[ADR-0030](../adr/0030-slot-fixed-faces-and-counting-families.zh-CN.md)（现行分配：固定面一字节、不带计数位，只有计数族携带 2 字节 slot）。
 
 ## 条目布局

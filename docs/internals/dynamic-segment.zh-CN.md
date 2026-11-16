@@ -1,5 +1,7 @@
 # 动态段：块表与值区
 
+> **Languages:** [English](dynamic-segment.md) (primary) · [中文](dynamic-segment.zh-CN.md)
+
 本文是机制与实现细节文档，讲槽 `0x01` 下那个值——落盘的字节长什么样、读者依赖什么顺序契约、这个形状适用的尺寸区间在哪，以及同一个值跨 serde 边界时要付什么。决策以及它否决掉的每一项见 [ADR-0057](../adr/0057-the-dynamic-segment-gets-a-block-table.zh-CN.md)；字段名词汇表与值类型见 ADR-0012；key 落在哪一级见 [key 布局](key-layout.zh-CN.md)。English: [dynamic-segment.md](dynamic-segment.md)。表项的头现在是一字节（[ADR-0060](../adr/0060-the-entry-header-is-one-byte.zh-CN.md)）：短值体的长度装进 type 字节，三种定宽类型干脆不写长度。这次改动之前的库是清掉而不是迁移——字节里没有任何东西能区分两代布局。
 
 ## 落在哪，谁写它

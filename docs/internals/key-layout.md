@@ -1,5 +1,7 @@
 # Key Layout: ns prefix and slot dispatch
 
+> **Languages:** [English](key-layout.md) (primary) · [中文](key-layout.zh-CN.md)
+
 Mechanism/implementation document: the first-level layout of every key that
 lands in an engine — how the 2-byte ns prefix is encoded, how documents and
 junctions share this level, and how the slot follows. Slot allocation

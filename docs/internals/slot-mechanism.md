@@ -1,5 +1,7 @@
 # Slot Mechanism: in-namespace dispatch of derived entries
 
+> **Languages:** [English](slot-mechanism.md) (primary) · [中文](slot-mechanism.zh-CN.md)
+
 Mechanism/implementation document: how the slot dispatches derived entries
 inside a 2-byte namespace, what the constraints are, and why. Modeling
 discipline lives in [MODELING](../MODELING.md); decision records live in
