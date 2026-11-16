@@ -1,5 +1,7 @@
 # Where a query's time goes, measured
 
+> **Languages:** [English](query-cost-attribution.md) (primary) · [中文](query-cost-attribution.zh-CN.md)
+
 The question this answers: an outside proposal (`docs/ideas/schema-aware-index.md`) claims 3–100× from replacing the engine's index layer with a schema-aware block index or a custom ART. Such a claim can only hold if the engine's search is a large share of end-to-end query time. It is not. This document measures the split, so the proposal is judged by arithmetic rather than by the reputation of the papers behind it.
 
 ## Environment and corpus
