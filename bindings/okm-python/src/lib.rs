@@ -11,14 +11,18 @@
 //! - `Graph` — the dynamic graph's SECOND face over the same store
 //!   (ADR-0017 §4): `incorporate` / `retract` take fragment dicts, the
 //!   cluster reads answer plain values, `out`/`inn`/`walk` hand back a
-//!   lazily-driven `EdgeStream`, and `KeySet` keeps okm-query's two-step
-//!   semantics (set algebra first, one fetch after) instead of degenerating
-//!   into loops over ids. Its layout knowledge stays in okm-dynamic: this
-//!   file drives the cursor and never re-derives a key shape.
+//!   lazily-driven `EdgeStream`, and `KeySet` keeps the two-step
+//!   semantics (set algebra first, one fetch after) instead of
+//!   degenerating into loops over ids — a thin `#[pyclass]` over
+//!   `okm_core::KeySet` (the container) and `okm_query::HeldSets` (the
+//!   algebra), so the Steel binding holds the same two rather than a copy
+//!   of either. Its layout knowledge stays in okm-dynamic: this file
+//!   drives the cursor and never re-derives a key shape.
 //!
 //! Errors cross as Python ValueError (dynamic-side discipline: errors
 //! are ordinary input).
 pub mod pyo3_impl {
+    use okm_core::model::key::KeySet as SharedKeySet;
     use okm_core::storage::VirtualStorage;
     use okm_core::{Direction, EdgeKey, Handle, Members, NodeRef};
     use okm_dynamic::{
@@ -26,6 +30,7 @@ pub mod pyo3_impl {
         EdgeStep, Kind, ReduceLogic, RetractReport, Value, WriteReport,
     };
     use okm_dynamic::Graph as DynGraph;
+    use okm_query::HeldSets;
     use pyo3::exceptions::{PyTypeError, PyValueError};
     use pyo3::prelude::*;
     use pyo3::Py;
@@ -2512,21 +2517,21 @@ pub mod pyo3_impl {
     /// operator, and the shape okm-query's alignment speaks.
     ///
     /// The point is the TWO-STEP semantics, kept instead of degenerating into a
-    /// Python loop over ids: `okm_query`'s operators (`intersect`, `union`,
-    /// `difference`) run inside one call, and `fetch` turns the surviving keys
-    /// into rows in one more. A `for` loop in Python would be a round trip per
-    /// id, which is exactly what the operators exist to avoid.
+    /// Python loop over ids: the set operators run inside one call, and `fetch`
+    /// turns the surviving keys into rows in one more. A `for` loop in Python
+    /// would be a round trip per id, which is exactly what the operators exist
+    /// to avoid.
     ///
-    /// The algebra is okm-query's; the container is here because neither
-    /// okm-dynamic nor okm-core exposes a materialized key set — okm-dynamic
-    /// offers ordered STREAMS (`EdgeStream` is a `Seekable` position), and a set
-    /// you can hold across calls is a consumer-side container. So this wraps a
-    /// sorted `Vec<Vec<u8>>` and hands it to the same operators a scan would
-    /// feed; no key ALGEBRA is re-implemented, only the sort/dedup that makes a
-    /// Vec a set.
+    /// A THIN wrapper, and nothing else: the container is `okm_core::KeySet`
+    /// (ordered, deduplicated, algebra-free) and the algebra over two of them is
+    /// `okm_query::HeldSets`. This type exists only to make those two a Python
+    /// object — it stores no logic, so the Steel binding holds the same
+    /// container and the same operators instead of a copy of each. `fetch` is the
+    /// one thing that is not shared, and cannot be: reading rows needs a store,
+    /// which is a binding's business, not a key type's.
     #[pyclass]
     pub struct KeySet {
-        keys: Vec<Vec<u8>>,
+        inner: SharedKeySet<Vec<u8>>,
     }
 
     /// One row behind a key set's `fetch`: the key, and the value the store
@@ -2534,57 +2539,42 @@ pub mod pyo3_impl {
     pub type KeyRow = (Vec<u8>, Option<Vec<u8>>);
 
     impl KeySet {
-        /// A set from any key sequence: sorted and deduplicated, which is what
-        /// makes it ordered input for the operators.
-        pub fn of(mut keys: Vec<Vec<u8>>) -> Self {
-            keys.sort_unstable();
-            keys.dedup();
-            KeySet { keys }
+        /// A set from any key sequence: the sort and dedupe that make a `Vec` a
+        /// set happen in `okm_core::KeySet`, once.
+        pub fn of(keys: Vec<Vec<u8>>) -> Self {
+            Self {
+                inner: SharedKeySet::new(keys),
+            }
         }
 
         pub fn keys_ref(&self) -> &[Vec<u8>] {
-            &self.keys
+            self.inner.as_slice()
         }
 
         pub fn intersect_dyn(&self, other: &KeySet) -> KeySet {
-            use okm_query::OrderedSets;
-            KeySet::of(
-                self.keys
-                    .clone()
-                    .into_iter()
-                    .intersect(other.keys.clone())
-                    .collect(),
-            )
+            Self {
+                inner: self.inner.and(&other.inner),
+            }
         }
 
         pub fn union_dyn(&self, other: &KeySet) -> KeySet {
-            use okm_query::OrderedSets;
-            KeySet::of(
-                self.keys
-                    .clone()
-                    .into_iter()
-                    .union(other.keys.clone())
-                    .collect(),
-            )
+            Self {
+                inner: self.inner.or(&other.inner),
+            }
         }
 
         pub fn difference_dyn(&self, other: &KeySet) -> KeySet {
-            use okm_query::OrderedSets;
-            KeySet::of(
-                self.keys
-                    .clone()
-                    .into_iter()
-                    .difference(other.keys.clone())
-                    .collect(),
-            )
+            Self {
+                inner: self.inner.minus(&other.inner),
+            }
         }
 
         /// The rows behind the surviving keys, in key order: one point read per
         /// key, all of them inside this call. `None` value = the key is not in
         /// the store any more (a normal race on a live store, not a failure).
         pub fn fetch_dyn(&self, store: &EngineBox) -> Result<Vec<KeyRow>, String> {
-            let mut rows = Vec::with_capacity(self.keys.len());
-            for key in &self.keys {
+            let mut rows = Vec::with_capacity(self.inner.len());
+            for key in self.inner.iter() {
                 let value = store.get(key).map_err(|e| e.to_string())?;
                 rows.push((key.clone(), value));
             }
@@ -2618,18 +2608,18 @@ pub mod pyo3_impl {
 
         /// The keys, in ascending byte order.
         fn keys(&self) -> Vec<Vec<u8>> {
-            self.keys.clone()
+            self.inner.as_slice().to_vec()
         }
 
         fn __len__(&self) -> usize {
-            self.keys.len()
+            self.inner.len()
         }
 
         fn __contains__(&self, key: Vec<u8>) -> bool {
-            self.keys.binary_search(&key).is_ok()
+            self.inner.contains(&key)
         }
 
-        /// `a & b` — the keys on both sides, once each (okm-query's `intersect`).
+        /// `a & b` — the keys on both sides, once each (okm-query's `and`).
         fn __and__(&self, other: &KeySet) -> KeySet {
             self.intersect_dyn(other)
         }
@@ -2645,7 +2635,7 @@ pub mod pyo3_impl {
         }
 
         fn __repr__(&self) -> String {
-            format!("KeySet({} key(s))", self.keys.len())
+            format!("KeySet({} key(s))", self.inner.len())
         }
 
         /// The rows behind this set, in key order: `[{"key": bytes, "value":

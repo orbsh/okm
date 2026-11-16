@@ -19,6 +19,7 @@ use okm_core::{DocumentEncode, KeyEncode, NodeRef};
 use okm_dynamic::{Decl, Dict, DynEdge, DynFragment, Graph};
 use okm_steel::collection::StorageRegistry;
 use okm_steel::hop::GraphRegistry;
+use okm_steel::keyset::KeySetRegistry;
 use okm_steel::okm_entry::{Engine, EngineBox};
 use std::collections::BTreeMap;
 use std::sync::{Arc, Mutex};
@@ -788,4 +789,311 @@ fn a_node_the_graph_never_saw_is_an_empty_walk() {
         .run(r#"(graph-hop-open "Ghost" (list 16 (list->vector (list 0))) 'out #f)"#)
         .expect_err("an undeclared graph must fail");
     assert!(format!("{err:?}").contains("Ghost"), "{err:?}");
+}
+
+// ---------------------------------------------------------------------------
+// The key set face — set algebra across the boundary, one fetch after
+// ---------------------------------------------------------------------------
+
+/// The session a key-set script needs: a graph AND a collection over one host
+/// engine (so a site name resolves to either), plus the set table. Every piece
+/// is per-VM, exactly as a carrier builds them.
+fn keyset_vm(
+    engine: &Arc<CountingEngine>,
+) -> (
+    GraphRegistry,
+    KeySetRegistry,
+    steel::steel_vm::engine::Engine,
+) {
+    let graphs = GraphRegistry::default();
+    graphs
+        .inject(
+            engine.clone(),
+            "G",
+            &serde_json::json!({ "schema": graph_schema() }),
+            GRAPH_NS,
+        )
+        .expect("the graph injects");
+    let collections = StorageRegistry::default();
+    collections
+        .inject(engine.clone(), "Counters", &entry_json(), 41)
+        .expect("the collection injects");
+    let sets = KeySetRegistry::default();
+    let mut vm = steel::steel_vm::engine::Engine::new();
+    okm_steel::register(&mut vm);
+    collections.register_into(&mut vm);
+    graphs.register_into(&mut vm);
+    sets.register_into(&mut vm, &collections, &graphs);
+    (graphs, sets, vm)
+}
+
+/// The byte vector a script wrote (a `[key row]` pair's side).
+fn bytes_of(v: &SteelVal) -> Vec<u8> {
+    let SteelVal::VectorV(vec) = v else {
+        panic!("expected a byte vector, got {v:?}");
+    };
+    vec.iter()
+        .map(|item| match item {
+            SteelVal::IntV(i) => u8::try_from(*i).expect("a byte"),
+            other => panic!("expected a byte, got {other:?}"),
+        })
+        .collect()
+}
+
+/// A `key-fetch!` answer parsed back: `(key, row)` per surviving key, the row
+/// `None` for the `void` a missing entry answers.
+fn rows_of(v: &SteelVal) -> Vec<(Vec<u8>, Option<Vec<u8>>)> {
+    let SteelVal::VectorV(rows) = v else {
+        panic!("expected a vector of [key row] pairs, got {v:?}");
+    };
+    rows.iter()
+        .map(|row| {
+            let SteelVal::VectorV(pair) = row else {
+                panic!("expected a [key row] pair, got {row:?}");
+            };
+            assert_eq!(pair.len(), 2, "a row is a pair");
+            let value = match &pair[1] {
+                SteelVal::Void => None,
+                other => Some(bytes_of(other)),
+            };
+            (bytes_of(&pair[0]), value)
+        })
+        .collect()
+}
+
+/// The two-step semantics, across the script boundary and in TWO calls: two sets
+/// drained off REAL walks, intersected/differenced inside one call each, then one
+/// `key-fetch!` that pays exactly one point read per surviving key.
+///
+/// The counter is the claim. A per-key loop in the script would pay a read per
+/// key of BOTH sides (five, here, plus the two the algebra keeps); the two-step
+/// form pays two — one per SURVIVOR — and the algebra itself reads nothing.
+#[test]
+fn key_sets_intersect_then_fetch_in_one_call() {
+    let engine = Arc::new(CountingEngine::new());
+    three_out_edges(&engine);
+    let (_graphs, _sets, mut vm) = keyset_vm(&engine);
+
+    // Stage one: the sets, off two walks of the same face. The second walk is
+    // pulled one entry then drained, so it holds the LAST TWO of the three keys
+    // — a genuine partial overlap, not two copies of one answer.
+    vm.run(format!(
+        r#"
+(define n {PERSON_1})
+(define all (key-collect! (graph-hop-open "G" n 'out #f)))
+(define c (graph-hop-open "G" n 'out #f))
+(define first (graph-hop-next! c))
+(define rest (key-collect! c))
+(define both (key-set-and! all rest))
+(define only (key-set-minus! all rest))
+(define either (key-set-or! both only))
+(if first 'walked 'empty)
+"#
+    ))
+    .expect("the set-building script");
+
+    // Stage two: ONE call turns the survivors into rows, and it costs one read
+    // per survivor — two for the intersection.
+    engine.reset();
+    let out = vm
+        .run(r#"(key-fetch! both "G")"#)
+        .expect("the intersection fetch");
+    let both_rows = rows_of(out.last().expect("a fetch answer"));
+    assert_eq!(both_rows.len(), 2, "two of the three keys are shared");
+    assert_eq!(
+        engine.gets(),
+        2,
+        "one point read per SURVIVING key: the algebra reads nothing, and the \
+         keys it dropped are never read at all"
+    );
+
+    // Every row is the store's own row at that key — same key, same bytes.
+    {
+        let stored = engine.rows.lock().unwrap();
+        for (key, value) in &both_rows {
+            assert_eq!(
+                stored.get(key),
+                value.as_ref(),
+                "the fetched row is the entry the key names"
+            );
+            assert!(value.is_some(), "a live edge entry carries its value");
+        }
+    }
+
+    // The difference is the entry the second walk never reached; the union of
+    // the two halves is the whole face again (sets are values, so `all` still
+    // answers three keys after two operators have read it).
+    engine.reset();
+    let out = vm
+        .run(r#"(list (key-fetch! only "G") (key-fetch! either "G") (key-fetch! all "G"))"#)
+        .expect("the difference / union / re-read script");
+    let Some(SteelVal::ListV(answers)) = out.last() else {
+        panic!("expected the three fetches, got {:?}", out.last());
+    };
+    let answers: Vec<SteelVal> = answers.iter().cloned().collect();
+    let only_rows = rows_of(&answers[0]);
+    let either_rows = rows_of(&answers[1]);
+    let all_rows = rows_of(&answers[2]);
+
+    assert_eq!(only_rows.len(), 1, "one key of the three is in `all` alone");
+    assert_eq!(
+        either_rows.len(),
+        3,
+        "both halves together are the whole face"
+    );
+    assert_eq!(
+        all_rows.len(),
+        3,
+        "the inputs survived the operators: a set is a value, not a cursor"
+    );
+
+    let intersection_keys: Vec<Vec<u8>> = both_rows.iter().map(|(k, _)| k.clone()).collect();
+    let difference_keys: Vec<Vec<u8>> = only_rows.iter().map(|(k, _)| k.clone()).collect();
+    assert!(
+        difference_keys
+            .iter()
+            .all(|key| !intersection_keys.contains(key)),
+        "the difference and the intersection do not overlap"
+    );
+    let mut rebuilt: Vec<Vec<u8>> = intersection_keys.clone();
+    rebuilt.extend(difference_keys);
+    rebuilt.sort_unstable();
+    let all_keys: Vec<Vec<u8>> = all_rows.iter().map(|(k, _)| k.clone()).collect();
+    assert_eq!(
+        rebuilt, all_keys,
+        "the intersection plus the difference is the left side, key for key"
+    );
+    // The union answered in KEY ORDER, which is the container's ordering
+    // discipline crossing the boundary intact.
+    let either_keys: Vec<Vec<u8>> = either_rows.iter().map(|(k, _)| k.clone()).collect();
+    let mut sorted = either_keys.clone();
+    sorted.sort_unstable();
+    assert_eq!(either_keys, sorted, "a set iterates in ascending key order");
+}
+
+/// A set built from key BYTES (the shape a script that encoded its own keys
+/// has), a fetch at a COLLECTION site answering DOCUMENTS, and the release that
+/// makes the handle a loud error afterwards.
+#[test]
+fn key_set_of_fetches_documents_and_a_released_handle_is_refused() {
+    let engine = Arc::new(CountingEngine::new());
+    let (_graphs, sets, mut vm) = keyset_vm(&engine);
+    let sj = quote(&schema_json());
+
+    // The collection site's keys are PKEYS — the bytes `okm-encode-key!`
+    // answers — and the row behind one is the document, read through the
+    // table's own reader (primary row and dynamic segment are one document).
+    let out = vm
+        .run(format!(
+            r#"
+(define schema (okm-schema-from-json! "{sj}"))
+(define pkey (okm-encode-key! schema (hash "org_id" 1 "user_id" 2)))
+(collection-put! "Counters" pkey (hash "org_id" 1 "user_id" 2 "level" 9 "score" 500 "name" "alice"))
+(define rows (key-fetch! (key-set-of (list pkey)) "Counters"))
+(assert! (= (vector-length rows) 1))
+(assert! (equal? (vector-ref (vector-ref rows 0) 0) pkey))
+(assert! (string=? (hash-ref (vector-ref (vector-ref rows 0) 1) "name") "alice"))
+(assert! (= (hash-ref (vector-ref (vector-ref rows 0) 1) "level") 9))
+'done
+"#
+        ))
+        .expect("the collection-site fetch");
+    assert_eq!(last_sym(out), "done");
+
+    // A set is a set: input order and duplicates do not survive, and a key the
+    // store does not hold answers `void` rather than dropping out of the answer.
+    let out = vm
+        .run(
+            r#"
+(define s (key-set-of (list (list->vector (list 9 9)) (list->vector (list 1 1)) (list->vector (list 9 9)))))
+(define rows (key-fetch! s "G"))
+(list (vector-length rows)
+      (equal? (vector-ref (vector-ref rows 0) 0) (list->vector (list 1 1)))
+      (void? (vector-ref (vector-ref rows 0) 1))
+      (equal? (vector-ref (vector-ref rows 1) 0) (list->vector (list 9 9))))
+"#,
+        )
+        .expect("the byte-key set");
+    let Some(SteelVal::ListV(checks)) = out.last() else {
+        panic!("expected the checks, got {:?}", out.last());
+    };
+    let checks: Vec<SteelVal> = checks.iter().cloned().collect();
+    assert_eq!(
+        checks[0],
+        SteelVal::IntV(2),
+        "two distinct keys, twice written, once each"
+    );
+    assert_eq!(checks[1], SteelVal::BoolV(true), "ascending key order");
+    assert_eq!(
+        checks[2],
+        SteelVal::BoolV(true),
+        "a key with no entry answers void, in its own row"
+    );
+    assert_eq!(checks[3], SteelVal::BoolV(true));
+
+    // Release: `#t` for a live set, `#f` for one already released, and every
+    // verb that takes a handle refuses the spent one by name.
+    let out = vm
+        .run(
+            r#"(define k (key-set-of (list)))
+(assert! (key-set-close! k))
+(assert! (not (key-set-close! k)))
+'closed"#,
+        )
+        .expect("close twice is fine");
+    assert_eq!(last_sym(out), "closed");
+
+    let err = vm
+        .run(r#"(key-set-and! k k)"#)
+        .expect_err("a released set must not be an operand");
+    assert!(
+        format!("{err:?}").contains("not open"),
+        "the refusal names the handle: {err:?}"
+    );
+    let err = vm
+        .run(r#"(key-fetch! k "G")"#)
+        .expect_err("a released set must not be fetched");
+    assert!(format!("{err:?}").contains("not open"), "{err:?}");
+
+    // ... and the session teardown owns whatever a script never released: the
+    // site fetch's set, the byte-key set, and nothing of `k`'s (which the
+    // script released itself).
+    assert_eq!(sets.close_all(), 2, "the two sets the script left live");
+    assert_eq!(sets.close_all(), 0, "releasing again is a no-op");
+}
+
+/// The SITE name is the store a fetch reads, and it is resolved, never
+/// inherited: an unknown name and a name that means two different tables are
+/// both loud errors rather than a set of `void` rows.
+#[test]
+fn key_fetch_refuses_an_unknown_or_ambiguous_site() {
+    let engine = Arc::new(CountingEngine::new());
+    three_out_edges(&engine);
+    let (graphs, _sets, mut vm) = keyset_vm(&engine);
+    // A graph under the collection's name: two tables, one name.
+    graphs
+        .inject(
+            engine.clone(),
+            "Counters",
+            &serde_json::json!({ "schema": graph_schema() }),
+            GRAPH_NS,
+        )
+        .expect("the twin graph injects");
+
+    vm.run(r#"(define k (key-set-of (list)))"#)
+        .expect("an empty set");
+
+    let err = vm
+        .run(r#"(key-fetch! k "Ghost")"#)
+        .expect_err("an unknown site must fail");
+    assert!(format!("{err:?}").contains("Ghost"), "{err:?}");
+
+    let err = vm
+        .run(r#"(key-fetch! k "Counters")"#)
+        .expect_err("an ambiguous site must fail");
+    let text = format!("{err:?}");
+    assert!(
+        text.contains("both a collection and a graph"),
+        "the refusal says which ambiguity it is: {text}"
+    );
 }

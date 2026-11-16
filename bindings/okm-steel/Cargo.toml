@@ -7,6 +7,13 @@ edition = "2021"
 okm-core = { path = "../../okm-core", features = ["schema-serde"] }
 okm-dynamic = { path = "../../okm-dynamic" }
 okm-entry = { path = "../okm-entry" }
+# The set ALGEBRA over two held key sets lives one crate up (okm-core owns the
+# container, `okm-query` owns `intersect`/`union`/`difference` over ordered keys
+# and now `HeldSets` over the container). Only the `key-set-and!` / `-or!` /
+# `-minus!` verbs need it, and okm-query depends on okm-core alone, so the added
+# tree is one thin crate — not the other direction, which would put the algebra
+# in core and invert the dependency.
+okm-query = { path = "../../okm-query" }
 steel-core = "0.7"
 serde_json = "1"
 im-rc = "15"

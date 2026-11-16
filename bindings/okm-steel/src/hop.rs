@@ -187,6 +187,51 @@ impl Hop {
             }
         }
     }
+
+    /// Every remaining ENTRY KEY off this face, in walk order — the raw bytes a
+    /// key set holds, and the drain side of `key-collect!`.
+    ///
+    /// Nothing is RESOLVED: no registry read for the far endpoint and no
+    /// vocabulary read for the predicate name, because a caller collecting keys
+    /// is going to look the rows up by key anyway. What the face's own rule
+    /// still does is decide whether an entry belongs here at all (`edge_step`'s
+    /// shape check, exactly as [`next_entry`](Self::next_entry) does), so a
+    /// neighbouring layout's entries cannot leak into the set.
+    ///
+    /// The cursor is DRAINED: whatever it had left is what this answers, and a
+    /// second call answers nothing (a spent walk, not a restart).
+    fn drain_keys(&mut self) -> Result<Vec<Vec<u8>>, String> {
+        let mut keys = Vec::new();
+        loop {
+            let next = match self.scan.as_mut() {
+                Some(scan) => scan.next(),
+                None => return Ok(keys),
+            };
+            match next {
+                None => {
+                    self.scan = None;
+                    return Ok(keys);
+                }
+                Some(Err(e)) => {
+                    self.scan = None;
+                    return Err(format!("graph hop: {e}"));
+                }
+                Some(Ok((key, _))) => {
+                    if okm_dynamic::edge_step(
+                        &key,
+                        self.suffix_at,
+                        self.dir,
+                        self.handle,
+                        self.filter,
+                    )
+                    .is_some()
+                    {
+                        keys.push(key);
+                    }
+                }
+            }
+        }
+    }
 }
 
 /// The per-VM registry: the carrier builds ONE per session, injects the
@@ -252,6 +297,35 @@ impl GraphRegistry {
             .get(name)
             .cloned()
             .ok_or_else(|| format!("okm: no graph `{name}` injected for this session"))
+    }
+
+    /// The engine a registered graph reads and writes — what `key-fetch!`
+    /// resolves a SITE NAME to when the site is this graph. `None` for a name
+    /// nobody injected (the caller decides whether that is the collection
+    /// table's business or a typo).
+    pub fn store_of(&self, name: &str) -> Option<EngineBox> {
+        self.sites
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .get(name)
+            .map(|site| site.store.clone())
+    }
+
+    /// Drain an open walk to its raw ENTRY KEYS, in walk order — the collector
+    /// `key-collect!` hands a key set.
+    ///
+    /// A clone of the handle is not an open walk: the table owns the scan, so
+    /// collecting from a handle that was closed (or never opened here) is a
+    /// loud error naming it, exactly as `graph-hop-next!` is. The walk is left
+    /// OPEN but spent — the handle still exists, it simply has nothing left to
+    /// answer, which is what "drained" means for a cursor a script may still
+    /// `close!`.
+    pub fn drain_keys(&self, id: u64) -> Result<Vec<Vec<u8>>, String> {
+        let mut cursors = self.cursors.lock().unwrap_or_else(PoisonError::into_inner);
+        let hop = cursors.get_mut(&id).ok_or_else(|| {
+            format!("okm: cursor {id} is not open (closed, or never opened here)")
+        })?;
+        hop.drain_keys()
     }
 
     /// Install the three script-facing functions over THIS registry:

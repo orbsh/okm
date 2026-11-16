@@ -128,6 +128,49 @@ pub trait OrderedSets: IntoIterator + Sized {
 
 impl<I: IntoIterator> OrderedSets for I {}
 
+/// Set algebra over two HELD key sets — [`okm_core::KeySet`], the container a
+/// two-step query keeps between its calls.
+///
+/// The stream form above answers an iterator; this one answers a new set, which
+/// is what a caller needs when the answer must outlive the call (a script's
+/// handle, a Python object, a second operator applied later). Neither side is
+/// consumed — sets are VALUES, not cursors — so `a.and(&b)` leaves both inputs
+/// usable and answers a third.
+///
+/// The operators are the SAME ones, not a second implementation: each is the
+/// stream operator over the two sets' keys, collected into a set (which
+/// re-establishes order and uniqueness once for the answer). A `KeySet` is
+/// already ordered, so the alignment runs over both sides in one pass.
+///
+/// The names are `and` / `or` / `minus` rather than `intersect` / `union` /
+/// `difference` so a call site holding both traits never has to disambiguate
+/// (the stream methods keep those names, and `a.intersect(b)` on a set would
+/// otherwise be ambiguous).
+pub trait HeldSets<K: Clone + Ord> {
+    /// The keys in both sets (`a ∩ b`).
+    fn and(&self, right: &okm_core::KeySet<K>) -> okm_core::KeySet<K>;
+
+    /// The keys in either set (`a ∪ b`), once each.
+    fn or(&self, right: &okm_core::KeySet<K>) -> okm_core::KeySet<K>;
+
+    /// The keys of the left set the right one does not have (`a \ b`).
+    fn minus(&self, right: &okm_core::KeySet<K>) -> okm_core::KeySet<K>;
+}
+
+impl<K: Clone + Ord> HeldSets<K> for okm_core::KeySet<K> {
+    fn and(&self, right: &okm_core::KeySet<K>) -> okm_core::KeySet<K> {
+        okm_core::KeySet::new(self.iter().cloned().intersect(right.iter().cloned()))
+    }
+
+    fn or(&self, right: &okm_core::KeySet<K>) -> okm_core::KeySet<K> {
+        okm_core::KeySet::new(self.iter().cloned().union(right.iter().cloned()))
+    }
+
+    fn minus(&self, right: &okm_core::KeySet<K>) -> okm_core::KeySet<K> {
+        okm_core::KeySet::new(self.iter().cloned().difference(right.iter().cloned()))
+    }
+}
+
 /// Set intersection over two ORDERED SLICES, galloping instead of walking — the
 /// random-access half of [`intersect`](OrderedSets::intersect), for inputs that
 /// can be indexed.
@@ -1870,5 +1913,69 @@ mod tests {
             a_meter.steps.get(),
             b_meter.seeks.get()
         );
+    }
+
+    // ================= the held form: two sets, one new answer =================
+
+    /// The held operators answer what their stream forms answer, on the shapes
+    /// that have bitten an alignment — and each answers a NEW set, leaving both
+    /// inputs intact (sets are values, not cursors).
+    #[test]
+    fn held_sets_answer_what_the_stream_operators_answer() {
+        let shapes: Vec<(&str, Vec<u8>, Vec<u8>)> = vec![
+            ("both empty", vec![], vec![]),
+            ("left empty", vec![], vec![1, 2, 3]),
+            ("right empty", vec![1, 2, 3], vec![]),
+            ("disjoint", vec![1, 3, 5, 7], vec![2, 4, 6, 8]),
+            ("identical", vec![1, 2, 3], vec![1, 2, 3]),
+            ("left inside right", vec![3, 4], vec![1, 2, 3, 4, 5]),
+            ("right inside left", vec![1, 2, 3, 4, 5], vec![3, 4]),
+            (
+                "duplicates on both sides",
+                vec![1, 1, 1, 2, 2, 5, 5, 9],
+                vec![1, 1, 2, 3, 3, 5, 9, 9, 9],
+            ),
+            ("duplicates, one shared key", vec![7; 40], vec![7; 13]),
+            (
+                "no key shared but interleaved",
+                (0..100).collect(),
+                (0..100).map(|i| i * 2 + 1).collect(),
+            ),
+        ];
+
+        for (name, left, right) in shapes {
+            let a = okm_core::KeySet::new(left.clone());
+            let b = okm_core::KeySet::new(right.clone());
+
+            let want_and: Vec<u8> = left.clone().into_iter().intersect(right.clone()).collect();
+            assert_eq!(a.and(&b).as_slice(), want_and, "{name}: and");
+
+            let want_or: Vec<u8> = left.clone().into_iter().union(right.clone()).collect();
+            assert_eq!(a.or(&b).as_slice(), want_or, "{name}: or");
+
+            let want_minus: Vec<u8> = left.clone().into_iter().difference(right.clone()).collect();
+            assert_eq!(a.minus(&b).as_slice(), want_minus, "{name}: minus");
+
+            // The inputs are untouched: a set is a value, so the second question
+            // asks the same two sets again and gets the same answer.
+            assert_eq!(a.as_slice(), okm_core::KeySet::new(left.clone()).as_slice());
+            assert_eq!(a.minus(&b).as_slice(), want_minus);
+        }
+    }
+
+    /// Held answers are ordered input for the NEXT step: the container's whole
+    /// point is that `(a ∩ b) − c` needs no sort between the two calls.
+    #[test]
+    fn held_answers_chain_as_ordered_input() {
+        let a = okm_core::KeySet::new(vec![9u8, 1, 3, 5, 7]);
+        let b = okm_core::KeySet::new(vec![7u8, 5, 3]);
+        let c = okm_core::KeySet::new(vec![3u8]);
+
+        let both = a.and(&b);
+        assert_eq!(both.as_slice(), [3, 5, 7]);
+        assert_eq!(both.minus(&c).as_slice(), [5, 7]);
+        // ... and the union of the two halves is the left side back.
+        let rebuilt = both.or(&a.minus(&b));
+        assert_eq!(rebuilt.as_slice(), a.as_slice(), "a = (a ∩ b) ∪ (a \\ b)");
     }
 }

@@ -627,6 +627,13 @@ dependencies = [
 ]
 
 [[package]]
+name = "okm-query"
+version = "0.1.0"
+dependencies = [
+ "okm-core",
+]
+
+[[package]]
 name = "okm-steel"
 version = "0.1.0"
 dependencies = [
@@ -635,6 +642,7 @@ dependencies = [
  "okm-derive",
  "okm-dynamic",
  "okm-entry",
+ "okm-query",
  "serde_json",
  "steel-core",
 ]

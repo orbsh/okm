@@ -1,4 +1,5 @@
-//! Key side: the [`KeyEncode`] trait and [`PrefixKey`].
+//! Key side: the [`KeyEncode`] trait, [`PrefixKey`], and [`KeySet`] — the
+//! materialized, ordered bag of keys a two-step query holds between calls.
 //!
 //! A key struct derived with `#[derive(KeyEncode)]` **is** the DDL: SQL
 //! defines collection structure, the Rust struct defines key encoding, and the
@@ -242,4 +243,151 @@ pub struct PrefixKey<A> {
     pub decoded: A,
     /// Bytes consumed by the identity prefix (= sum of `ok_head` field widths).
     pub taken: usize,
+}
+
+/// An ordered, deduplicated set of KEYS a caller can hold across calls — the
+/// container that keeps a set step a TWO-STEP semantics (`op(set, set)` inside
+/// one call, then read the surviving keys) instead of a per-key round trip.
+///
+/// Deliberately ALGEBRA-FREE. Construction (sort + dedupe once), iteration, the
+/// slice, `len` / `is_empty` / `contains`, and the keys themselves are the whole
+/// surface: the operators over ordered keys are `okm-query`'s (`OrderedSets`
+/// over streams, the held-set trait over two of these), and a container that
+/// carried them would make this crate depend on the query layer — the
+/// dependency points the other way. Nothing here reads a store either: a fetch
+/// needs an engine, which is a binding's business, not a key type's.
+///
+/// The one thing it guarantees is what makes a `Vec` acceptable ORDERED input to
+/// those operators: [`new`](Self::new) sorts and dedupes once, so iteration is
+/// ascending by key and no key comes back twice. Keys are opaque bytes in both
+/// bindings, which is why the type is generic over them rather than concrete
+/// over `Vec<u8>`: the container's rule (`Ord` + owned) is the same for a byte
+/// key, a `u32` test key, or a decoded tuple, and the bindings pay nothing for
+/// the generality — `KeySet` alone (the default parameter) means raw key bytes.
+///
+/// Not a cursor and not a cache: it holds what the caller already produced (a
+/// scan's keys, one walk's face keys), it never re-reads the store, and dropping
+/// it is releasing it.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct KeySet<K = Vec<u8>> {
+    keys: Vec<K>,
+}
+
+impl<K: Ord> KeySet<K> {
+    /// A set from any key sequence — the ONLY constructor, because sorting and
+    /// deduplicating exactly once is what makes the result ordered input.
+    ///
+    /// Input order and duplicates are dropped: a `Vec` off a scan, a list of
+    /// keys a binding decoded, and an already-ordered set all land in the same
+    /// shape, so no caller has to know whether its source was ordered.
+    pub fn new(keys: impl IntoIterator<Item = K>) -> Self {
+        let mut keys: Vec<K> = keys.into_iter().collect();
+        keys.sort_unstable();
+        keys.dedup();
+        Self { keys }
+    }
+
+    /// The keys, ascending, once each — the iteration surface.
+    pub fn as_slice(&self) -> &[K] {
+        &self.keys
+    }
+
+    /// The keys as an iterator, ascending, once each.
+    pub fn iter(&self) -> std::slice::Iter<'_, K> {
+        self.keys.iter()
+    }
+
+    /// How many distinct keys the set holds.
+    pub fn len(&self) -> usize {
+        self.keys.len()
+    }
+
+    /// Whether the set holds no key at all (an empty answer, never an error).
+    pub fn is_empty(&self) -> bool {
+        self.keys.is_empty()
+    }
+
+    /// Membership, by the set's own order — a binary search, so asking is
+    /// `O(log n)` rather than a walk.
+    pub fn contains(&self, key: &K) -> bool {
+        self.keys.binary_search(key).is_ok()
+    }
+
+    /// Take the keys, ascending, once each — for a caller that wants the `Vec`
+    /// (an operator input, a binding's return value) rather than the set.
+    pub fn into_keys(self) -> Vec<K> {
+        self.keys
+    }
+}
+
+impl<K: Ord> From<Vec<K>> for KeySet<K> {
+    fn from(keys: Vec<K>) -> Self {
+        Self::new(keys)
+    }
+}
+
+impl<K: Ord> FromIterator<K> for KeySet<K> {
+    fn from_iter<I: IntoIterator<Item = K>>(iter: I) -> Self {
+        Self::new(iter)
+    }
+}
+
+impl<K: Ord> IntoIterator for KeySet<K> {
+    type Item = K;
+    type IntoIter = std::vec::IntoIter<K>;
+
+    fn into_iter(self) -> Self::IntoIter {
+        self.keys.into_iter()
+    }
+}
+
+impl<'a, K> IntoIterator for &'a KeySet<K> {
+    type Item = &'a K;
+    type IntoIter = std::slice::Iter<'a, K>;
+
+    fn into_iter(self) -> Self::IntoIter {
+        self.keys.iter()
+    }
+}
+
+#[cfg(test)]
+mod keyset_tests {
+    use super::KeySet;
+
+    /// The one guarantee: whatever the input order, iteration is ascending and
+    /// a repeated key answers once.
+    #[test]
+    fn keyset_orders_and_dedupes_at_construction() {
+        let set = KeySet::new(vec![3u32, 1, 2, 2, 1]);
+        assert_eq!(set.as_slice(), [1, 2, 3]);
+        assert_eq!(set.len(), 3);
+        assert!(!set.is_empty());
+        assert!(set.contains(&2));
+        assert!(!set.contains(&9));
+        assert_eq!(set.into_keys(), vec![1, 2, 3]);
+        assert!(KeySet::<u32>::new(Vec::new()).is_empty());
+    }
+
+    /// Bytes are the bindings' key type, and the sorted order of byte vectors
+    /// is the entry order the store's scans speak.
+    #[test]
+    fn keyset_sorts_raw_key_bytes() {
+        let set = KeySet::new(vec![b"b".to_vec(), b"a".to_vec()]);
+        assert_eq!(set.as_slice(), [b"a".to_vec(), b"b".to_vec()]);
+        // The default parameter is the byte key: `KeySet` alone names it.
+        let bytes: KeySet = KeySet::from(vec![vec![2u8], vec![1u8]]);
+        assert_eq!(bytes.as_slice(), [vec![1u8], vec![2u8]]);
+    }
+
+    /// Both iterator faces: owned yields keys, borrowed yields references into
+    /// the same order (which is what the operators consume without copying).
+    #[test]
+    fn keyset_iterates_by_value_and_by_reference() {
+        let set = KeySet::new(vec![2u8, 1]);
+        let borrowed: Vec<&u8> = (&set).into_iter().collect();
+        assert_eq!(borrowed, vec![&1, &2]);
+        let collected: KeySet<u8> = vec![2u8, 1, 1].into_iter().collect();
+        assert_eq!(collected.as_slice(), [1, 2]);
+        assert_eq!(set.into_iter().collect::<Vec<u8>>(), vec![1, 2]);
+    }
 }

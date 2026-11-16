@@ -155,7 +155,11 @@ for key in common {
 
 One index probe per shared key. Because the key set is complete before the first
 row is read, it can be filtered, truncated, or counted first — selectivity applies
-before any payload is touched.
+before any payload is touched. That intermediate set is a first-class TYPE now,
+not a binding detail: `okm_core::KeySet` holds the ordered keys between the two
+steps (and `okm_query::HeldSets` answers `a ∩ b`, `a ∪ b`, `a \ b` over two such
+sets), so the same two-step shape is reachable from Rust, from Python and from a
+Steel script instead of being re-invented by each caller.
 
 **The other shape: one pass over the key streams, when nearly every key is shared.**
 If both sides intersect almost fully, the per-key probes are the cost, and pairing the

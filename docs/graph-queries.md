@@ -4,7 +4,7 @@ Query recipes for the graph edge layer (ADR-0017; the identity is ADR-0067): how
 
 ## Core stance
 
-One face = one access method; a graph query is composed by scanning the MOST SELECTIVE face first and converging identities in memory — no composite faces, no query engine. An edge has no number: its identity is the tuple `(src, predicate, dst)`, so every primitive answers `EdgeKey`s and a walk answers handles. Bodies are fetched per tuple, only for the survivors. Declaration is execution, same as everywhere in OKM.
+One face = one access method; a graph query is composed by scanning the MOST SELECTIVE face first and converging identities in memory — no composite faces, no query engine. An edge has no number: its identity is the tuple `(src, predicate, dst)`, so every primitive answers `EdgeKey`s and a walk answers handles. Bodies are fetched per tuple, only for the survivors. The set a query holds between those two steps is a first-class type (`okm_core::KeySet`, with `okm_query::HeldSets` for `a ∩ b` / `a ∪ b` / `a \ b` over two of them, and the bindings' `key-set-*` verbs on top of it) rather than each caller's own container. Declaration is execution, same as everywhere in OKM.
 
 ## NodeRef: the endpoint a caller speaks
 

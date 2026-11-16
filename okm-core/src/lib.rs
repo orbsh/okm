@@ -99,7 +99,7 @@ pub use model::index::{
     write_slot,
 };
 pub use model::key::{
-    KeyEncode, KeyFieldValue, PrefixKey, key_field_exists, key_field_matches, kind_matches,
+    KeyEncode, KeyFieldValue, KeySet, PrefixKey, key_field_exists, key_field_matches, kind_matches,
 };
 pub use model::parts;
 pub use model::parts::{Fields, Hit, Include, Key, Part, Parts, PointParts, Row, Value};

@@ -25,6 +25,7 @@ use steel::{
 
 pub mod collection;
 pub mod hop;
+pub mod keyset;
 
 /// The shared injection machinery (engine face + entry parsing) rides
 /// through here so carriers need one dependency (okm-steel), not two —

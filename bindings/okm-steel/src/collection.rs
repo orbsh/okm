@@ -90,6 +90,25 @@ impl StorageRegistry {
             .map(|v| v.to_string())
     }
 
+    /// The table a registered collection's name names — what `key-fetch!`
+    /// resolves a SITE NAME to when the site is this collection, so a fetch
+    /// reads the ROW the collection would read: `DynamicCollection::fetch`
+    /// knows the primary row and the dynamic segment are one document, which a
+    /// raw `get(pkey)` does not.
+    ///
+    /// A handle, not a borrow: the `Arc` outlives the registry lock, so a fetch
+    /// loop pays one lock for the whole set instead of one per key.
+    pub fn table_of(
+        &self,
+        name: &str,
+    ) -> Option<Arc<Mutex<okm_dynamic::DynamicCollection<okm_entry::EngineBox>>>> {
+        self.inner
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .get(name)
+            .map(|b| b.table.clone())
+    }
+
     fn with_bound<T>(
         &self,
         name: &str,
@@ -438,7 +457,7 @@ pub(crate) fn vec_to_steel(b: Vec<u8>) -> SteelVal {
     )))
 }
 
-fn vector_of(items: Vec<SteelVal>) -> SteelVal {
+pub(crate) fn vector_of(items: Vec<SteelVal>) -> SteelVal {
     SteelVal::VectorV(steel::rvals::SteelVector::from(steel::gc::Gc::new(
         items.into_iter().collect::<im_rc::Vector<SteelVal>>(),
     )))
