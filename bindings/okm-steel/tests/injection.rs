@@ -840,6 +840,17 @@ fn bytes_of(v: &SteelVal) -> Vec<u8> {
         .collect()
 }
 
+/// A list or vector of key byte vectors — the shape `collection-keys` answers
+/// and the shape `key-set-of` takes.
+fn key_list(v: &SteelVal) -> Vec<Vec<u8>> {
+    let items: Vec<SteelVal> = match v {
+        SteelVal::ListV(items) => items.iter().cloned().collect(),
+        SteelVal::VectorV(items) => items.iter().cloned().collect(),
+        other => panic!("expected a list or vector of key byte vectors, got {other:?}"),
+    };
+    items.iter().map(bytes_of).collect()
+}
+
 /// A `key-fetch!` answer parsed back: `(key, row)` per surviving key, the row
 /// `None` for the `void` a missing entry answers.
 fn rows_of(v: &SteelVal) -> Vec<(Vec<u8>, Option<Vec<u8>>)> {
@@ -971,34 +982,112 @@ fn key_sets_intersect_then_fetch_in_one_call() {
     assert_eq!(either_keys, sorted, "a set iterates in ascending key order");
 }
 
-/// A set built from key BYTES (the shape a script that encoded its own keys
-/// has), a fetch at a COLLECTION site answering DOCUMENTS, and the release that
-/// makes the handle a loud error afterwards.
+/// The whole collection-side flow, end to end: documents written through the
+/// script verb, their keys taken from a REAL scan (`collection-keys` — the
+/// script writes no key bytes of its own), narrowed against another set, and
+/// the survivors fetched as documents.
+///
+/// Three claims are counted or compared, not narrated: the store holds two
+/// slots per document while the key list answers ONE key each (the scan merges
+/// the row and the segment); the scanned list is the encoded pkeys, key for
+/// key; and the fetch pays the document's two slots per key it reads, so the
+/// three keys fetched across the intersection and the difference cost six.
 #[test]
 fn key_set_of_fetches_documents_and_a_released_handle_is_refused() {
     let engine = Arc::new(CountingEngine::new());
     let (_graphs, sets, mut vm) = keyset_vm(&engine);
     let sj = quote(&schema_json());
 
-    // The collection site's keys are PKEYS — the bytes `okm-encode-key!`
-    // answers — and the row behind one is the document, read through the
-    // table's own reader (primary row and dynamic segment are one document).
-    let out = vm
-        .run(format!(
-            r#"
+    // Stage one: three documents through the one write verb. The script never
+    // writes a key itself — it encodes the pkeys it will narrow against, and the
+    // table's own key list supplies the rest.
+    vm.run(format!(
+        r#"
 (define schema (okm-schema-from-json! "{sj}"))
-(define pkey (okm-encode-key! schema (hash "org_id" 1 "user_id" 2)))
-(collection-put! "Counters" pkey (hash "org_id" 1 "user_id" 2 "level" 9 "score" 500 "name" "alice"))
-(define rows (key-fetch! (key-set-of (list pkey)) "Counters"))
-(assert! (= (vector-length rows) 1))
-(assert! (equal? (vector-ref (vector-ref rows 0) 0) pkey))
-(assert! (string=? (hash-ref (vector-ref (vector-ref rows 0) 1) "name") "alice"))
-(assert! (= (hash-ref (vector-ref (vector-ref rows 0) 1) "level") 9))
-'done
+(define alice (okm-encode-key! schema (hash "org_id" 1 "user_id" 2)))
+(define bob (okm-encode-key! schema (hash "org_id" 1 "user_id" 3)))
+(define carol (okm-encode-key! schema (hash "org_id" 1 "user_id" 4)))
+(collection-put! "Counters" alice (hash "org_id" 1 "user_id" 2 "level" 9 "score" 500 "name" "alice"))
+(collection-put! "Counters" bob (hash "org_id" 1 "user_id" 3 "level" 4 "score" 100 "name" "bob"))
+(collection-put! "Counters" carol (hash "org_id" 1 "user_id" 4 "level" 9 "score" 250 "name" "carol"))
+'written
 "#
-        ))
-        .expect("the collection-site fetch");
+    ))
+    .expect("the three writes");
+
+    // Stage two: the KEY LIST. A put leaves two entries per document — the
+    // primary row and the dynamic segment — and the list answers ONE key each:
+    // the two slots of one document are one key, merged by the scan.
+    //
+    // The scan is KEY-ONLY: no document is decoded to learn its key. The host
+    // engine's face answers a scan as keys, so the pair iterator behind it reads
+    // each value back and throws it away — that cost belongs to the boundary,
+    // not to this verb, and it is why only the ANSWER's shape is asserted here.
+    let stored_slots = {
+        let rows = engine.rows.lock().unwrap();
+        rows.keys()
+            .filter(|k| k.starts_with(&[0, 41, 0]) || k.starts_with(&[0, 41, 1]))
+            .count()
+    };
+    assert_eq!(stored_slots, 6, "three documents, two slots each");
+
+    vm.run(r#"(define keys (collection-keys "Counters"))"#)
+        .expect("the key list");
+    let out = vm.run(r#"(vector-length keys)"#).expect("the key count");
+    assert_eq!(
+        out.last(),
+        Some(&SteelVal::IntV(3)),
+        "six entries, three keys: the scan merges one document's two slots"
+    );
+
+    // Stage three: the scanned list, the intersection with a hand-built set,
+    // and the difference — then ONE fetch per set over the survivors.
+    engine.reset();
+    let out = vm
+        .run(
+            r#"
+(define all (key-set-of keys))
+(define mine (key-set-of (list bob)))
+(define both (key-set-and! all mine))
+(define rest (key-set-minus! all mine))
+(define rows (key-fetch! both "Counters"))
+(assert! (= (vector-length keys) 3))
+(assert! (= (vector-length rows) 1))
+(assert! (equal? (vector-ref (vector-ref rows 0) 0) bob))
+(assert! (string=? (hash-ref (vector-ref (vector-ref rows 0) 1) "name") "bob"))
+(assert! (= (hash-ref (vector-ref (vector-ref rows 0) 1) "level") 4))
+(assert! (= (vector-length (key-fetch! rest "Counters")) 2))
+'done
+"#,
+        )
+        .expect("the scanned set, the algebra and the fetch");
     assert_eq!(last_sym(out), "done");
+    assert_eq!(
+        engine.gets(),
+        6,
+        "two point reads per FETCHED key — the row and its dynamic segment are \
+         one document — so the intersection's one key plus the difference's two \
+         cost six, while the algebra, which touched all three, cost nothing"
+    );
+
+    // The scan answered exactly the pkeys the codec produced — no index entry,
+    // no ledger key, no meta record leaked into the list, and none missing.
+    let out = vm
+        .run(r#"(list keys (list alice bob carol))"#)
+        .expect("both key lists");
+    let Some(SteelVal::ListV(halves)) = out.last() else {
+        panic!("expected the two key lists, got {:?}", out.last());
+    };
+    let halves: Vec<SteelVal> = halves.iter().cloned().collect();
+    let mut scanned = key_list(&halves[0]);
+    let mut written = key_list(&halves[1]);
+    assert_eq!(scanned.len(), 3, "one key per document");
+    scanned.sort_unstable();
+    written.sort_unstable();
+    assert_eq!(
+        scanned, written,
+        "the scanned key set is the collection's documents, key for key"
+    );
 
     // A set is a set: input order and duplicates do not survive, and a key the
     // store does not hold answers `void` rather than dropping out of the answer.
@@ -1056,9 +1145,10 @@ fn key_set_of_fetches_documents_and_a_released_handle_is_refused() {
     assert!(format!("{err:?}").contains("not open"), "{err:?}");
 
     // ... and the session teardown owns whatever a script never released: the
-    // site fetch's set, the byte-key set, and nothing of `k`'s (which the
-    // script released itself).
-    assert_eq!(sets.close_all(), 2, "the two sets the script left live");
+    // four sets the scanned flow built (the key list's, the single-key one, the
+    // intersection and the difference), the byte-key set, and nothing of `k`'s
+    // (which the script released itself).
+    assert_eq!(sets.close_all(), 5, "the five sets the script left live");
     assert_eq!(sets.close_all(), 0, "releasing again is a no-op");
 }
 

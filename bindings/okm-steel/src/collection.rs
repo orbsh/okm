@@ -10,7 +10,7 @@
 //!   would lose the collections across threads. Per-VM also matches
 //!   the eviction lifecycle (drop the session, drop its collections —
 //!   no process-wide id accretion).
-//! - `register_storage_fns` for the script-side surface: SIX global fns
+//! - `register_storage_fns` for the script-side surface: TEN global fns
 //!   with fixed names, the collection addressed by a NAME STRING —
 //!   `(collection-put! "Counters" pkey doc)`. Fixed names exist because
 //!   steel resolves free identifiers at DEFINE-COMPILE time: the
@@ -124,7 +124,7 @@ impl StorageRegistry {
         f(&bound)
     }
 
-    /// Install the nine script-facing functions over THIS registry into
+    /// Install the ten script-facing functions over THIS registry into
     /// a VM. All address the collection by its declared name:
     /// - `(collection-put! name pkey doc)` → void (declared names rewrite
     ///   that field of the row, other names ride the dynamic segment; the one
@@ -132,6 +132,9 @@ impl StorageRegistry {
     /// - `(collection-fetch! name pkey)` → hash? or void (the whole document)
     /// - `(collection-purge! name pkey)` → void (both slots)
     /// - `(collection-scan! name slot prefix)` → vector of hashes
+    /// - `(collection-keys name)` → vector of pkey byte vectors, one per
+    ///   document in the whole store (no decoded document, no slot, no prefix;
+    ///   the producer a key set is built from),
     /// - `(collection-reduce-get! name group-hash)` → acc bytes or void
     /// - `(collection-scan-reduces! name slot)` → vector of `[group acc]`
     /// - `(collection-ensure-layout! name)` → hash of the table's record
@@ -204,6 +207,38 @@ impl StorageRegistry {
                         rows.iter()
                             .map(crate::value_map_to_steel)
                             .collect::<Vec<_>>(),
+                    ))
+                })
+            }
+        });
+        // The KEY LIST — the one collection answer that is keys and nothing
+        // else. `collection-scan!` decodes documents (a hash carries no key, so
+        // a scan result cannot be drained into a set), and a slot/prefix scan
+        // only names a face; this is the whole table's document inventory, both
+        // slots merged, straight from `scan_document_keys`: two key-only prefix
+        // scans and no document decode. (A host `Engine` answers a scan as KEYS,
+        // so the adapter behind it reads each entry's value back and drops it —
+        // that cost belongs to the boundary, not to this verb; no payload is
+        // ever decoded.)
+        //
+        // It is the intended SOURCE for the key-set verbs — `(key-set-of
+        // (collection-keys "Counters"))` builds a set over every document,
+        // `key-set-and!` / `key-set-or!` / `key-set-minus!` narrow it against
+        // another, and `key-fetch!` materializes the survivors — so a script
+        // never has to write pkey bytes itself. The keys are pkeys, exactly what
+        // `key-fetch!` reads at a collection site, and what `okm-encode-key!`
+        // answers.
+        vm.register_fn("collection-keys", {
+            let reg = reg.clone();
+            move |name: String| -> Result<SteelVal, String> {
+                reg.with_bound(&name, |b| {
+                    let keys = b
+                        .table
+                        .lock()
+                        .unwrap_or_else(std::sync::PoisonError::into_inner)
+                        .scan_document_keys()?;
+                    Ok(vector_of(
+                        keys.into_iter().map(vec_to_steel).collect::<Vec<_>>(),
                     ))
                 })
             }
@@ -339,6 +374,9 @@ impl StorageRegistry {
                 )
             },
         );
+        vm.register_fn("collection-keys", |_: String| -> Result<SteelVal, String> {
+            Err("okm: collection-keys called outside a session — introspection only".to_string())
+        });
         vm.register_fn(
             "collection-reduce-get!",
             |_: String, _: SteelVal| -> Result<SteelVal, String> {

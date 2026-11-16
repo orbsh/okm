@@ -33,12 +33,17 @@
 //! expected rows. A name injected as BOTH a collection and a graph is refused —
 //! the caller has to say which rows it meant.
 //!
-//! **What cannot be collected.** `collection-scan!` answers DECODED documents,
-//! and a document hash carries no key (`KeySet` is a key container, not a row
-//! container), so a scan result cannot be drained into a set. The producers are
-//! the walk cursor (`key-collect!`) and the caller's own key bytes
-//! (`key-set-of`); a collection-side set is built from pkeys the script encoded
-//! itself, which is the one thing a scan does not hand back.
+//! **Where the keys come from.** Three producers, and only one of them reads
+//! documents:
+//!
+//! - `key-collect!` drains a walk cursor — face entry keys;
+//! - `key-set-of` takes key bytes the script already holds;
+//! - `collection-keys` answers every document pkey in a collection, so a whole
+//!   table becomes a set without the script encoding a single key.
+//!
+//! `collection-scan!` is NOT a producer: it answers DECODED documents, and a
+//! document hash carries no key (`KeySet` is a key container, not a row
+//! container). The key list is the separate verb, which is why it exists at all.
 
 use okm_core::KeySet as HeldKeys;
 use okm_core::VirtualStorage;
@@ -95,7 +100,9 @@ impl KeySetRegistry {
 
     /// Install the script-facing verbs over THIS registry into a VM:
     /// - `(key-set-of keys)` → a set handle. `keys` is a list or vector of key
-    ///   byte vectors; order and duplicates do not matter.
+    ///   byte vectors; order and duplicates do not matter. `collection-keys`'s
+    ///   answer is already that shape, so a whole table's key list is one call
+    ///   away.
     /// - `(key-set-and! a b)` / `(key-set-or! a b)` / `(key-set-minus! a b)` →
     ///   a NEW set handle; both inputs stay usable.
     /// - `(key-collect! cursor)` → a set handle holding every remaining face
@@ -332,7 +339,7 @@ fn cursor_handle_of(v: &SteelVal) -> Result<u64, String> {
         other => Err(format!(
             "okm: key-collect! drains a walk cursor (`graph-hop-open`'s handle), got {other:?} — \
              a list of key bytes is key-set-of's argument, and a `collection-scan!` answer is \
-             decoded rows, which carry no key"
+             decoded rows, which carry no key (a collection's key list is `collection-keys`)"
         )),
     }
 }
