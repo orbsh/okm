@@ -334,10 +334,21 @@ pub mod pyo3_impl {
                 .set_meta(name, value.to_vec())
         }
 
+        /// This collection as a key set's fetch SITE: the TABLE, not just its
+        /// engine. A key set's `fetch` reads through here because assembling a
+        /// document needs the schema and the dynamic-segment layout, and only the
+        /// collection has them — the same table `key-fetch!` reads through on the
+        /// Steel side, so the two bindings answer one key set identically.
+        pub fn row_site(&self) -> KeySite {
+            KeySite::Collection(Arc::clone(&self.inner))
+        }
+
         /// This collection's engine as a HANDLE — a clone is the keyspace, not a
-        /// copy, so a second face over it (a `Graph`, a traversal cursor, a key
-        /// set's `fetch`) reads the rows this collection wrote. The dynamic form
-        /// is schema-as-data, which is what makes one store carry both.
+        /// copy, so a second face over it (a `Graph`, a traversal cursor) reads the
+        /// rows this collection wrote. The dynamic form is schema-as-data, which is
+        /// what makes one store carry both. NOT a key set's read site: a store can
+        /// `get` a key but cannot assemble the document at it, which is why
+        /// `row_site` exists.
         pub fn store_handle(&self) -> EngineBox {
             self.inner
                 .lock()
@@ -1723,6 +1734,13 @@ pub mod pyo3_impl {
             self.store.clone()
         }
 
+        /// This graph as a key set's fetch SITE. A graph row IS its entry, so the
+        /// site is the engine handle and nothing else — the arm that needs no
+        /// assembly, stated where the choice is made.
+        pub fn row_site(&self) -> KeySite {
+            KeySite::Graph(self.store.clone())
+        }
+
         /// The declared endpoint widths — what a host opening its own cursor
         /// ([`EdgeStream::filtered`]) needs, because the table that delimits an
         /// endpoint is the declaration's, not the key's (ADR-0067).
@@ -2527,16 +2545,49 @@ pub mod pyo3_impl {
     /// `okm_query::HeldSets`. This type exists only to make those two a Python
     /// object — it stores no logic, so the Steel binding holds the same
     /// container and the same operators instead of a copy of each. `fetch` is the
-    /// one thing that is not shared, and cannot be: reading rows needs a store,
-    /// which is a binding's business, not a key type's.
+    /// one thing that is not shared, and cannot be: reading rows needs the SITE
+    /// the keys came from — a collection knows its schema and both segments, a
+    /// store alone knows neither — which is a binding's business, not a key
+    /// type's.
     #[pyclass]
     pub struct KeySet {
         inner: SharedKeySet<Vec<u8>>,
     }
 
-    /// One row behind a key set's `fetch`: the key, and the value the store
-    /// holds at it (`None` when the key is gone).
-    pub type KeyRow = (Vec<u8>, Option<Vec<u8>>);
+    /// What a key set's `fetch` reads rows THROUGH: the site the keys came from,
+    /// with everything that site needs to answer a row.
+    ///
+    /// The distinction is the whole point of this type. A store can `get` a key,
+    /// but only a COLLECTION can say what the row AT that key is: the assembled
+    /// document is the primary row plus the dynamic segment, and the segment's
+    /// layout lives in the collection's schema. `merge` / `#[ok_reduce]` put
+    /// their fields in the segment, so a fetch that resolved to a bare engine
+    /// answered a partial row for exactly the documents a caller most wanted —
+    /// the same key set reading differently here than through `key-fetch!`.
+    pub enum KeySite {
+        /// A collection: keys are document pkeys, rows are the ASSEMBLED
+        /// document (`DynamicCollection::fetch` — the call the Steel binding's
+        /// `key-fetch!` makes, so the two bindings cannot answer differently).
+        Collection(Arc<Mutex<okm_dynamic::DynamicCollection<EngineBox>>>),
+        /// A graph: keys are face entry keys, rows are the entries' value bytes.
+        /// There is nothing to assemble — a graph row IS its entry — so this arm
+        /// reads the store directly, as it always did.
+        Graph(EngineBox),
+    }
+
+    /// One row behind a key set's `fetch`: the key, and what the site answers at
+    /// it (`None` when the key is gone — a normal race on a live store, not a
+    /// failure).
+    #[derive(Clone, Debug, PartialEq)]
+    pub enum KeyRowValue {
+        /// A collection row: the whole document, both segments merged.
+        Document(Dict),
+        /// A graph row: the entry's value bytes, unassembled by design.
+        Entry(Vec<u8>),
+    }
+
+    /// One row behind a key set's `fetch`: the key and its value.
+    pub type KeyRow = (Vec<u8>, Option<KeyRowValue>);
 
     impl KeySet {
         /// A set from any key sequence: the sort and dedupe that make a `Vec` a
@@ -2569,30 +2620,63 @@ pub mod pyo3_impl {
             }
         }
 
-        /// The rows behind the surviving keys, in key order: one point read per
-        /// key, all of them inside this call. `None` value = the key is not in
-        /// the store any more (a normal race on a live store, not a failure).
-        pub fn fetch_dyn(&self, store: &EngineBox) -> Result<Vec<KeyRow>, String> {
+        /// The rows behind the surviving keys, in key order — one read per key,
+        /// all of them inside this call, THROUGH the site that owns them.
+        ///
+        /// A collection answers the ASSEMBLED document (`DynamicCollection::fetch`:
+        /// primary row plus dynamic segment), which is the same call the Steel
+        /// binding's `key-fetch!` makes — so the two bindings answer the same key
+        /// set identically, and a field a `merge` / reduce left in the segment is
+        /// in the answer. A graph answers the entry's value bytes; `None` = the key
+        /// is not in the store any more (a normal race on a live store, not a
+        /// failure).
+        pub fn fetch_dyn(&self, site: &KeySite) -> Result<Vec<KeyRow>, String> {
             let mut rows = Vec::with_capacity(self.inner.len());
-            for key in self.inner.iter() {
-                let value = store.get(key).map_err(|e| e.to_string())?;
-                rows.push((key.clone(), value));
+            match site {
+                KeySite::Collection(table) => {
+                    let table = table
+                        .lock()
+                        .unwrap_or_else(std::sync::PoisonError::into_inner);
+                    for key in self.inner.iter() {
+                        let value = table.fetch(key)?.map(KeyRowValue::Document);
+                        rows.push((key.clone(), value));
+                    }
+                }
+                KeySite::Graph(store) => {
+                    for key in self.inner.iter() {
+                        let value = store
+                            .get(key)
+                            .map_err(|e| e.to_string())?
+                            .map(KeyRowValue::Entry);
+                        rows.push((key.clone(), value));
+                    }
+                }
             }
             Ok(rows)
         }
     }
 
-    /// The engine behind a key set's `fetch`: a `Graph` or a `Collection` owns
-    /// one, and either is the right store to read the keys from.
-    fn store_of(source: &Bound<'_, PyAny>) -> PyResult<EngineBox> {
+    /// The site behind a key set's `fetch`: a `Graph` or a `Collection` owns the
+    /// rows, and either names everything the read needs — a collection carries the
+    /// table (schema + both segments), a graph its engine handle.
+    ///
+    /// An object that only exposes an ENGINE is refused, not read: a bare store
+    /// can `get` a key, but it cannot assemble the document at it (that needs the
+    /// schema and the dynamic-segment layout), so the answer would be the primary
+    /// row and nothing else — a partial document returned as if it were whole.
+    fn site_of(source: &Bound<'_, PyAny>) -> PyResult<KeySite> {
         if let Ok(graph) = source.cast::<Graph>() {
-            return Ok(graph.borrow().store_handle());
+            return Ok(graph.borrow().row_site());
         }
         if let Ok(collection) = source.cast::<Collection>() {
-            return Ok(collection.borrow().store_handle());
+            return Ok(collection.borrow().row_site());
         }
         Err(PyTypeError::new_err(
-            "fetch takes the store's owner: a Graph or a Collection",
+            "fetch takes the SITE the keys came from: a Collection (rows are its \
+             assembled documents) or a Graph (rows are the entries' values). An \
+             object that only exposes an engine cannot answer: assembling a \
+             document needs the collection's schema and dynamic-segment layout, \
+             and a store alone has neither",
         ))
     }
 
@@ -2638,18 +2722,38 @@ pub mod pyo3_impl {
             format!("KeySet({} key(s))", self.inner.len())
         }
 
-        /// The rows behind this set, in key order: `[{"key": bytes, "value":
-        /// bytes | None}]`. One call, one read per key — the second step of
-        /// "set algebra first, fetch after".
+        /// The rows behind this set, in key order: `[{"key": bytes, "value": ...}]`,
+        /// where `value` is what the SITE answers at that key:
+        ///
+        /// - over a `Collection`, the ASSEMBLED DOCUMENT as a dict — the primary
+        ///   row plus the dynamic segment, the same thing `Collection.fetch`
+        ///   answers for the same key, so a field a `merge` or a reduce left in
+        ///   the segment is in the answer;
+        /// - over a `Graph`, the entry's value bytes (a graph row IS its entry —
+        ///   there is nothing to assemble).
+        ///
+        /// A key with no row answers `None` — the key surviving the algebra and
+        /// then being gone is a normal race on a live store, not a failure. One
+        /// call, one read per key: the second step of "set algebra first, fetch
+        /// after".
         fn fetch(&self, source: &Bound<'_, PyAny>) -> PyResult<Vec<Py<PyAny>>> {
-            let store = store_of(source)?;
-            let rows = self.fetch_dyn(&store).map_err(PyValueError::new_err)?;
+            let site = site_of(source)?;
+            let rows = self.fetch_dyn(&site).map_err(PyValueError::new_err)?;
             Python::attach(|py| {
                 rows.iter()
                     .map(|(key, value)| {
                         let dict = pyo3::types::PyDict::new(py);
                         dict.set_item("key", key.clone())?;
-                        dict.set_item("value", value.clone())?;
+                        let value: Py<PyAny> = match value {
+                            Some(KeyRowValue::Document(document)) => {
+                                map_to_dict(py, document)?.into_any().unbind()
+                            }
+                            Some(KeyRowValue::Entry(bytes)) => bytes.clone().into_pyobject(py)?
+                                .unbind()
+                                .into_any(),
+                            None => py.None(),
+                        };
+                        dict.set_item("value", value)?;
                         Ok(dict.into_any().unbind())
                     })
                     .collect()

@@ -39,7 +39,7 @@
 use std::collections::BTreeMap;
 use std::sync::{Arc, Mutex};
 
-use okm::pyo3_impl::{Collection, Engine, EngineBox, Graph, KeySet};
+use okm::pyo3_impl::{Collection, Engine, EngineBox, Graph, KeyRowValue, KeySet};
 use okm_core::schema::CollectionSchema;
 use okm_core::{Direction, EdgeKey, Handle, Handles, NodeRef};
 use okm_dynamic::{Cluster, ClusterRef, Decl, Dict, DynEdge, DynFragment, Kind, Value as Variant};
@@ -760,11 +760,13 @@ fn a_key_set_intersects_then_fetches_in_one_call() {
         [b"a".to_vec(), b"z".to_vec()]
     );
 
-    // ... then ONE fetch for the surviving rows.
-    let store = g.store_handle();
+    // ... then ONE fetch for the surviving rows, THROUGH the site the keys came
+    // from: a graph's rows ARE its entries, so this arm reads the store and has
+    // nothing to assemble.
+    let site = g.row_site();
     let rows = all
         .intersect_dyn(&grouped_keys)
-        .fetch_dyn(&store)
+        .fetch_dyn(&site)
         .unwrap_or_else(|e| panic!("fetch: {e}"));
     assert_eq!(rows.len(), 2);
     for (key, value) in &rows {
@@ -781,6 +783,7 @@ fn a_key_set_intersects_then_fetches_in_one_call() {
     // The entry key states HANDLES (`[ns][slot][src_h 8][pred 2][dst_h 8]`), so
     // the far endpoint is one registry read away, never a slice of the key — the
     // edge row no longer carries a ref at all.
+    let store = g.store_handle();
     let registry = Handles::new(&store, NS.to_be_bytes());
     let mut fetched_far: Vec<NodeRef> = rows
         .iter()
@@ -804,9 +807,66 @@ fn a_key_set_intersects_then_fetches_in_one_call() {
 
     // A key that is no longer in the store answers `None`, not a refusal.
     let stale = KeySet::of(vec![b"nope".to_vec()])
-        .fetch_dyn(&store)
+        .fetch_dyn(&site)
         .expect("fetch");
     assert_eq!(stale, vec![(b"nope".to_vec(), None)]);
+}
+
+/// A COLLECTION site answers the ASSEMBLED document, not the primary row.
+///
+/// The divergence this locks: `merge` and `#[ok_reduce]` put their names in the
+/// dynamic segment, so the primary row is not the document. A fetch that
+/// resolved its source to the bare engine (`store_of` → `store.get`) read the
+/// primary row and answered a document with the merged names missing — the same
+/// key set reading differently here than through Steel's `key-fetch!`, which has
+/// always gone through `DynamicCollection::fetch`. One read path, one answer.
+#[test]
+fn a_collection_key_set_fetches_the_assembled_document() {
+    let collection = Collection::with_store(Arc::new(MemEngine::new()), &doc_entry(), DOC_NS)
+        .expect("a collection over the host engine");
+    let pkey = 9u64.to_be_bytes().to_vec();
+
+    // `id`/`count` are declared (the primary row); `label` is not, so the write
+    // lands it in the dynamic segment — the exact shape a merge produces.
+    let mut doc = Dict::new();
+    doc.insert("id".into(), Variant::U64(9));
+    doc.insert("count".into(), Variant::U64(3));
+    doc.insert("label".into(), Variant::Str("merged".into()));
+    collection
+        .put_doc(&pkey, &doc, false)
+        .unwrap_or_else(|e| panic!("collection put: {e}"));
+
+    let rows = KeySet::of(vec![pkey.clone()])
+        .fetch_dyn(&collection.row_site())
+        .unwrap_or_else(|e| panic!("fetch: {e}"));
+    assert_eq!(rows.len(), 1, "one key in, one row out");
+    let (key, value) = &rows[0];
+    assert_eq!(key, &pkey, "the answer is in key order, keyed by the pkey");
+    let Some(KeyRowValue::Document(document)) = value else {
+        panic!("a collection row is the assembled document, got {value:?}");
+    };
+    assert_eq!(
+        document.get("count"),
+        Some(&Variant::U64(3)),
+        "the declared field rides the primary row"
+    );
+    assert_eq!(
+        document.get("label"),
+        Some(&Variant::Str("merged".into())),
+        "the merged field rides the DYNAMIC SEGMENT — a primary-row read cannot see it"
+    );
+    assert_eq!(
+        Some(document.clone()),
+        collection.fetch_doc(&pkey).expect("the collection's own read"),
+        "one read path: a key set's fetch and `Collection.fetch` answer the same document"
+    );
+
+    // A key with no row at a collection site is `None`, not an error: the key can
+    // survive the algebra and then be gone (a normal race on a live store).
+    let gone = KeySet::of(vec![42u64.to_be_bytes().to_vec()])
+        .fetch_dyn(&collection.row_site())
+        .expect("fetch");
+    assert_eq!(gone, vec![(42u64.to_be_bytes().to_vec(), None)]);
 }
 
 // ---------------------------------------------------------------------------

@@ -57,6 +57,10 @@ ADR-0008 的 exactly-once 关切由**部署形态契约**保全，而非由实�
 1. 嵌入模式：binding 侧声明的 schema、纯 Python 驱动，语义行为符合契约——调用纪律测试（put/delete/覆盖对累加器）是核心用例。
 2. 远程模式：Python 摊位 产出的操作在远端引擎执行后，与 Rust 侧产出的同一操作落得字节一致（现有跨语言字节相等测试，从 codec 字节扩展到语义条目）。
 
+### 一条读路径，就是组装后的文档
+
+binding 镜像的是引擎的**语义**，不是它的取数旋钮。当引擎提供投影选择时——typed 路径可以要 `Parts`，把主行与动态段分开拿——binding 只暴露**一条**读路径：组装后的文档，即主行与动态段合并后的样子，也正是 `merge` 与 `#[ok_reduce]` 留下的形状。key set 的 `fetch` 就是逼出这条规则的那个案子：把它的来源解析成裸引擎，它读的就是主行，于是那些合并字段住在动态段里的文档，在 Python 侧回来时是缺字段的；而 Steel 的 `key-fetch!` 走 `DynamicCollection::fetch`，答得完整。一个 store，两个答案，差别只在投影。需要 `Parts` 的调用方走 typed API，在那里拆分是热循环上的真工具；binding 的职责是给出「文档是什么」，不是把这个拆分搬过语言边界——搬过去以后每个调用方都得自己重新组装，而大多数根本不知道自己得组装。
+
 ## 后果
 
 - okm-dynamic 增加携带 callable 的面：`AccessMethod` 增加 func/admits 变体；`DynamicCollection::put`/`delete` 增加 reduce 调用纪律。字节布局的工作量小（编码器已存在）；正确性住在调用纪律里。

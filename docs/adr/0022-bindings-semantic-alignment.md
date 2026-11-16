@@ -57,6 +57,10 @@ Rust and Python functions implementing the same declared surface never cross a r
 1. Embedded mode: a schema declared on the binding side, driven purely from Python, exhibits contract-conformant semantics — the calling-discipline test (put/delete/overwrite against the accumulator) is the core case.
 2. Remote mode: operations produced by a Python booth, executed on a remote engine, land byte-identically to the same operations produced Rust-side (the existing cross-language byte-equality tests, extended from codec bytes to semantic entries).
 
+### One read path, and it is the assembled document
+
+A binding mirrors the engine's SEMANTICS, not its extractor knobs. Where the engine offers a choice of projection — the typed path may ask for `Parts` and take the primary row and the dynamic segment separately — a binding exposes exactly ONE read path: the assembled document, the primary row merged with the dynamic segment, which is the shape `merge` and `#[ok_reduce]` leave behind. A key set's `fetch` is the case that forced the rule into writing: resolving its source to the bare engine made it read primary rows, so a document whose merged names lived in the segment came back missing them on Python, while Steel's `key-fetch!` — which goes through `DynamicCollection::fetch` — answered it whole. One store, two answers, and the projection was the only difference. Callers who need `Parts` use the typed API, where the split is a real tool over a hot loop; a binding's job is to answer what a document IS, not to carry the split across a language boundary where every caller would have to reassemble it — and most would never know they had to.
+
 ## Consequences
 
 - okm-dynamic gains callable-carrying surfaces: `AccessMethod` grows func/admits variants; `DynamicCollection::put`/`delete` grow the reduce calling discipline. The byte-layout work is small (the encoders exist); the calling-discipline work is where correctness lives.
