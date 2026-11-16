@@ -36,7 +36,7 @@ entries (ADR-0005).
 (primary = `0x00`, `PRIMARY_SLOT`; the dynamic segment `0x01`; the
 field-name vocabulary's two directions `0x02`/`0x03`; the predicate vocabulary
 `0x04`/`0x05`; the graph's faces
-`0x06`–`0x0D`; the handle registry `0x0E`/`0x0F`; `0x1E` Extension, `0x1F`
+`0x06`–`0x0F`; the handle registry `0x10`/`0x11`; `0x1E` Extension, `0x1F`
 the table meta — the whole band and its one reserve are in
 [key layout](key-layout.md)). A counting family's slot is its family number plus
 a counter allocated by **declaration order** — the declared-index family is

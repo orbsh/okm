@@ -63,40 +63,13 @@ counting family   first byte >= 0x20            slot = 2 bytes   [ns][0x2n][nn]
 enumerate. Big-endian is why the high bits lead, and why the rule holds:
 0x00–0x1F can never equal a counting family's first byte (≥ 0x20).
 
-**Thirty-two fixed faces: packed from `0x00`, one reserve, mnemonics at the tail.** Core structure occupies `0x00`–`0x0D`, the graph's handle registry `0x0E`/`0x0F`, `0x10`–`0x1D` is unassigned headroom in ONE contiguous block — the band's only reserve — and the tail carries the two mnemonics: Extension at `0x1E`, table meta at `0x1F`. The band is packed from zero, so nothing is ever renumbered to make room: the next face takes `0x10`, the bottom of the reserve. `0x1F` sits at the highest number on purpose — `slot <= 0x1F` is the one-byte/two-byte delimiter, so the meta lands exactly on the boundary and no face added later can squeeze it out — and the family space starts at `0x2nnn` for the mirror-image reason: a family `0x1` would encode as `0x10nn`–`0x1Fnn`, whose first byte is a fixed face.
+**Thirty-two fixed faces: packed from `0x00`, one reserve, mnemonics at the tail.** Core structure occupies `0x00`–`0x0F` (the three vocabularies, the graph's four faces, the cluster's four), the graph's handle registry `0x10`/`0x11`, `0x12`–`0x1D` is unassigned headroom in ONE contiguous block — the band's only reserve — and the tail carries the two mnemonics: Extension at `0x1E`, table meta at `0x1F`. The band is packed from zero, so nothing is ever renumbered to make room: the next face takes `0x12`, the bottom of the reserve. `0x1F` sits at the highest number on purpose — `slot <= 0x1F` is the one-byte/two-byte delimiter, so the meta lands exactly on the boundary and no face added later can squeeze it out — and the family space starts at `0x2nnn` for the mirror-image reason: a family `0x1` would encode as `0x10nn`–`0x1Fnn`, whose first byte is a fixed face.
 
-```text
-0x00  primary                      [ns][0x00][pkey]                            value = TLV payload
-0x01  obj dynamic segment          [ns][0x01][pkey]                            value = toc_len | blocks | values ([dynamic segment](dynamic-segment.md))
-0x02  field-name vocabulary        [ns][0x02][field-id]                        → name
-0x03  field-name vocabulary        [ns][0x03][name]                            → field-id
-0x04  predicate vocabulary         [ns][0x04][predicate_id]                    → name
-0x05  predicate vocabulary         [ns][0x05][name]                            → predicate_id
-0x06  graph out (the edge)     [ns][0x06][src_h 8][pred 2][dst_h 8]         value = the edge payload
-0x07  graph in                 [ns][0x07][dst_h 8][pred 2][src_h 8]         → empty, derived from 0x06
-0x08  graph predicate+out      [ns][0x08][pred 2][src_h 8][dst_h 8]         → empty, derived from 0x06
-0x09  graph predicate+in       [ns][0x09][pred 2][dst_h 8][src_h 8]         → empty, derived from 0x06
-0x0A  cluster row              [ns][0x0A][kind][hyper_id]                  → [parent_id u64][dynamic payload]
-0x0B  edge member              [ns][0x0B][kind][hyper_id][src_h][pred][dst_h]  → empty
-0x0C  child cluster index      [ns][0x0C][kind][parent][child]             → empty, derived (ADR-0066)
-0x0D  edge → cluster index     [ns][0x0D][src_h][pred][dst_h][kind][hyper_id]  → empty, derived (ADR-0066)
-0x0E  handle → node                 [ns][0x0E][handle 8]                → [node_ns 2B][pkey]   (authority; the cursor rides the bare prefix)
-0x0F  node → handle                 [ns][0x0F][node_ns 2B][pkey]        → [handle 8 BE]        (derived, rebuildable)
-0x10–0x1D  unassigned               one contiguous block — the band's ONLY reserve; the next face
-                                    takes 0x10 and nothing has to be renumbered
-0x1E  Extension                     [ns][0x1E][subkind]…                each subkind owns its contract: 0x01 = vector snapshot (droppable)
-0x1F  table meta                    [ns][0x1F]                          → name → bytes map (ADR-0043)
-(rows are grouped by ROLE: the two vocabularies first, then the graph faces
-that read their ids — a vocabulary leads the faces it serves; the NUMBERS
-are the mechanism. 0x1F is the HIGHEST face on purpose: `slot <= 0x1F` is the
-one-byte/two-byte delimiter, so the meta sits on the boundary and no face added
-later can squeeze it out. E and F are the band's tail mnemonics: E for
-Extension, F for the final face.)
-```
+The fixed-face table is not repeated here. Every face's number, key shape and value width — plus each vocabulary's id width and the handle width — is defined in `okm-core/src/model/layout.rs`, the one place in the engine where those numbers are written down; ADR-0030 records the rules that produced that table. This document covers the two mechanical decisions only: a fixed face is one byte and a counting family two, and why the band ends where it does at `0x00`–`0x1F` and starts at `0x2nnn`.
 
-An endpoint inside a graph key is a **handle**, eight bytes of the graph's own numbering — not a reference. Every traversal row is therefore fixed width: `[src_h 8][pred 2][dst_h 8]`, eighteen bytes per edge on every graph, whether a member table's key is four bytes or sixteen. The `(ns, pkey)` pair a handle stands for lives on the registry's two faces `0x0E`/`0x0F`, read back only where a caller asks for it (see [the graph's own handle space](#the-graphs-own-handle-space-two-faces)), so no traversal key carries a variable-width segment and no member table's declared width is consulted to parse one. An endpoint whose ns the graph does not declare is still `Error::ForeignEndpoint` at write time — the check moved to where the handle is issued, not away.
+An endpoint inside a graph key is a **handle**, eight bytes of the graph's own numbering — not a reference. Every traversal row is therefore fixed width: `[src_h 8][pred 2][dst_h 8]`, eighteen bytes per edge on every graph, whether a member table's key is four bytes or sixteen. The `(ns, pkey)` pair a handle stands for lives on the registry's two faces `0x10`/`0x11`, read back only where a caller asks for it (see [the graph's own handle space](#the-graphs-own-handle-space-two-faces)), so no traversal key carries a variable-width segment and no member table's declared width is consulted to parse one. An endpoint whose ns the graph does not declare is still `Error::ForeignEndpoint` at write time — the check moved to where the handle is issued, not away.
 
-`0x0B` and `0x0D` carry the same eighteen-byte row after their own segment: `0x0B` leads with `(kind, hyper_id)` and puts the row second, `0x0D` leads with the row and puts the pair second, so one face is ordered by cluster and the other by edge. That is the whole reason the pair exists twice.
+`0x0D` and `0x0F` carry the same eighteen-byte row after their own segment: `0x0D` leads with `(kind, hyper_id)` and puts the row second, `0x0F` leads with the row and puts the pair second, so one face is ordered by cluster and the other by edge. That is the whole reason the pair exists twice.
 
 An edge has **no number** (ADR-0067). Its identity is the tuple
 `(src, predicate, dst)`, `0x06` IS the edge row — its value is the payload — and
@@ -216,8 +189,8 @@ level.
 ```text
 [ns][0x02]              → vocabulary allocation cursor (entries at [ns][0x02][id])   ← 69197cd
 [ns][0x04]              → predicate cursor (same shape)
-[ns][0x0A][kind][hyper_id] → cluster row (members live on 0x0B, children on 0x0C)
-[ns][0x0E]              → graph handle cursor (entries at [ns][0x0E][handle 8])
+[ns][0x0C][kind][hyper_id] → cluster row (members live on 0x0D, children on 0x0E)
+[ns][0x10]              → graph handle cursor (entries at [ns][0x10][handle 8])
 [ns][0x1F]              → table metadata (no children)
 ```
 
@@ -229,17 +202,17 @@ level.
 ## The graph's own handle space: two faces
 
 ```text
-0x0E  handle → node   [ns][0x0E][handle 8]           → [node_ns 2B][pkey]
-0x0F  node → handle   [ns][0x0F][node_ns 2B][pkey]   → [handle 8 BE]
+0x10  handle → node   [ns][0x10][handle 8]           → [node_ns 2B][pkey]
+0x11  node → handle   [ns][0x11][node_ns 2B][pkey]   → [handle 8 BE]
 ```
 
-Both are FIXED faces — one byte each, no counter, no discriminator byte anywhere in the key — and they are adjacent: the forward face's scan range ends exactly where the reverse face's begins, which is what makes "one row per direction, one registry" visible in the key space. They sit immediately after the core (`0x00`–`0x0D`) because the band is packed from `0x00`: the pair took the two numbers the tail used to hold (Extension and the meta moved up to `0x1E`/`0x1F`), and the band's one reserve (`0x10`–`0x1D`) sits above them.
+Both are FIXED faces — one byte each, no counter, no discriminator byte anywhere in the key — and they are adjacent: the forward face's scan range ends exactly where the reverse face's begins, which is what makes "one row per direction, one registry" visible in the key space. They sit immediately after the core (`0x00`–`0x0F`) because the band is packed from `0x00`: the pair took the two numbers the tail used to hold (Extension and the meta moved up to `0x1E`/`0x1F`), and the band's one reserve (`0x12`–`0x1D`) sits above them.
 
-Before the band widened they were ONE counting family (`0xF00n`, direction in the counter bits), because sixteen fixed faces were spent and `0x10`/`0x11` were not encodable at all. Thirty-two faces make the pair affordable: no family number, no discriminator, and the adjacency is real rather than numeric coincidence.
+Before the band widened they were ONE counting family (`0xF00n`, direction in the counter bits), because sixteen fixed faces were spent and neither number was encodable at all. Thirty-two faces make the pair affordable: no family number, no discriminator, and the adjacency is real rather than numeric coincidence.
 
-`0x0E` is authority — it holds the `(ns, pkey)` pair, which nothing else in the graph's key space carries. `0x0F` is derived from it and rebuildable from it alone (`Handles::rebuild_reverse`), so a missing reverse row is a freshness problem, never a correctness one, and the repair needs no traversal key at all.
+`0x10` is authority — it holds the `(ns, pkey)` pair, which nothing else in the graph's key space carries. `0x11` is derived from it and rebuildable from it alone (`Handles::rebuild_reverse`), so a missing reverse row is a freshness problem, never a correctness one, and the repair needs no traversal key at all.
 
-The allocation cursor is a face-level singleton on the FORWARD face: `[ns][0x0E]` with no suffix, the same shape the vocabulary cursors use, and legal for the same reason — every real entry of that face is exactly eight bytes after the prefix, so a zero-length suffix is not expressible as data, and an eight-byte decoder rejects the cursor instead of reading a handle out of it. A registry whose cursor is absent falls back ONCE to "highest issued handle + 1", one scan of the forward face; the fallback cannot reissue a live handle, and it is unreachable once the cursor is written.
+The allocation cursor is a face-level singleton on the FORWARD face: `[ns][0x10]` with no suffix, the same shape the vocabulary cursors use, and legal for the same reason — every real entry of that face is exactly eight bytes after the prefix, so a zero-length suffix is not expressible as data, and an eight-byte decoder rejects the cursor instead of reading a handle out of it. A registry whose cursor is absent falls back ONCE to "highest issued handle + 1", one scan of the forward face; the fallback cannot reissue a live handle, and it is unreachable once the cursor is written.
 
 Lifecycle: a handle is issued the first time a node appears as an ENDPOINT of an edge in this namespace, monotonically from `1` (`0` is the never-issued `Handle::NONE`), and it is never reused. A delete does not reclaim it: a handle that outlives its last edge is waste, and reclaiming one would mean reference counting, a resource this model does not otherwise have. Waste is bounded by the nodes that ever had an edge, and 2^64 makes it a space question rather than a correctness question. Issue order is not key order — a range over handles is a range over "when this node first appeared" — so no face may read a handle range as value order.
 
@@ -270,6 +243,6 @@ for this document: fixed faces 0x00–0x03 (primary, dynamic segment, both
 field-name vocabulary directions), then the counting families: 0x2/0x3 the
 vocabularies' two directions, 0x4 indexes, 0x5 reduces, 0x6 lead faces. A graph (edge collection) adds its own fixed faces: the predicate vocabulary 0x04/0x05 (its predicates), 0x06–0x09 (out/in edges and
 the two predicate-qualified faces, each carrying BOTH endpoints as handles — `0x06` is the
-edge row itself, and the predicate index is the bare-prefix scan of 0x08, not a face of its own), 0x0A–0x0D (clusters and their two derived faces) and 0x0E/0x0F (the handle registry — the only place a `(ns, pkey)` pair survives in the graph's key space). A document collection that carries kind
+edge row itself, and the predicate index is the bare-prefix scan of 0x08, not a face of its own), 0x0A–0x0F (the cluster-kind vocabulary, the cluster row, its edge members and two derived faces) and 0x10/0x11 (the handle registry — the only place a `(ns, pkey)` pair survives in the graph's key space). A document collection that carries kind
 tokens declares the same vocabulary pair — one rule, whichever collection
 needs it. Mechanism in [reduce mechanism](reduce-mechanism.md).
