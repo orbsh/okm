@@ -1,6 +1,6 @@
 # 0069 — A secret is stored as ciphertext, and the engine does not hold the key
 
-Status: decided 2026-11-17, implementation pending. Adds a field type to `okm-value` and one attribute to the derive; touches no key layout and no value layout.
+Status: decided 2026-11-17, implemented. Adds one field spelling to `okm-core` and one attribute to the derive; touches no key layout and no value layout.
 
 ## Context
 
