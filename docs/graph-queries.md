@@ -170,19 +170,24 @@ When a walk becomes a hot path, promote the edge collection's hot predicate into
 
 A real design, written down because the shape is not obvious: the graph stores a community-detection result, and a query recalls "which communities does this page of results belong to". Three graph verbs carry it — `clusters_of` on the NODE form (one scan of the node → cluster face), `nodes`, and `members` — and everything else is policy.
 
-**Write side: a run's result is a set of clusters over vertices.** Each community is one cluster whose members are the nodes the run grouped, with kind `Kind::COMMUNITY`. The partition is what the run produced, so the partition is what is written; a vertex no edge touches is a legal member, because a node exists as an endpoint **or** as a cluster member. A run over assertions instead — an event's evidence, a flow's steps — declares the same cluster with the fragment's edges as members and no `.nodes(..)` at all; a run that wants both puts both in one cluster. The cluster's payload is the RUN's metadata — algorithm name, parameters, and when it was produced — because a cluster row's payload is a `Dict` and nothing else in the model has to change to carry it:
+**Write side: a run's result is a set of clusters over vertices.** Each community is one cluster whose members are the nodes the run grouped, under one kind the caller interns: `kind_id("community")` hands back the two-byte id, and the label lives on faces `0x0A`/`0x0B` — append-only, never renumbered, and never read back by the engine (okm keeps the word; the meaning is the application's). The partition is what the run produced, so the partition is what is written; a vertex no edge touches is a legal member, because a node exists as an endpoint **or** as a cluster member. A run over assertions instead — an event's evidence, a flow's steps — declares the same cluster with the fragment's edges as members and no `.nodes(..)` at all; a run that wants both puts both in one cluster. The cluster's payload is the RUN's metadata — algorithm name, parameters, and when it was produced — because a cluster row's payload is a `Dict` and nothing else in the model has to change to carry it:
 
 ```rust
+// The label is the caller's; the number is the collection's. Interning is a
+// write of its own, so it goes through the same handle every read does.
+let mut hy = Hyperedges::of::<Employment>(&store);
+let community_kind = hy.kind_id("community")?;   // first sight claims the next id
+
 let mut fragment = Fragment::<Employment>::new([]);   // the edges already exist; this run writes no assertions
 let mut meta = Dict::new();
 meta.insert("algorithm".into(), Variant::Str("lpa".into()));
 meta.insert("resolution".into(), Variant::F64(0.6));
 meta.insert("produced".into(), Variant::U64(run_started));
-fragment.cluster(Cluster::new(Kind::COMMUNITY, meta).nodes(community.nodes.clone()));
+fragment.cluster(Cluster::new(community_kind, meta).nodes(community.nodes.clone()));
 let report = graph.incorporate(fragment)?;   // report.hyper_ids = this run's ids
 ```
 
-Because a recompute writes a NEW cluster id rather than overwriting one, several runs coexist — a different algorithm, a different parameter, last week's answer — and they are comparable: `Hyperedges::clusters(Kind::COMMUNITY)` enumerates them, `lookup` hands back the payload, and filtering on `payload["algorithm"]` selects the run. The comparison itself is a set comparison over the member faces, which speak the same handle rows the graph already speaks.
+Because a recompute writes a NEW cluster id rather than overwriting one, several runs coexist — a different algorithm, a different parameter, last week's answer — and they are comparable: `hy.clusters(community_kind)` enumerates them, `lookup` hands back the payload, and filtering on `payload["algorithm"]` selects the run. The comparison itself is a set comparison over the member faces, which speak the same handle rows the graph already speaks.
 
 **Query side: 100 recalled nodes, then count.** The application recalls a page from a vector face — 100 node refs, best first. Their communities come from one `clusters_of` call per node: one scan of the node → cluster face, plus, for any cluster whose members are edges, one run per incident edge. So the cost is the page plus its edges, and nothing about the graph's size — and a hub no longer costs its degree when the run wrote vertices.
 
@@ -225,7 +230,7 @@ The application then formats it — a markdown memory block such as `## Communit
 
 **A singleton community is storable, and so is an empty one.** A cluster is a scope, and a scope is information by itself: one edge detected as a group is a real answer, and an empty scope is how "this subject is sensitive, do not ask" or "something used to be here and is gone now" gets said. A membership change never deletes the row — a cluster is created when declared and deleted only when explicitly deleted (`.delete(..)`), so a community that loses every member stays behind as an empty scope with an honest count of zero. The scatter in the story is therefore presentation, not a limit of the store: a detector that finds nothing in a subject can still record that it looked.
 
-**Where a run's own facts live.** A recall run has metadata — the query, the page size, the timestamp, which detector ran — and that is not a community. It is a parent cluster: the run declares a cluster of its own kind (`Kind::EVENT`, or a `SCOPE` for a standing topic), each community is declared `.under(run_id)`, `children(kind, run_id)` enumerates the communities of that run, and the parent's payload carries the run's facts. The parent needs no members of its own — a parent whose communities are children and whose member face is empty is exactly the shape this is built for.
+**Where a run's own facts live.** A recall run has metadata — the query, the page size, the timestamp, which detector ran — and that is not a community. It is a parent cluster: the run declares a cluster of its own kind (an `event` kind, or a `scope` for a standing topic — each interned once by `kind_id`, because the word is the caller's and the number is the collection's), each community is declared `.under(run_id)`, `children(kind, run_id)` enumerates the communities of that run, and the parent's payload carries the run's facts. The parent needs no members of its own — a parent whose communities are children and whose member face is empty is exactly the shape this is built for.
 
 ## The two forms, one query surface
 

@@ -830,7 +830,7 @@ let mut x = Fragment::<Employment>::new([
         predicate: "employs".into(),   // 边的类型：一个头部段 + 图自己的词汇表
     }),
 ]);
-x.cluster(Cluster::new(Kind::EVENT, payload))   // None 新建，Cluster::into(id) 并入
+x.cluster(Cluster::new(event, payload))         // `event` = kind_id("event")；None 新建，Cluster::into(id) 并入
  .on_node_conflict::<User>(|old, _declared| User { seen: old.seen + 1 })
  .on_edge_conflict(|_stored, declared| Employment { weight: declared.weight + 1 })
  .on_cluster_conflict(|_stored, declared| {
@@ -905,7 +905,7 @@ let colleagues = graph.walk(&user).flat_map(|step| graph.walk(&step.far));
 
 成员是边，而边就是它存下来的行身份，所以边成员行携带 `[src_h 8][pred 2][dst_h 8]`——任何图里都是固定的十八字节，没有宽度表、没有长度前缀。节点成员行携带节点的八字节句柄，这正是节点类型可以任意异质的原因：成员表的键宽根本到不了这两张面上的任何一张。后三张面归 Derived，可由持有真值的行重建（子簇索引来自簇行，两张镜像各自来自自己的成员面）。
 
-**一个簇可以装边、装节点，或者都装，由面来说它装的是哪种。**「谁在这个簇里」= 声明的节点成员与成员边端点的并集；只想要其中一半的读者按面去要（边的 `members`、点的 `nodes`）。成员类型住在面号里——不写进 `kind`（那是调用方的词汇，okm 两个方向都不对它赋予含义），也不写成簇行里的标记位（那要付一次值布局的戳，而且空簇依然答不了：没有行可读）。
+**一个簇可以装边、装节点，或者都装，由面来说它装的是哪种。**「谁在这个簇里」= 声明的节点成员与成员边端点的并集；只想要其中一半的读者按面去要（边的 `members`、点的 `nodes`）。成员类型住在面号里——不写进 `kind`（那是调用方的词汇——用 `kind_id(label)` intern 一次，落在 `0x0A`/`0x0B` 两张面上——okm 两个方向都不对它赋予含义），也不写成簇行里的标记位（那要付一次值布局的戳，而且空簇依然答不了：没有行可读）。
 
 **节点成员是声明的；边簇的参与者仍然是投影出来的**（ADR-0068）。点簇装的就是它点名的那些实体——包括一条边都碰不到的实体，这正是权限边界需要的、也是投影永远表达不了的。于是节点作为某条边的端点**或者**某个点簇的成员存在，而 `delete_node` 两条都要扫：关联的边，以及经节点 → 簇面一次扫描找到的、这个节点自己的成员行。簇行的值以定长 `parent_id` 开头，`0` 表示无父，所以嵌套不额外占面；一个簇的成员、某一类的簇、一个簇的子簇各是一个干净的前缀扫描：面前缀不同，不需要任何长度判断。
 
@@ -925,7 +925,7 @@ let mut fragment = okm_dynamic::DynFragment::new([
     Decl::edge(DynEdge { src: bob(), dst: acme(), predicate: "works_at".into(), attrs }),
 ]);
 fragment
-    .cluster(Cluster::new(Kind::EVENT, payload))    // None 新建；Cluster::into(kind, 簇号, …) 并入
+    .cluster(Cluster::new(event, payload))          // `event` = kind_id("event")；None 新建；Cluster::into(kind, 簇号, …) 并入
     .on_edge_conflict(|stored: &Dict, declared: &Dict| { … })   // 进 Dict、出 Dict：没有声明类型
     .on_cluster_conflict(|stored: &Dict, declared: &Dict| { … });
 graph.incorporate(fragment)?;                       // 边 + 簇 + 钩子，一个 batch

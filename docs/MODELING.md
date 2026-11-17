@@ -975,7 +975,7 @@ child index            [ns][kind][parent][hyper_id]         → empty (derived f
 
 A member is an edge, and an edge is its stored row identity, so an edge member row carries `[src_h 8][pred 2][dst_h 8]` — eighteen fixed bytes in every graph, with no width table and no length prefix. A node member row carries the node's eight-byte handle, which is what lets node kinds be as heterogeneous as they please: a member table's key width never reaches either face. The last three faces are Derived, rebuildable from the rows that carry the truth (the child index from the cluster rows, each mirror from its own member face).
 
-**A cluster holds edges, nodes, or both, and the face says which.** "Who is in this cluster" is the union of its declared node members and the endpoints of its member edges; a reader that wants one half asks for it (`members` for edges, `nodes` for nodes). The member kind lives in the face number — never in `kind`, which is the caller's vocabulary and which okm assigns no meaning in either direction, and never in a flag in the cluster row, which would cost a value-layout stamp and still leave an empty cluster unable to answer, since there is no row to read it from.
+**A cluster holds edges, nodes, or both, and the face says which.** "Who is in this cluster" is the union of its declared node members and the endpoints of its member edges; a reader that wants one half asks for it (`members` for edges, `nodes` for nodes). The member kind lives in the face number — never in `kind`, which is the caller's vocabulary — interned once with `kind_id(label)` on the `0x0A`/`0x0B` pair — and which okm assigns no meaning in either direction, and never in a flag in the cluster row, which would cost a value-layout stamp and still leave an empty cluster unable to answer, since there is no row to read it from.
 
 **Node membership is declared; the participants of an edge cluster are still projected** (ADR-0068). A node cluster holds the entities it names — including ones no edge touches, which is what a permission boundary needs and what a projection can never express. So a node exists as an endpoint of some edge **or** as a member of a node cluster, and `delete_node` sweeps both: the incident edges, and the node's own membership rows found through the node → cluster face in one scan. The cluster row's value starts with a fixed-width `parent_id`, `0` meaning no parent, so nesting costs no extra face. A cluster's members, a kind's clusters and a cluster's children are each a clean prefix scan: the face bytes differ, so no length test is needed.
 
@@ -983,7 +983,7 @@ The write entry point adds no new declaration kind:
 
 ```rust
 let mut x = Fragment::<G>::new([Decl::Node(G::Nodes::User, key), Decl::Edge(head)]);
-x.cluster(Cluster::new(Kind::EVENT, payload))            // None creates, Cluster::into(id) incorporates
+x.cluster(Cluster::new(event, payload))                  // `event` = kind_id("event"); None creates, Cluster::into(id) incorporates
  .nodes([alice(), bob()])                                 // node members: declared, not derived
  .on_node_conflict::<User>(|old, _declared| User { seen: old.seen + 1 })  // per collection: node rows differ
  .on_edge_conflict(|_stored, declared| Employment { weight: declared.weight + 1 })  // one edge payload type per graph
@@ -1014,7 +1014,7 @@ let mut fragment = okm_dynamic::DynFragment::new([
     Decl::edge(DynEdge { src: bob(), dst: acme(), predicate: "works_at".into(), attrs }),
 ]);
 fragment
-    .cluster(Cluster::new(Kind::EVENT, payload))    // None creates; Cluster::into(kind, id, …) adopts
+    .cluster(Cluster::new(event, payload))          // `event` = kind_id("event"); None creates, Cluster::into(kind, id, …) adopts
     .on_edge_conflict(|stored: &Dict, declared: &Dict| { … })   // Dict in, Dict out: there is no declared type
     .on_cluster_conflict(|stored: &Dict, declared: &Dict| { … });
 graph.incorporate(fragment)?;                       // edges + clusters + hooks, ONE batch
