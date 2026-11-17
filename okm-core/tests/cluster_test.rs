@@ -2181,7 +2181,7 @@ fn a_cut_answers_the_boundary_of_a_selection() {
         let into = report.node_sets[0];
 
         let sub = g
-            .cut(NodeSet::new(into.kind, into.id))
+            .cut(NodeSet::new(into.kind, into.id).into())
             .unwrap_or_else(|e| panic!("{engine}: subgraph: {e}"));
 
         let names: Vec<Vec<u8>> = sub.members.iter().map(|n| n.pkey.clone()).collect();
@@ -2390,5 +2390,58 @@ fn a_replacement_that_forgets_a_half_edge_is_refused() {
                 "{engine}: a refused replacement writes nothing"
             );
         }
+    }
+}
+
+/// Walking from a seed NAMES a selection nothing had written: the members are the
+/// rings inside `hops`, and the boundary is what leaves them — which is why the
+/// last ring's faces are scanned without adding their far ends.
+#[test]
+fn a_walk_names_a_selection_and_its_boundary() {
+    for (engine, store) in TestStore::matrix() {
+        let mut g = graph(&store);
+        let mut facts = Fragment::<Employment>::new([
+            edge(person(1), person(2)),
+            edge(person(1), org(9)),
+            edge(person(2), org(9)),
+            edge(person(3), org(9)),
+        ]);
+        facts.on_edge_conflict(|_stored, _declared| Employment { weight: 1 });
+        g.incorporate(facts)
+            .unwrap_or_else(|e| panic!("{engine}: facts: {e}"));
+
+        // Zero hops: the seed alone, every edge of it on the boundary.
+        let near = g
+            .subgraph(&person(1), 0, &[])
+            .unwrap_or_else(|e| panic!("{engine}: walk: {e}"));
+        assert_eq!(near.members, vec![person(1)], "{engine}: the seed alone");
+        assert!(near.interior.is_empty(), "{engine}: nothing is inside yet");
+        assert_eq!(near.boundary.len(), 2, "{engine}: both its edges leave it");
+
+        // One hop: the ring joins the selection, and ITS edges are the boundary —
+        // including the one out to person(3), who is not in it.
+        let one = g
+            .subgraph(&person(1), 1, &[])
+            .unwrap_or_else(|e| panic!("{engine}: walk: {e}"));
+        assert_eq!(one.members.len(), 3, "{engine}: 1, 2 and the org");
+        assert_eq!(one.interior.len(), 3, "{engine}: every edge among them");
+        assert_eq!(one.boundary.len(), 1, "{engine}: and the one leaving 9");
+        assert_eq!(one.boundary[0].member, org(9), "{engine}: the inside end");
+        assert_eq!(one.boundary[0].far, person(3), "{engine}: the end to re-attach");
+
+        // The predicate limits the WALK, and therefore what the answer sees: an
+        // edge the walk does not take is an edge the boundary cannot report.
+        let filtered = g
+            .subgraph(&person(1), 1, &["knows"])
+            .unwrap_or_else(|e| panic!("{engine}: walk: {e}"));
+        assert_eq!(
+            filtered.members,
+            vec![person(1)],
+            "{engine}: nothing matches, so nothing joined"
+        );
+        assert!(
+            filtered.interior.is_empty() && filtered.boundary.is_empty(),
+            "{engine}: and no edge was seen either"
+        );
     }
 }

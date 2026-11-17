@@ -567,6 +567,34 @@ pub struct HalfEdge {
     pub far: NodeRef,
 }
 
+/// A selection of entities: what `cut` cuts and what a rewrite replaces.
+///
+/// Two sources, one value — a partition a producer already wrote (a cluster), or
+/// a member list a read computed (`subgraph`, an index scan, the application's own
+/// logic). The members are resolved at use time, so a `Cluster` selection is a
+/// snapshot of the rows that exist NOW, not a promise they will still exist.
+#[derive(Clone, Debug)]
+pub enum Selection {
+    /// A cluster the store already holds: its node members are the selection.
+    Cluster(super::hyper::NodeSet),
+    /// Members the caller already has. Order is irrelevant; duplicates are
+    /// dropped at the boundary.
+    Members(Vec<NodeRef>),
+}
+
+impl From<super::hyper::NodeSet> for Selection {
+    fn from(set: super::hyper::NodeSet) -> Self {
+        Selection::Cluster(set)
+    }
+}
+
+impl Selection {
+    /// A selection from a member list — what a walk or an index read hands back.
+    pub fn of(members: impl IntoIterator<Item = NodeRef>) -> Self {
+        Selection::Members(members.into_iter().collect())
+    }
+}
+
 /// One selection of entities, cut out of the graph.
 ///
 /// The name is the operation: a cut is asked of a SELECTION, and it answers the
@@ -1281,6 +1309,138 @@ impl<S: VirtualStorage, E: GraphEncode> Graph<S, E> {
         self.edges_from_rows(rows)
     }
 
+    /// Find a subgraph: breadth-first from one entity, `hops` deep, and answer it
+    /// as a [`Cut`].
+    ///
+    /// This is the step that NAMES a selection when nothing has written one. A
+    /// cluster is a partition someone already decided; this walks the faces and
+    /// decides nothing — the selection is "whatever is within `hops` of the seed",
+    /// and the answer is that selection's boundary half-edges plus the edges that
+    /// die inside it. `replace` takes either source, because both arrive as a
+    /// [`Cut`].
+    ///
+    /// `predicates` limits the WALK, and therefore what is reported: an edge the
+    /// walk does not take is an edge the answer does not see. Empty means every
+    /// predicate in both directions.
+    ///
+    /// Cost: one face scan per visited entity per hop (two when walking both
+    /// directions, two per predicate when filtered), plus one pass over the edges
+    /// seen. A visited set is what keeps a cycle from spending an unbounded
+    /// budget — revisiting is the KV-side way to lose an argument with a graph.
+    ///
+    /// `hops` counts the rings that are part of the selection, not the number of
+    /// scans: `hops == 0` answers the seed alone with every edge it has as its
+    /// boundary, and `hops == 1` adds the neighbours and answers THEIR edges as
+    /// the boundary. Scanning one ring further and adding what it finds would
+    /// always answer an empty boundary, which is why it is stated this way.
+    pub fn subgraph(
+        &mut self,
+        seed: &NodeRef,
+        hops: u8,
+        predicates: &[&str],
+    ) -> crate::error::Result<Cut> {
+        // The frontier, and the set that decides membership: the same pair of
+        // shapes a cluster read produces, built by walking instead of reading.
+        let mut members: Vec<NodeRef> = vec![seed.clone()];
+        let mut inside: BTreeSet<([u8; 2], Vec<u8>)> =
+            BTreeSet::from([(seed.ns, seed.pkey.clone())]);
+        // Every edge the walk touched, deduped by identity: a row is seen once per
+        // incident end, and both ends of an interior edge get visited.
+        let mut seen: BTreeSet<EdgeIdentity> = BTreeSet::new();
+        let mut edges: Vec<EdgeKey> = Vec::new();
+        // `hops` counts the rings that are INSIDE the selection, so the boundary is
+        // what leaves them: the faces of the last ring are scanned and their far
+        // ends are NOT added. Scanning to `hops` and adding what you find would
+        // answer an empty boundary every time — a k-hop neighbourhood's own
+        // boundary is empty by construction.
+        let mut frontier: Vec<NodeRef> = vec![seed.clone()];
+        for depth in 0..=hops {
+            let last = depth == hops;
+            let mut next: Vec<NodeRef> = Vec::new();
+            for node in &frontier {
+                let mut reached: Vec<EdgeKey> = Vec::new();
+                if predicates.is_empty() {
+                    reached.extend(self.out_edges(node)?);
+                    reached.extend(self.in_edges(node)?);
+                } else {
+                    for predicate in predicates {
+                        reached.extend(self.typed_out(predicate, node)?);
+                        reached.extend(self.typed_in(predicate, node)?);
+                    }
+                }
+                for key in reached {
+                    let far = if key.src == *node {
+                        key.dst.clone()
+                    } else {
+                        key.src.clone()
+                    };
+                    let identity = (
+                        key.src.ns_id(),
+                        key.src.pkey.clone(),
+                        key.predicate,
+                        key.dst.ns_id(),
+                        key.dst.pkey.clone(),
+                    );
+                    if seen.insert(identity) {
+                        edges.push(key);
+                    }
+                    if last {
+                        // The last ring's neighbours stay OUT: those edges are the
+                        // boundary, and this is the only place they can come from.
+                        continue;
+                    }
+                    if inside.insert((far.ns, far.pkey.clone())) {
+                        members.push(far.clone());
+                        next.push(far);
+                    }
+                }
+            }
+            if next.is_empty() {
+                break;
+            }
+            frontier = next;
+        }
+
+        // ---- The partition: both ends in, or exactly one ----
+        members.sort_by(|left, right| (left.ns, &left.pkey).cmp(&(right.ns, &right.pkey)));
+        members.dedup();
+        let mut interior = Vec::new();
+        let mut boundary = Vec::new();
+        for key in edges {
+            let Some(predicate) = self.predicate_vocab_name(key.predicate)? else {
+                return Err(crate::error::Error::Corrupt {
+                    what: "a subgraph edge names a predicate the vocabulary does not hold".into(),
+                });
+            };
+            let head = EdgeHead {
+                src: key.src.clone(),
+                dst: key.dst.clone(),
+                predicate,
+            };
+            let src_in = inside.contains(&(key.src.ns, key.src.pkey.clone()));
+            let dst_in = inside.contains(&(key.dst.ns, key.dst.pkey.clone()));
+            match (src_in, dst_in) {
+                (true, true) => interior.push(head),
+                (true, false) => boundary.push(HalfEdge {
+                    edge: head,
+                    member: key.src,
+                    far: key.dst,
+                }),
+                (false, true) => boundary.push(HalfEdge {
+                    edge: head,
+                    member: key.dst,
+                    far: key.src,
+                }),
+                (false, false) => {}
+            }
+        }
+        Ok(Cut {
+            members,
+            interior,
+            boundary,
+        })
+    }
+
     /// Cut a selection: one half-edge per edge that crosses the boundary, plus
     /// the edges that die inside it.
     ///
@@ -1297,12 +1457,21 @@ impl<S: VirtualStorage, E: GraphEncode> Graph<S, E> {
     ///
     /// An interior edge is seen twice (once from each end), so it is deduped by
     /// its head; a half-edge is seen once, from the member's side.
-    pub fn cut(
-        &mut self,
-        set: super::hyper::NodeSet,
-    ) -> crate::error::Result<Cut> {
-        let handles = super::hyper::node_member_handles(&self.store, &self.ns, set.into())?;
-        let members = self.handles().nodes(&handles)?;
+    pub fn cut(&mut self, selection: Selection) -> crate::error::Result<Cut> {
+        let members = match selection {
+            Selection::Cluster(set) => {
+                let handles =
+                    super::hyper::node_member_handles(&self.store, &self.ns, set.into())?;
+                self.handles().nodes(&handles)?
+            }
+            // A member the graph never saw has no handle, so it has no face and
+            // contributes nothing; it is not an error (an id may name an entity
+            // that was never written).
+            Selection::Members(list) => list,
+        };
+        let mut members = members;
+        members.sort_by(|left, right| (left.ns, &left.pkey).cmp(&(right.ns, &right.pkey)));
+        members.dedup();
         let inside: std::collections::BTreeSet<([u8; 2], Vec<u8>)> = members
             .iter()
             .map(|node| (node.ns, node.pkey.clone()))

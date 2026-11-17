@@ -84,7 +84,7 @@ pub use model::document::{Collection, SeekScan};
 pub use model::field::{FieldDesc, FieldType};
 pub use model::graph::{
     Cut, Direction, EdgeBody, EdgeHead, EdgeKey, EdgeStep, EdgeStream, Graph, GraphEncode,
-    HalfEdge, Handle, HandleKey, HopHead, Members, NodeRef, NodeKinds,
+    HalfEdge, Handle, HandleKey, HopHead, Members, NodeRef, NodeKinds, Selection,
 };
 pub use model::handles::{FIRST_HANDLE, HANDLE_NODE_SLOT, Handles, NODE_HANDLE_SLOT};
 pub use model::hyper::{
