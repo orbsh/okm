@@ -1,6 +1,6 @@
 # ADR-0066: An edge set is a hyperedge
 
-**Status**: Draft (2026-11-12). Merges `docs/ideas/cluster-membership.md` and the promoted parts of `docs/ideas/hypergraph.md`; supersedes the latter's member-face layout, which it generalises.
+**Status**: decided 2026-11-12, implemented 2026-11-14. §2 is narrowed by ADR-0068: a cluster can also hold declared node members, on faces `0x12`/`0x13`, so the node face this ADR refused now exists. Merges `docs/ideas/cluster-membership.md` and the promoted parts of `docs/ideas/hypergraph.md`; supersedes the latter's member-face layout, which it generalises.
 
 This ADR calls it a cluster; the literature calls it a hyperedge, and the difference is that we do not use the arity theory. A community is a cluster whose members were discovered rather than declared.
 

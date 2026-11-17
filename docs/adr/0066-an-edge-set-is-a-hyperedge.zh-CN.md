@@ -1,6 +1,6 @@
 # ADR-0066：一簇边就是一条簇
 
-**状态**：草稿（2026-11-12）。合并 `docs/ideas/hyperedge-membership.md` 与被采纳的 `docs/ideas/hypergraph.md` 部分；取代后者的成员面布局——本 ADR 是它的推广。
+**状态**：2026-11-12 裁决，2026-11-14 落地。§2 被 ADR-0068 收窄：簇也能装声明的节点成员（面 `0x12`/`0x13`），本 ADR 当时拒绝的节点面现在存在。合并 `docs/ideas/hyperedge-membership.md` 与被采纳的 `docs/ideas/hypergraph.md` 部分；取代后者的成员面布局——本 ADR 是它的推广。
 
 本文用「簇」称呼它，文献里叫 hyperedge；区别只在于我们并不用它那套 arity 理论。社区（LPA）是簇的一种——成员是算出来的，不是声明的。
 
