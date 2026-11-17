@@ -3,17 +3,17 @@
 //! the boundary (ADR-0067, "a boundary-only handle").
 //!
 //! ```text
-//! 0x0E  handle → node   [ns][0x0E][handle u64]         → [node_ns 2B][pkey]
-//! 0x0F  node → handle   [ns][0x0F][node_ns 2B][pkey]   → [handle u64 BE]
+//! 0x10  handle → node   [ns][0x10][handle u64]         → [node_ns 2B][pkey]
+//! 0x11  node → handle   [ns][0x11][node_ns 2B][pkey]   → [handle u64 BE]
 //! ```
 //!
 //! Two FIXED FACES, one byte each, adjacent in the core band: the direction IS
-//! the face number, so no key carries a discriminator byte. They sit
-//! immediately after the core (`0x00`–`0x0D`) because the band is packed from
-//! `0x00`: the pair took the two numbers the tail used to hold (Extension and
-//! the meta moved up to `0x1E`/`0x1F`), and the band's one reserve —
-//! `0x10`–`0x1D` — sits ABOVE the pair, so the next face added takes `0x10`
-//! and nothing has to be renumbered (ADR-0030).
+//! the face number, so no key carries a discriminator byte. They sit right after
+//! the cluster faces (`0x0A`–`0x0F`) because the band is packed from `0x00`, and
+//! the band's one reserve — `0x14`–`0x1D` — sits ABOVE the pair, so the next
+//! face added takes `0x14` and nothing has to be renumbered (ADR-0030). The
+//! node-cluster faces took `0x12`/`0x13` on that rule: they are keyed by a
+//! handle, so they come after the registry that defines one (ADR-0068).
 //!
 //! Before the band widened they were ONE counting family (`0xF00n` with the
 //! direction in the counter bits), because sixteen fixed faces were spent and

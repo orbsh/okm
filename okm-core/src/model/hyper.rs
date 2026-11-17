@@ -37,28 +37,39 @@
 //! of a hash set. Writing it costs one more entry per member row, in the same
 //! batch, on every add, remove and retract.
 //!
-//! # Why there is no node face
+//! # The participants, and the members that are entities
 //!
-//! A cluster's NODES are its member edges' endpoints, deduplicated — that fact
-//! does not change, only where the projection lives: outside. A derived face
-//! mirroring the endpoints would be a fourth row per grouped edge, and the node
-//! kinds are heterogeneous, so keeping that mirror correct costs more than it
-//! saves. A caller who wants the participants takes the member edges and sorts
-//! or dedupes on its own side: inserting into a sorted list is log n, and no
-//! HashMap is needed.
+//! A cluster's NODES come from two places, and both are legal (ADR-0068):
+//!
+//! - the endpoints of its member EDGES, deduplicated on the reading side — the
+//!   group's edges are contiguous, so the dedupe is a sorted insert and no
+//!   HashMap is needed. There is no derived face mirroring those endpoints: it
+//!   would be a row per (cluster, endpoint) re-diffed by every membership write,
+//!   and the participating kinds are heterogeneous, which the handle registry
+//!   already absorbs;
+//! - the node MEMBERS the cluster declares, one row on the node member face each,
+//!   mirrored on the node → cluster face for the per-entity question. Declared
+//!   rather than derived, because a projection cannot hold an entity with no edge
+//!   and cannot survive an edge deletion without dropping a group the entity
+//!   still belongs to.
+//!
+//! "Who is in this cluster" is the union of the two, and the faces say which half
+//! a reader wants: `members` for edges, `nodes` for entities, and
+//! [`ClusterStream`] over a node for both at once.
 //!
 //! # Completeness rests on one write-time rule
 //!
-//! A node exists only as an endpoint of some edge — there is no "create a bare
-//! node" path ([`Error::BareNode`]). A cluster needs no counterpart: it is a
+//! A node exists as an endpoint of some edge, or as a member of a node cluster —
+//! there is still no "create a bare node" verb ([`Error::BareNode`] guards the
+//! edge path). A cluster needs no counterpart: it is a
 //! SCOPE, and a scope is information by itself. "This subject is sensitive, do
 //! not ask" and "something used to be here and is gone now" are both statements
 //! only an empty scope can make, and a one-member cluster is a scope that
 //! currently holds one thing. So a cluster row is CREATED when it is declared
 //! and deleted only when it is explicitly deleted ([`Fragment::delete`], or an
 //! [`Fragment::incorporate`] that merges the source away); a membership change
-//! never touches it, and its `members` count is an honest count that may be
-//! zero.
+//! never touches it, and its `members` and `nodes` counts are honest counts that
+//! may be zero.
 //!
 //! The bare-node rule is about CREATION: a delete may leave a node that is an
 //! endpoint of nothing, because what a delete removes is the assertion, not the

@@ -1818,3 +1818,134 @@ fn a_kind_is_interned_once_and_read_back_by_number() {
         );
     }
 }
+
+// ---------------------------------------------------------------------------
+// A cluster of entities (ADR-0068)
+// ---------------------------------------------------------------------------
+
+#[test]
+fn a_node_cluster_holds_an_entity_that_has_no_edge() {
+    for (engine, store) in TestStore::matrix() {
+        let mut g = graph(&store);
+        // An entity no edge names: the ONLY thing that puts it in the graph is
+        // the cluster that declares it (ADR-0068 §4).
+        let lonely = person(99);
+        let mut fragment = Fragment::<Employment>::new([]);
+        fragment.cluster(Cluster::new(SCOPE, Dict::new()).nodes([lonely.clone()]));
+        let report = g
+            .incorporate(fragment)
+            .unwrap_or_else(|e| panic!("{engine}: commit: {e}"));
+        let cluster = ClusterRef::new(SCOPE, report.hyper_ids[0]);
+
+        let hy = hyper(&store);
+        assert_eq!(
+            hy.nodes(cluster).expect("nodes"),
+            vec![lonely.clone()],
+            "{engine}: the declared entity is a member, resolved at the boundary"
+        );
+        assert!(
+            hy.node_member_of(cluster, &lonely).expect("point read"),
+            "{engine}: the member face's exact key answers"
+        );
+        let row = hy.lookup(cluster).expect("lookup").expect("row");
+        assert_eq!(row.node_count(), 1, "{engine}: the entity count");
+        assert_eq!(row.member_count(), 0, "{engine}: no edge members at all");
+
+        // One row per face: the authority carries the eight-byte handle, the
+        // mirror is derived from it, and nothing was written as an edge.
+        assert_eq!(face(&store, 0x12).len(), 1, "{engine}: one member row");
+        assert_eq!(face(&store, 0x13).len(), 1, "{engine}: one mirror row");
+        assert_eq!(face(&store, 0x0D).len(), 0, "{engine}: no edge members");
+    }
+}
+
+#[test]
+fn retracting_a_node_takes_its_own_memberships() {
+    for (engine, store) in TestStore::matrix() {
+        let member = person(7);
+        let mut fragment = Fragment::<Employment>::new([]);
+        fragment.cluster(Cluster::new(SCOPE, Dict::new()).nodes([member.clone()]));
+        let report = graph(&store).incorporate(fragment).expect("commit");
+        let cluster = ClusterRef::new(SCOPE, report.hyper_ids[0]);
+
+        let mut retract = Fragment::<Employment>::new([]);
+        retract.delete_node(member.clone());
+        let done = graph(&store)
+            .retract(retract)
+            .unwrap_or_else(|e| panic!("{engine}: retract: {e}"));
+        assert_eq!(
+            done.nodes, 1,
+            "{engine}: a node whose only trace is a membership still counts"
+        );
+
+        let hy = hyper(&store);
+        assert!(
+            !hy.node_member_of(cluster, &member).expect("point read"),
+            "{engine}: the membership went with the entity"
+        );
+        assert_eq!(
+            hy.lookup(cluster).expect("lookup").expect("row").node_count(),
+            0,
+            "{engine}: the count is the honest zero"
+        );
+        assert_eq!(face(&store, 0x12).len(), 0, "{engine}: member rows gone");
+        assert_eq!(face(&store, 0x13).len(), 0, "{engine}: mirror rows gone");
+    }
+}
+
+#[test]
+fn retracting_an_edge_leaves_every_node_cluster_alone() {
+    for (engine, store) in TestStore::matrix() {
+        let src = person(1);
+        let dst = org(1);
+        // One fragment asserts the edge AND declares an entity cluster over its
+        // source, so the same cluster holds both kinds for a moment.
+        let mut fragment = Fragment::<Employment>::new([edge(src.clone(), dst.clone())]);
+        fragment.cluster(Cluster::new(COMMUNITY, Dict::new()).nodes([src.clone()]));
+        let mut g = graph(&store);
+        let report = g.incorporate(fragment).expect("commit");
+        let cluster = ClusterRef::new(COMMUNITY, report.hyper_ids[0]);
+        let row = hyper(&store).lookup(cluster).expect("lookup").expect("row");
+        assert_eq!((row.member_count(), row.node_count()), (1, 1), "{engine}");
+
+        let mut retract = Fragment::<Employment>::new([]);
+        retract.delete_edge(head_of(&mut g, &report.edges[0]));
+        g.retract(retract).expect("retract");
+
+        let hy = hyper(&store);
+        assert!(
+            hy.node_member_of(cluster, &src).expect("point read"),
+            "{engine}: deleting an assertion does not remove an entity from a group"
+        );
+        let row = hy.lookup(cluster).expect("lookup").expect("row");
+        assert_eq!(row.member_count(), 0, "{engine}: the edge member row left");
+        assert_eq!(row.node_count(), 1, "{engine}: the entity stayed");
+    }
+}
+
+#[test]
+fn the_node_index_rebuilds_from_the_node_member_rows_alone() {
+    for (engine, store) in TestStore::matrix() {
+        let mut fragment = Fragment::<Employment>::new([]);
+        fragment.cluster(
+            Cluster::new(SCOPE, Dict::new()).nodes([person(1), person(2), org(1)]),
+        );
+        graph(&store).incorporate(fragment).expect("commit");
+        let written = face(&store, 0x13);
+        assert_eq!(written.len(), 3, "{engine}: one mirror row per entity");
+
+        // Wipe the mirror and rebuild: the answer is the bytes the write path
+        // wrote, derived from the member face alone.
+        for (key, _) in &written {
+            store.del(key).expect("wipe");
+        }
+        assert_eq!(face(&store, 0x13).len(), 0, "{engine}: the mirror is gone");
+        let report = hyper(&store).rebuild_derived(64).expect("rebuild");
+        assert_eq!(report.node_members, 3, "{engine}: three member rows walked");
+        assert_eq!(
+            face(&store, 0x13),
+            written,
+            "{engine}: rebuild equals the write path, byte for byte"
+        );
+    }
+}

@@ -1,6 +1,6 @@
 # 0068 — A cluster can hold nodes
 
-Status: decided 2026-11-17, implementation pending. Narrows ADR-0066 §2 (which left the participants as a read-side projection and refused a node face) and adds two faces to the band ADR-0066 opened.
+Status: decided 2026-11-17, implemented. Narrows ADR-0066 §2 (which left the participants as a read-side projection and refused a node face) and adds two faces to the band ADR-0066 opened.
 
 ## Context
 
