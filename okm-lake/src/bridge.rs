@@ -94,6 +94,10 @@ struct Projection<K: KeyEncode, R: Document<Key = K>> {
     schema: Schema,
     key_fields: &'static [FieldDesc],
     row_fields: &'static [FieldDesc],
+    /// `#[ok_redact]` fields (ADR-0069 §4): the column is declared and stays in
+    /// the file, every value in it is NULL. Taken from the declaration rather than
+    /// from a runtime list, so an export cannot be configured into leaking one.
+    redacted: &'static [&'static str],
     _marker: std::marker::PhantomData<(K, R)>,
 }
 
@@ -117,6 +121,7 @@ impl<K: KeyEncode, R: Document<Key = K>> Projection<K, R> {
             schema: Schema::new(fields),
             key_fields,
             row_fields,
+            redacted: <R as Document>::REDACTED,
             _marker: std::marker::PhantomData,
         }
     }
@@ -235,6 +240,13 @@ fn build_batch<K: KeyEncode, R: Document<Key = K>>(
         .filter(|(_, f)| f.width == 0)
         .collect();
     for (fi, f) in proj.row_fields.iter().enumerate() {
+        if proj.redacted.contains(&f.name) {
+            // ADR-0069 §4: `#[ok_redact]` — the column keeps its place in the
+            // file and every value in it is NULL. The secret never leaves the
+            // store, and a downstream reader still finds the column it expects.
+            columns.push(vec![None; n]);
+            continue;
+        }
         let mut col: Vec<Option<Vec<u8>>> = Vec::with_capacity(n);
         for (_, v) in documents {
             // No row at all: the whole payload half is NULL for this document.
@@ -254,7 +266,13 @@ fn build_batch<K: KeyEncode, R: Document<Key = K>>(
                 col.push(Some(logical_value(&v[off..off + f.width], f.ty)));
             } else {
                 let val = tlv_value(&v[header + hot_width..], &cold_fields, fi);
-                if f.ty == FieldType::Str {
+                // Both variable-length kinds copy verbatim: `logical_value` exists
+                // to turn a fixed-offset wire into arrow's little-endian form, and
+                // `swap_be` refuses these two on purpose. `Bytes` used to fall
+                // through to that refusal — a variable-length column panicked on
+                // the first export that declared one (ADR-0069's ciphertext column
+                // is the first, because a secret is a `Bytes`).
+                if matches!(f.ty, FieldType::Str | FieldType::Bytes) {
                     col.push(Some(val.to_vec()));
                 } else {
                     col.push(Some(logical_value(val, f.ty)));
