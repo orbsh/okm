@@ -1607,3 +1607,81 @@ fn a_removed_declaration_leaves_the_assertion_alone() {
         assert_eq!(g.edge_count(kid(&store, SCOPE), scope).expect("count"), 0, "{engine}");
     }
 }
+
+/// A repoint moves an assertion and keeps its attributes, and a replacement that
+/// does not state every half-edge of a retired entity is refused.
+///
+/// The dynamic form carries attributes on the declaration itself (`DynEdge.attrs`),
+/// so a repoint is a prepass that reads the row being replaced and states it at
+/// the new head — the ordinary write path then resolves it like any assertion.
+#[test]
+fn a_repoint_carries_its_attributes_and_the_cut_is_checked() {
+    for (engine, store) in TestStore::matrix() {
+        let mut g = graph(&store);
+        let mut lead = edge(person(1), org(9), "works_at");
+        lead.attrs = attrs(&[("role", Variant::Str("lead".into()))]);
+        let mut facts = DynFragment::new([
+            Decl::edge(lead),
+            Decl::edge(edge(person(1), person(3), "knows")),
+        ]);
+        facts.on_edge_conflict(|_stored, declared| declared.clone());
+        g.incorporate(facts)
+            .unwrap_or_else(|e| panic!("{engine}: write: {e}"));
+
+        // Merge person 1 into person 2: the works_at edge moves, the knows edge
+        // has nowhere to go and is stated as deleted.
+        let knows = g
+            .key_of(&edge(person(1), person(3), "knows"))
+            .expect("key");
+        let mut replacement = DynFragment::new([]);
+        replacement
+            .repoint(
+                edge(person(1), org(9), "works_at"),
+                edge(person(2), org(9), "works_at"),
+            )
+            .delete_edge(knows)
+            .delete_node(person(1));
+        let report = g
+            .replace(replacement)
+            .unwrap_or_else(|e| panic!("{engine}: replace: {e}"));
+        assert_eq!(report.nodes, 1, "{engine}: one entity retired");
+        assert_eq!(report.written.edges.len(), 1, "{engine}: one moved assertion");
+
+        let moved = g
+            .key_of(&edge(person(2), org(9), "works_at"))
+            .expect("key");
+        let body = g
+            .get_edge(&moved)
+            .expect("read")
+            .expect("the moved edge is live");
+        assert_eq!(
+            body.attrs.get("role").cloned(),
+            Some(Variant::Str("lead".into())),
+            "{engine}: the attributes travelled with the assertion"
+        );
+
+        let gone = g
+            .key_of(&edge(person(1), org(9), "works_at"))
+            .expect("key");
+        assert!(
+            g.get_edge(&gone).expect("read").is_none(),
+            "{engine}: and the head it replaced is gone"
+        );
+
+        // Now the refusal: person 2 has one edge left, and a replacement that
+        // retires it without stating that edge must not land.
+        let mut forgetful = DynFragment::new([]);
+        forgetful.delete_node(person(2));
+        let err = g
+            .replace(forgetful)
+            .expect_err("an unstated half-edge is a refusal");
+        assert!(
+            err.contains("1 half-edge(s)"),
+            "{engine}: the refusal names the count, got {err}"
+        );
+        assert!(
+            g.get_edge(&moved).expect("read").is_some(),
+            "{engine}: a refused replacement writes nothing"
+        );
+    }
+}

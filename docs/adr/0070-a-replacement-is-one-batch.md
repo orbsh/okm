@@ -1,6 +1,6 @@
 # 0070 — A replacement is one batch, and the cut is the caller's to state
 
-Status: decided 2026-11-17, implemented in `okm-core` (`okm-dynamic` pending).
+Status: decided 2026-11-17, implemented in both forms (`okm-core`, `okm-dynamic`).
 
 ## Context
 

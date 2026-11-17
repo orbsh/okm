@@ -73,6 +73,15 @@ use okm_value::{Dict, Variant, decode_named};
 
 use crate::graph::{DynEdge, Graph};
 
+/// What the delete half of a batch decides: the edge rows it dooms, the entities
+/// it retires, and the cluster plan those removals imply. Both verbs take one;
+/// `replace` hands its plan to the write half so a cluster is counted once.
+type Removal = (
+    BTreeSet<HandleKey>,
+    BTreeSet<NodeRef>,
+    BTreeMap<(ClusterKindId, u64), Plan>,
+);
+
 /// The cluster vocabulary, re-exported so a consumer of this crate names one
 /// package: `kind` is the same one-byte closed vocabulary the static form uses
 /// (`COMMUNITY` / `EVENT` / `SUBGRAPH` / `SCOPE`), `hyper_id` the same run-time
@@ -81,7 +90,7 @@ use crate::graph::{DynEdge, Graph};
 pub use okm_core::model::hyper::{
     Cluster, ClusterRef, ClusterRow, DerivedReport, EdgeSet, NodeSet, Kind, MEMBER_COUNT,
     MemberEdges, NODE_COUNT,
-    RetractReport,
+    ReplaceReport, RetractReport,
     WriteReport,
 };
 
@@ -878,6 +887,10 @@ pub struct DynFragment {
     clusters: Vec<Cluster>,
     ops: Vec<ClusterOp>,
     edge_deletes: Vec<EdgeKey>,
+    /// Assertions moved from one head to another: `(from, to)`. The stored
+    /// attributes ride along, because on this form a declaration CARRIES its
+    /// attributes — `DynEdge.attrs` — where the typed form needs a carrier.
+    repoints: Vec<(DynEdge, DynEdge)>,
     node_deletes: Vec<NodeRef>,
     edge_conflict: Option<EdgeConflict>,
     edge_set_conflict: Option<ClusterConflict>,
@@ -1000,6 +1013,24 @@ impl DynFragment {
         self
     }
 
+    /// Assert `to` with the attributes the row at `from` holds, and retract `from`
+    /// — one action, one batch.
+    ///
+    /// The dynamic form's counterpart of core's `repoint`, and smaller, because a
+    /// declaration here carries its attributes (`DynEdge.attrs`) instead of
+    /// needing a type to name them: the prepass reads the row being replaced and
+    /// pushes it as a declaration at the new head, so the ordinary write path
+    /// resolves it — a free target lands the moved map, a live one goes through
+    /// `on_edge_conflict(stored, moved)` with the moved assertion as the declared
+    /// side.
+    ///
+    /// Only [`Graph::replace`] takes one: `incorporate` counts it as a deletion
+    /// and `retract` as a write, so each still refuses.
+    pub fn repoint(&mut self, from: DynEdge, to: DynEdge) -> &mut Self {
+        self.repoints.push((from, to));
+        self
+    }
+
     /// Delete one node AND every edge incident to it. A node here is a
     /// `NodeRef` — an ns and bare key bytes — so it is addressed exactly the way
     /// an edge's endpoint is; there is no type to name because the dynamic form
@@ -1017,6 +1048,7 @@ impl DynFragment {
     /// fragment carrying both would have two meanings in one batch.
     fn check_retractable(&self) -> Result<(), String> {
         let writes = self.edges.len()
+            + self.repoints.len()
             + self.clusters.len()
             + usize::from(self.edge_conflict.is_some())
             + usize::from(self.edge_set_conflict.is_some())
@@ -1037,7 +1069,7 @@ impl DynFragment {
     /// `incorporate` writes, and a fragment that declares deletions belongs to
     /// [`Graph::retract`] — two verbs with one meaning each.
     fn check_incorporable(&self) -> Result<(), String> {
-        let deletions = self.edge_deletes.len() + self.node_deletes.len();
+        let deletions = self.edge_deletes.len() + self.node_deletes.len() + self.repoints.len();
         if deletions > 0 {
             return Err(format!(
                 "incorporate writes; this fragment declares {deletions} deletion(s) — that is retract's verb"
@@ -1053,6 +1085,7 @@ impl DynFragment {
         mut self,
         graph: &mut Graph<S>,
         batch: &mut Batch,
+        mut plan: BTreeMap<(ClusterKindId, u64), Plan>,
     ) -> Result<WriteReport, String> {
         let ns = graph.ns_pair();
         let mut report = WriteReport::default();
@@ -1064,6 +1097,26 @@ impl DynFragment {
         // re-asserts it: a row at that tuple means this fragment's
         // `on_edge_conflict` decides the attributes (the update path), and no row
         // means the declaration creates it.
+        // ---- 1a. The repoints: carry the stored attributes to the new head ----
+        //
+        // Read BEFORE anything is written, and stated as an ordinary declaration
+        // at the target, so the loop below resolves it exactly like any other
+        // assertion: free target takes the moved map, live target merges through
+        // the hook. The source joins `edge_deletes` and goes through the same
+        // retraction the caller's own deletes do.
+        for (from, to) in std::mem::take(&mut self.repoints) {
+            let from_key = graph.key_of(&from)?;
+            let Some(stored) = graph.get_edge(&from_key)? else {
+                // No row: nothing to move. Absence is nothing to do.
+                continue;
+            };
+            self.edges.push(Decl::Edge(DynEdge {
+                attrs: stored.attrs,
+                ..to
+            }));
+            self.edge_deletes.push(from_key);
+        }
+
         let edges = std::mem::take(&mut self.edges);
         let mut batch_rows: Vec<HandleKey> = Vec::with_capacity(edges.len());
         for decl in &edges {
@@ -1157,7 +1210,10 @@ impl DynFragment {
         }
 
         // ---- 3. The plan: one record per cluster this batch touches ----
-        let mut plan: BTreeMap<(ClusterKindId, u64), Plan> = BTreeMap::new();
+        //
+        // The plan ARRIVES seeded: `replace` hands the retract half's entries in,
+        // so a cluster both halves touch is read and counted once. `incorporate`
+        // hands an empty one.
         for ((cluster, kind), id) in self.clusters.iter().zip(&declared_kinds).zip(&assigned) {
             let entry = plan.entry((kind.0, *id)).or_default();
             entry.declared = true;
@@ -1437,37 +1493,19 @@ impl<S: VirtualStorage> Graph<S> {
     pub fn incorporate(&mut self, fragment: DynFragment) -> Result<WriteReport, String> {
         fragment.check_incorporable()?;
         let mut batch = Batch::default();
-        let report = fragment.write_into(self, &mut batch)?;
+        let report = fragment.write_into(self, &mut batch, BTreeMap::new())?;
         self.commit(batch)?;
         Ok(report)
     }
 
-    /// The delete verb — the inverse of [`incorporate`](Self::incorporate).
+    /// The delete half of BOTH verbs: the edges the fragment dooms, the nodes it
+    /// retires, and the cluster plan those removals imply.
     ///
-    /// A fragment handed here carries delete declarations
-    /// ([`DynFragment::delete_node`], [`DynFragment::delete_edge`], and the
-    /// cluster [`DynFragment::delete`]); it may not also declare edges, clusters
-    /// or conflict hooks, because those are what `incorporate` is for.
-    ///
-    /// Two rules, and they are not in tension:
-    ///
-    /// - deleting a NODE deletes every edge incident to it — both traversal
-    ///   faces, the predicate faces, the payload row, the dynamic segment, and
-    ///   those edges' cluster membership rows. A node cannot be left with a
-    ///   dangling edge.
-    /// - deleting an EDGE leaves both endpoints alone, even when they are then
-    ///   connected to nothing. "A node exists only as an endpoint" is about
-    ///   creation, not about what a delete may leave behind.
-    ///
-    /// Nothing here refuses for absence: an id no row holds, or a node no edge
-    /// names, is nothing to do and reports zero. Everything runs in ONE batch,
-    /// so a reader sees the whole removal or none of it.
-    pub fn retract(&mut self, mut fragment: DynFragment) -> Result<RetractReport, String> {
-        fragment.check_retractable()?;
+    /// Split out so `replace` can plan the removal and the write against ONE
+    /// plan: a cluster both halves touch is then read and counted once, instead
+    /// of twice from a base that ignores the other half.
+    fn retract_plan(&mut self, fragment: &DynFragment) -> Result<Removal, String> {
         let ns = self.ns_pair();
-        let mut report = RetractReport::default();
-        let mut batch = Batch::default();
-
         // ---- 1. The doomed edges: a node's cascade first, then the declared
         //         identities, deduplicated — one edge is one removal whatever
         //         named it. The set lives in ROW space: the faces are keyed by
@@ -1577,6 +1615,127 @@ impl<S: VirtualStorage> Graph<S> {
                 entry.declared = true;
             }
         }
+
+        Ok((doomed, nodes, plan))
+    }
+
+    /// Replace a shape: ONE fragment may retract and declare, and the batch lands
+    /// as a single state change.
+    ///
+    /// The dynamic form's counterpart of core's `replace`, with the same three
+    /// rules: the two halves are planned together (retract's removals seed the
+    /// write half's cluster plan), a moved assertion carries its attributes
+    /// through [`DynFragment::repoint`], and a replacement that retires an entity
+    /// must STATE every edge incident to it — repoint or delete — or the batch is
+    /// refused.
+    pub fn replace(&mut self, fragment: DynFragment) -> Result<ReplaceReport, String> {
+        self.check_cut_is_stated(&fragment)?;
+        let mut batch = Batch::default();
+        let (doomed, nodes, plan) = self.retract_plan(&fragment)?;
+        let mut edges = 0;
+        for row in &doomed {
+            if !self.has_row(row)? {
+                continue;
+            }
+            self.purge_row_into(&mut batch, row);
+            edges += 1;
+        }
+        let written = fragment.write_into(self, &mut batch, plan)?;
+        self.commit(batch)?;
+        Ok(ReplaceReport {
+            nodes: nodes.len(),
+            edges,
+            written,
+        })
+    }
+
+    /// Every half-edge a retired entity would cut has to be STATED in the
+    /// fragment: repointed or deleted.
+    ///
+    /// The cascade is the right answer for a deletion ("the assertions are gone
+    /// anyway") and the wrong answer for a replacement, whose claim is "this
+    /// shape becomes that one" — a connection nobody decided about is exactly the
+    /// loss it exists to prevent.
+    fn check_cut_is_stated(&mut self, fragment: &DynFragment) -> Result<(), String> {
+        if fragment.node_deletes.is_empty() {
+            return Ok(());
+        }
+        let ns = self.ns_pair();
+        let mut stated: BTreeSet<HandleKey> = BTreeSet::new();
+        for edge in &fragment.edge_deletes {
+            if let Some(row) = row_of_key(self.store_ref(), &ns, edge)? {
+                stated.insert(row);
+            }
+        }
+        for (from, _) in &fragment.repoints {
+            let key = self.key_of(from)?;
+            if let Some(row) = row_of_key(self.store_ref(), &ns, &key)? {
+                stated.insert(row);
+            }
+        }
+        let mut unaccounted = 0usize;
+        for node in &fragment.node_deletes {
+            let Some(near) = Handles::new(self.store_ref(), ns)
+                .handle_of(node)
+                .map_err(|e| e.to_string())?
+            else {
+                continue;
+            };
+            for (suffix, _) in scan_suffix_kv(self.store_ref(), &out_prefix(&ns, near))
+                .map_err(|e| e.to_string())?
+            {
+                if let Some((predicate, far)) = parse_predicate_far(&suffix)
+                    && !stated.contains(&HandleKey::new(near, predicate, far))
+                {
+                    unaccounted += 1;
+                }
+            }
+            for (suffix, _) in scan_suffix_kv(self.store_ref(), &in_prefix(&ns, near))
+                .map_err(|e| e.to_string())?
+            {
+                if let Some((predicate, far)) = parse_predicate_far(&suffix)
+                    && !stated.contains(&HandleKey::new(far, predicate, near))
+                {
+                    unaccounted += 1;
+                }
+            }
+        }
+        if unaccounted > 0 {
+            return Err(format!(
+                "{unaccounted} half-edge(s) cut by a deleted entity are neither repointed nor \
+                 deleted; state every one of them in this fragment"
+            ));
+        }
+        Ok(())
+    }
+
+    /// The delete verb — the inverse of [`incorporate`](Self::incorporate).
+    ///
+    /// A fragment handed here carries delete declarations
+    /// ([`DynFragment::delete_node`], [`DynFragment::delete_edge`], and the
+    /// cluster [`DynFragment::delete`]); it may not also declare edges, clusters
+    /// or conflict hooks, because those are what `incorporate` is for.
+    ///
+    /// Two rules, and they are not in tension:
+    ///
+    /// - deleting a NODE deletes every edge incident to it — both traversal
+    ///   faces, the predicate faces, the payload row, the dynamic segment, and
+    ///   those edges' cluster membership rows. A node cannot be left with a
+    ///   dangling edge.
+    /// - deleting an EDGE leaves both endpoints alone, even when they are then
+    ///   connected to nothing. "A node exists only as an endpoint" is about
+    ///   creation, not about what a delete may leave behind.
+    ///
+    /// Nothing here refuses for absence: an id no row holds, or a node no edge
+    /// names, is nothing to do and reports zero. Everything runs in ONE batch,
+    /// so a reader sees the whole removal or none of it.
+    pub fn retract(&mut self, mut fragment: DynFragment) -> Result<RetractReport, String> {
+        fragment.check_retractable()?;
+        let ns = self.ns_pair();
+        let mut report = RetractReport::default();
+        let mut batch = Batch::default();
+
+        let (doomed, nodes, plan) = self.retract_plan(&fragment)?;
 
         // ---- 3. The edges themselves: exactly their rows, in this batch ----
         for row in &doomed {
