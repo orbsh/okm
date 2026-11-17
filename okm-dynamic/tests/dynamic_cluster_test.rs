@@ -1689,7 +1689,7 @@ fn a_repoint_carries_its_attributes_and_the_cut_is_checked() {
 /// A node set reads as a subgraph: its members, the edges with both ends inside,
 /// and the crossings — and the crossings are what a rewrite has to answer for.
 #[test]
-fn a_node_set_reads_as_a_subgraph_with_its_cut() {
+fn a_cut_answers_the_boundary_of_a_selection() {
     for (engine, store) in TestStore::matrix() {
         let mut g = graph(&store);
         let mut facts = DynFragment::new([
@@ -1710,25 +1710,25 @@ fn a_node_set_reads_as_a_subgraph_with_its_cut() {
         let scope = report.node_sets[0];
 
         let sub = g
-            .subgraph(scope)
+            .cut(scope)
             .unwrap_or_else(|e| panic!("{engine}: subgraph: {e}"));
-        assert_eq!(sub.nodes.len(), 2, "{engine}: both members");
-        assert_eq!(sub.internal.len(), 1, "{engine}: the knows edge is inside");
-        assert_eq!(sub.internal[0].src, person(1), "{engine}: and it is that one");
+        assert_eq!(sub.members.len(), 2, "{engine}: both members");
+        assert_eq!(sub.interior.len(), 1, "{engine}: the knows edge is inside");
+        assert_eq!(sub.interior[0].src, person(1), "{engine}: and it is that one");
         assert_eq!(
-            sub.external.len(),
+            sub.boundary.len(),
             2,
             "{engine}: two crossings out to orgs, the third edge not touched"
         );
-        let of_first = sub.crossings_of(&person(1));
+        let of_first = sub.boundary_of(&person(1));
         assert_eq!(of_first.len(), 1, "{engine}: one crossing per member");
         assert_eq!(
-            of_first[0].outside,
+            of_first[0].far,
             org(9),
             "{engine}: and it names the far end"
         );
         assert!(
-            sub.external.iter().all(|c| c.inside != person(3)),
+            sub.boundary.iter().all(|c| c.member != person(3)),
             "{engine}: an entity outside the set is never an `inside`"
         );
     }

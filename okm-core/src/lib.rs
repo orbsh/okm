@@ -83,8 +83,8 @@ pub use engine::storage::{
 pub use model::document::{Collection, SeekScan};
 pub use model::field::{FieldDesc, FieldType};
 pub use model::graph::{
-    Crossing, Direction, EdgeBody, EdgeHead, EdgeKey, EdgeStep, EdgeStream, Graph, GraphEncode,
-    Handle, HandleKey, HopHead, Members, NodeRef, NodeKinds, Subgraph,
+    Cut, Direction, EdgeBody, EdgeHead, EdgeKey, EdgeStep, EdgeStream, Graph, GraphEncode,
+    HalfEdge, Handle, HandleKey, HopHead, Members, NodeRef, NodeKinds,
 };
 pub use model::handles::{FIRST_HANDLE, HANDLE_NODE_SLOT, Handles, NODE_HANDLE_SLOT};
 pub use model::hyper::{

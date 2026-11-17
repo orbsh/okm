@@ -71,8 +71,8 @@ pub use okm_value::{CodecError, Dict, Variant as Value};
 /// cluster faces (ADR-0066) with `Dict` payloads, the same lazy traversal
 /// streams, and the same three write verbs (`incorporate` / `retract` / `replace`).
 pub use cluster::{
-    Cluster, ClusterConflict, ClusterRef, ClusterRow, Crossing, Decl, DerivedReport, DynFragment,
-    EdgeConflict, Kind, MEMBER_COUNT, NODE_COUNT, ReplaceReport, RetractReport, Subgraph,
+    Cluster, ClusterConflict, ClusterRef, ClusterRow, Cut, Decl, DerivedReport, DynFragment,
+    EdgeConflict, HalfEdge, Kind, MEMBER_COUNT, NODE_COUNT, ReplaceReport, RetractReport,
     WriteReport, intern_kind, interned_kinds, interned_label,
 };
 pub use collection::DynamicCollection;

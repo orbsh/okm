@@ -78,33 +78,33 @@ use crate::graph::{DynEdge, Graph};
 /// a reader that has to dedupe one seen from both ends.
 type EdgeIdentity = (u16, Vec<u8>, u16, u16, Vec<u8>);
 
-/// One edge that crosses a subgraph's cut: the tuple as stored (which IS the
-/// identity, so it is what a rewrite retracts), the member it touches, and the
-/// end on the other side of the cut.
-pub struct Crossing {
+/// One half-edge: the tuple as stored (which IS the identity, so it is what a
+/// rewrite retracts), anchored at the member it touches, with the far end named.
+pub struct HalfEdge {
     pub key: EdgeKey,
-    pub inside: NodeRef,
-    pub outside: NodeRef,
+    pub member: NodeRef,
+    pub far: NodeRef,
 }
 
-/// One group of entities as a subgraph: its members, the edges with BOTH ends
-/// inside, and the edges that cross the cut.
-pub struct Subgraph {
+/// One selection of entities, cut out of the graph: the half-edges along its
+/// boundary, plus the edges that die inside it.
+pub struct Cut {
     /// The declared members, in key order.
-    pub nodes: Vec<NodeRef>,
-    /// Edges with both ends in the selection: they die with it.
-    pub internal: Vec<EdgeKey>,
-    /// Edges with exactly one end in the selection: what a rewrite re-attaches.
-    pub external: Vec<Crossing>,
+    pub members: Vec<NodeRef>,
+    /// Edges with both ends in the selection: they die with it. Kept because a
+    /// rewrite replaces them too, not because they are part of the cut.
+    pub interior: Vec<EdgeKey>,
+    /// One half-edge per edge that crosses the boundary.
+    pub boundary: Vec<HalfEdge>,
 }
 
-impl Subgraph {
-    /// The crossings the given entity holds — the ones a rewrite of THAT entity
-    /// has to answer for. Order follows the read.
-    pub fn crossings_of(&self, node: &NodeRef) -> Vec<&Crossing> {
-        self.external
+impl Cut {
+    /// The half-edges of one member — the ones a rewrite of THAT entity has to
+    /// answer for. Order follows the read.
+    pub fn boundary_of(&self, node: &NodeRef) -> Vec<&HalfEdge> {
+        self.boundary
             .iter()
-            .filter(|crossing| crossing.inside == *node)
+            .filter(|half| half.member == *node)
             .collect()
     }
 }
@@ -1656,28 +1656,27 @@ impl<S: VirtualStorage> Graph<S> {
         Ok((doomed, nodes, plan))
     }
 
-    /// One group of entities as a subgraph: its members, the edges with BOTH ends
-    /// inside, and the edges that cross the cut.
+    /// Cut a selection: one half-edge per edge that crosses the boundary, plus
+    /// the edges that die inside it.
     ///
-    /// The dynamic form's counterpart of core's `subgraph`, answering tuples
-    /// instead of heads because a tuple is what this form's verbs take. A
-    /// replacement is built from this and nothing else: `internal` is what dies
-    /// with the selection, `external` is what has to be re-attached, and `nodes`
-    /// says which entities the new shape may name.
+    /// The dynamic form's counterpart of core's `cut`, answering tuples instead
+    /// of heads because a tuple is what this form's verbs take. `boundary` is
+    /// what a rewrite has to re-attach, `interior` what dies with the selection,
+    /// and `members` which entities the new shape may name.
     ///
-    /// An internal edge is seen twice (once from each end), so it is deduped by
-    /// its tuple; a crossing is seen once, from the member's side, and its
-    /// `inside` is the end a rewrite replaces — the direction never has to be
+    /// An interior edge is seen twice (once from each end), so it is deduped by
+    /// its tuple; a half-edge is seen once, from the member's side, and its
+    /// `member` is the end a rewrite re-attaches — the direction never has to be
     /// asked for.
-    pub fn subgraph(&self, set: NodeSet) -> Result<Subgraph, String> {
+    pub fn cut(&self, set: NodeSet) -> Result<Cut, String> {
         let members = self.node_members(set.kind, set.id)?;
         let inside: BTreeSet<([u8; 2], Vec<u8>)> = members
             .iter()
             .map(|node| (node.ns, node.pkey.clone()))
             .collect();
         let mut seen: BTreeSet<EdgeIdentity> = BTreeSet::new();
-        let mut internal = Vec::new();
-        let mut external = Vec::new();
+        let mut interior = Vec::new();
+        let mut boundary = Vec::new();
         for member in &members {
             let outs = self.out_edges(member)?;
             let ins = self.in_edges(member)?;
@@ -1696,21 +1695,21 @@ impl<S: VirtualStorage> Graph<S> {
                         key.dst.pkey.clone(),
                     );
                     if seen.insert(row) {
-                        internal.push(key);
+                        interior.push(key);
                     }
                     continue;
                 }
-                external.push(Crossing {
+                boundary.push(HalfEdge {
                     key,
-                    inside: member.clone(),
-                    outside: far,
+                    member: member.clone(),
+                    far,
                 });
             }
         }
-        Ok(Subgraph {
-            nodes: members,
-            internal,
-            external,
+        Ok(Cut {
+            members,
+            interior,
+            boundary,
         })
     }
 

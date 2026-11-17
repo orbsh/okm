@@ -2160,7 +2160,7 @@ fn each_spelling_answers_its_own_conflict_hook() {
 /// The two halves are the whole point of the read — a replacement is built from
 /// nothing else.
 #[test]
-fn a_node_set_reads_as_a_subgraph_with_its_cut() {
+fn a_cut_answers_the_boundary_of_a_selection() {
     for (engine, store) in TestStore::matrix() {
         let mut g = graph(&store);
         let mut fragment = Fragment::<Employment>::new([
@@ -2181,10 +2181,10 @@ fn a_node_set_reads_as_a_subgraph_with_its_cut() {
         let into = report.node_sets[0];
 
         let sub = g
-            .subgraph(NodeSet::new(into.kind, into.id))
+            .cut(NodeSet::new(into.kind, into.id))
             .unwrap_or_else(|e| panic!("{engine}: subgraph: {e}"));
 
-        let names: Vec<Vec<u8>> = sub.nodes.iter().map(|n| n.pkey.clone()).collect();
+        let names: Vec<Vec<u8>> = sub.members.iter().map(|n| n.pkey.clone()).collect();
         assert_eq!(
             names,
             vec![PersonId { id: 1 }.encode(), PersonId { id: 2 }.encode()],
@@ -2192,26 +2192,26 @@ fn a_node_set_reads_as_a_subgraph_with_its_cut() {
         );
 
         // One edge with both ends inside, seen from BOTH ends and deduped.
-        assert_eq!(sub.internal.len(), 1, "{engine}: {:?}", sub.internal);
+        assert_eq!(sub.interior.len(), 1, "{engine}: {:?}", sub.interior);
         assert!(
-            sub.internal[0].src == person(1) && sub.internal[0].dst == person(2)
-                || sub.internal[0].src == person(2) && sub.internal[0].dst == person(1),
+            sub.interior[0].src == person(1) && sub.interior[0].dst == person(2)
+                || sub.interior[0].src == person(2) && sub.interior[0].dst == person(1),
             "{engine}: the internal edge is the one between the two members"
         );
 
         // Two edges leave the set; the edge between the two outside nodes does not.
-        assert_eq!(sub.external.len(), 2, "{engine}: {:?}", sub.external);
-        for crossing in &sub.external {
+        assert_eq!(sub.boundary.len(), 2, "{engine}: {:?}", sub.boundary);
+        for crossing in &sub.boundary {
             assert!(
-                crossing.inside == person(1) || crossing.inside == person(2),
+                crossing.member == person(1) || crossing.member == person(2),
                 "{engine}: the inside end is always a member"
             );
             assert!(
-                crossing.outside == org(3) || crossing.outside == org(4),
+                crossing.far == org(3) || crossing.far == org(4),
                 "{engine}: and the far end is outside"
             );
             assert!(
-                crossing.head.src == crossing.inside || crossing.head.dst == crossing.inside,
+                crossing.edge.src == crossing.member || crossing.edge.dst == crossing.member,
                 "{engine}: the head names the inside end, so a rewrite knows what to replace"
             );
         }
