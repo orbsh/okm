@@ -1685,3 +1685,51 @@ fn a_repoint_carries_its_attributes_and_the_cut_is_checked() {
         );
     }
 }
+
+/// A node set reads as a subgraph: its members, the edges with both ends inside,
+/// and the crossings — and the crossings are what a rewrite has to answer for.
+#[test]
+fn a_node_set_reads_as_a_subgraph_with_its_cut() {
+    for (engine, store) in TestStore::matrix() {
+        let mut g = graph(&store);
+        let mut facts = DynFragment::new([
+            Decl::edge(edge(person(1), person(2), "knows")),
+            Decl::edge(edge(person(1), org(9), "works_at")),
+            Decl::edge(edge(person(2), org(9), "works_at")),
+            Decl::edge(edge(person(3), org(7), "works_at")),
+        ]);
+        facts.on_edge_conflict(|_stored, declared| declared.clone());
+        facts.cluster(Cluster::nodes(
+            "scope",
+            Dict::new(),
+            [person(1), person(2)],
+        ));
+        let report = g
+            .incorporate(facts)
+            .unwrap_or_else(|e| panic!("{engine}: write: {e}"));
+        let scope = report.node_sets[0];
+
+        let sub = g
+            .subgraph(scope)
+            .unwrap_or_else(|e| panic!("{engine}: subgraph: {e}"));
+        assert_eq!(sub.nodes.len(), 2, "{engine}: both members");
+        assert_eq!(sub.internal.len(), 1, "{engine}: the knows edge is inside");
+        assert_eq!(sub.internal[0].src, person(1), "{engine}: and it is that one");
+        assert_eq!(
+            sub.external.len(),
+            2,
+            "{engine}: two crossings out to orgs, the third edge not touched"
+        );
+        let of_first = sub.crossings_of(&person(1));
+        assert_eq!(of_first.len(), 1, "{engine}: one crossing per member");
+        assert_eq!(
+            of_first[0].outside,
+            org(9),
+            "{engine}: and it names the far end"
+        );
+        assert!(
+            sub.external.iter().all(|c| c.inside != person(3)),
+            "{engine}: an entity outside the set is never an `inside`"
+        );
+    }
+}

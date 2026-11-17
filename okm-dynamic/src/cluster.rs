@@ -73,6 +73,43 @@ use okm_value::{Dict, Variant, decode_named};
 
 use crate::graph::{DynEdge, Graph};
 
+/// An edge's tuple as bytes: `(src ns, src pkey, predicate id, dst ns, dst pkey)`.
+/// The tuple IS the identity (ADR-0067), so this is what "the same edge" means to
+/// a reader that has to dedupe one seen from both ends.
+type EdgeIdentity = (u16, Vec<u8>, u16, u16, Vec<u8>);
+
+/// One edge that crosses a subgraph's cut: the tuple as stored (which IS the
+/// identity, so it is what a rewrite retracts), the member it touches, and the
+/// end on the other side of the cut.
+pub struct Crossing {
+    pub key: EdgeKey,
+    pub inside: NodeRef,
+    pub outside: NodeRef,
+}
+
+/// One group of entities as a subgraph: its members, the edges with BOTH ends
+/// inside, and the edges that cross the cut.
+pub struct Subgraph {
+    /// The declared members, in key order.
+    pub nodes: Vec<NodeRef>,
+    /// Edges with both ends in the selection: they die with it.
+    pub internal: Vec<EdgeKey>,
+    /// Edges with exactly one end in the selection: what a rewrite re-attaches.
+    pub external: Vec<Crossing>,
+}
+
+impl Subgraph {
+    /// The crossings the given entity holds — the ones a rewrite of THAT entity
+    /// has to answer for. Order follows the read.
+    pub fn crossings_of(&self, node: &NodeRef) -> Vec<&Crossing> {
+        self.external
+            .iter()
+            .filter(|crossing| crossing.inside == *node)
+            .collect()
+    }
+}
+
+
 /// What the delete half of a batch decides: the edge rows it dooms, the entities
 /// it retires, and the cluster plan those removals imply. Both verbs take one;
 /// `replace` hands its plan to the write half so a cluster is counted once.
@@ -1617,6 +1654,64 @@ impl<S: VirtualStorage> Graph<S> {
         }
 
         Ok((doomed, nodes, plan))
+    }
+
+    /// One group of entities as a subgraph: its members, the edges with BOTH ends
+    /// inside, and the edges that cross the cut.
+    ///
+    /// The dynamic form's counterpart of core's `subgraph`, answering tuples
+    /// instead of heads because a tuple is what this form's verbs take. A
+    /// replacement is built from this and nothing else: `internal` is what dies
+    /// with the selection, `external` is what has to be re-attached, and `nodes`
+    /// says which entities the new shape may name.
+    ///
+    /// An internal edge is seen twice (once from each end), so it is deduped by
+    /// its tuple; a crossing is seen once, from the member's side, and its
+    /// `inside` is the end a rewrite replaces — the direction never has to be
+    /// asked for.
+    pub fn subgraph(&self, set: NodeSet) -> Result<Subgraph, String> {
+        let members = self.node_members(set.kind, set.id)?;
+        let inside: BTreeSet<([u8; 2], Vec<u8>)> = members
+            .iter()
+            .map(|node| (node.ns, node.pkey.clone()))
+            .collect();
+        let mut seen: BTreeSet<EdgeIdentity> = BTreeSet::new();
+        let mut internal = Vec::new();
+        let mut external = Vec::new();
+        for member in &members {
+            let outs = self.out_edges(member)?;
+            let ins = self.in_edges(member)?;
+            for (key, leaves) in outs
+                .into_iter()
+                .map(|key| (key, true))
+                .chain(ins.into_iter().map(|key| (key, false)))
+            {
+                let far = if leaves { key.dst.clone() } else { key.src.clone() };
+                if inside.contains(&(far.ns, far.pkey.clone())) {
+                    let row = (
+                        key.src.ns_id(),
+                        key.src.pkey.clone(),
+                        key.predicate,
+                        key.dst.ns_id(),
+                        key.dst.pkey.clone(),
+                    );
+                    if seen.insert(row) {
+                        internal.push(key);
+                    }
+                    continue;
+                }
+                external.push(Crossing {
+                    key,
+                    inside: member.clone(),
+                    outside: far,
+                });
+            }
+        }
+        Ok(Subgraph {
+            nodes: members,
+            internal,
+            external,
+        })
     }
 
     /// Replace a shape: ONE fragment may retract and declare, and the batch lands
