@@ -447,6 +447,17 @@ fn emit_fields(schema: &DocumentSchema, idx: &IdxDecl) -> syn::Result<(TS2, TS2)
                 )
             })?;
         let id = &f.ident;
+        if f.ty_str == "Secret" {
+            // ADR-0069 §3: an index entry's KEY carries the field's encoded value,
+            // so indexing a secret writes a sorted copy of it — the leak the
+            // encryption exists to prevent. Refused at expansion, not at run time.
+            return Err(syn::Error::new(
+                id.span(),
+                format!(
+                    "ok_index[{iname}]: field `{name}` is a Secret — an index key is a sorted copy of the field, and a sorted copy of a secret is the secret (ADR-0069)"
+                ),
+            ));
+        }
         let dec = &f.dec;
         let ty: syn::Type = syn::parse_str(&f.ty_str).map_err(|e| {
             syn::Error::new(
@@ -1500,6 +1511,20 @@ pub(crate) fn emit_row_impl(schema: &DocumentSchema) -> syn::Result<TS2> {
         }
         None => quote! {},
     };
+    // #[ok_redact] on a field → the name joins the export's NULL list (ADR-0069
+    // §4). Emitted only when non-empty, so a table without secrets carries no
+    // constant at all and the trait's default (the empty slice) is the answer.
+    let redacted_lits: Vec<proc_macro2::Literal> = schema
+        .fields
+        .iter()
+        .filter(|f| f.redact)
+        .map(|f| proc_macro2::Literal::string(&f.ident.to_string()))
+        .collect();
+    let redacted_const = if redacted_lits.is_empty() {
+        quote! {}
+    } else {
+        quote! { const REDACTED: &'static [&'static str] = &[#(#redacted_lits),*]; }
+    };
     let ns = schema.ns;
     let (ns_hi, ns_lo) = ((ns >> 8) as u8, (ns & 0xff) as u8);
     let ns_const = quote! {
@@ -1630,6 +1655,10 @@ pub(crate) fn emit_row_impl(schema: &DocumentSchema) -> syn::Result<TS2> {
         let is_bool = ty_str == "bool";
         let is_string = ty_str.starts_with("String");
         let is_bytes = ty_str.starts_with("Bytes");
+        // Secret (ADR-0069) travels as the same `Variant::Bytes` — the map bridge
+        // is a dynamic view, and the dynamic layer has no secret kind (a dynamic
+        // reader could not keep the guard rails anyway: it has no type).
+        let is_secret = ty_str == "Secret";
         let is_fixedbytes = ty_str.starts_with("[u8;");
         let is_uuid = ty_str.starts_with("Uuid4") || ty_str.starts_with("Uuid7");
         let is_f64 = ty_str.starts_with("Quant<") || ty_str.starts_with("Quant <");
@@ -1733,13 +1762,18 @@ pub(crate) fn emit_row_impl(schema: &DocumentSchema) -> syn::Result<TS2> {
                     }
                 },
             });
-        } else if is_bytes {
+        } else if is_bytes || is_secret {
+            let built = if is_secret {
+                quote! { ::okm_core::Secret(v.clone()) }
+            } else {
+                quote! { ::okm_core::Bytes(v.clone()) }
+            };
             to_map_arms.extend(quote! {
                 out.insert(#name.to_string(), ::okm_core::okm_value::Variant::Bytes(self.#id.0.clone()));
             });
             from_map_arms.extend(quote! {
                 #id: match map.get(#name) {
-                    Some(::okm_core::okm_value::Variant::Bytes(v)) => ::okm_core::Bytes(v.clone()),
+                    Some(::okm_core::okm_value::Variant::Bytes(v)) => #built,
                     None => #dflt,
                     Some(__okm_got) => {
                         return ::core::result::Result::Err(::okm_core::error::Error::kind_mismatch(#name, "Bytes", __okm_got))
@@ -2282,6 +2316,7 @@ pub(crate) fn emit_row_impl(schema: &DocumentSchema) -> syn::Result<TS2> {
             #ns_const
             #name_const
             #captured_const
+            #redacted_const
             const LAYOUT_VERSION: u8 = #ver_lit;
             const PAYLOAD_FIELDS: &'static [(&'static str, usize)] = &[ #((#name_strs, #widths)),* ];
             const FIELDS: &'static [::okm_core::FieldDesc] = #row_desc;

@@ -407,6 +407,10 @@ pub(crate) struct FieldSchema {
     /// (embedding dims known to the app). A decode-time check, not a wire
     /// constraint: the frame carries its own count. None = unrestricted.
     pub ok_len: Option<usize>,
+    /// `#[ok_redact]` — export this field's column as NULL (ADR-0069 §4). The
+    /// default for a `Secret` field is the ciphertext it already holds; redaction
+    /// is the opt-out for a value that must not leave the store at all.
+    pub redact: bool,
 }
 
 /// Encoded width of a plain primitive type name (for `Reverse<T>` fields —
@@ -490,6 +494,8 @@ fn field_encoders(named: &syn::FieldsNamed, ctx: &str) -> syn::Result<Vec<FieldS
         // #[ok_default(expr)] or #[ok_default = expr] — value used when an
         // older-layout payload lacks this field (append-only schema
         // evolution). Optional; fallback is `<T as Default>::default()`.
+        // #[ok_redact] — a path-only marker: the field's export column is NULL.
+        let redact = f.attrs.iter().any(|a| a.path().is_ident("ok_redact"));
         let ok_default: Option<TS2> = match f.attrs.iter().find(|a| a.path().is_ident("ok_default"))
         {
             Some(a) => {
@@ -1131,6 +1137,24 @@ fn field_encoders(named: &syn::FieldsNamed, ctx: &str) -> syn::Result<Vec<FieldS
                     format!("{ctx}: `Vec<u8>` is retired as a field spelling — use `Bytes` (okm_core::Bytes) for raw-byte fields (field {id})"),
                 ));
             }
+            _ if ty_str == "Secret" => {
+                // Secret (ADR-0069): the SAME wire as Bytes — a variable-length
+                // TLV frame carrying raw bytes — and no other difference at this
+                // layer. The guard rails are the type's Debug, the derive's
+                // refusal to index it, and the export policy; none of them
+                // changes a byte on disk, so no layout generation moves.
+                (
+                    quote! { buf.extend_from_slice(&self.#id.0); },
+                    quote! {{
+                        let v = ::okm_core::Secret(b[offset..offset+len].to_vec());
+                        offset += len;
+                        v
+                    }},
+                    quote! { 0 },
+                    quote! { self.#id.0.len() },
+                    Some(quote! { ::okm_core::FieldType::Bytes }),
+                )
+            }
             _ if ty_str.starts_with("Bytes") || ty_str == "Bytes" => {
                 // Bytes — same variable-length TLV frame as String, minus
                 // the UTF-8 constraint: raw binary payloads (hashes,
@@ -1196,6 +1220,7 @@ fn field_encoders(named: &syn::FieldsNamed, ctx: &str) -> syn::Result<Vec<FieldS
             },
             default_lit: ok_default_lit,
             ok_len: if ty_str.starts_with("Vector<") || ty_str.starts_with("Vector <") { ok_len } else { None },
+            redact,
         });
     }
     Ok(fs)
