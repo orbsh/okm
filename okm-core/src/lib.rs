@@ -72,7 +72,7 @@ pub mod subscribe;
 pub use model::reverse::{Reverse, Reversible};
 pub use model::wrappers::wire::{prefix_width, put_len, take_len};
 pub use model::wrappers::{
-    Bytes, Offset, Quant, Ref, Refs, Uuid4, Uuid7, VarInt, VarIntEnc, Vector, VectorElem,
+    Bytes, Offset, Quant, Ref, Refs, Secret, Uuid4, Uuid7, VarInt, VarIntEnc, Vector, VectorElem,
     dequantize, offset_decode, offset_encode, quantize, wire_to_be_bytes,
 };
 

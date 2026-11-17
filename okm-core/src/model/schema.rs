@@ -133,6 +133,11 @@ pub struct CollectionSchema {
     /// `R::FACES`: the fingerprint of `indexes`, as the store's meta row carries
     /// it. Exported so an outside reader can compare without re-deriving.
     pub faces: Vec<u8>,
+    /// Field names whose export column is NULL (`#[ok_redact]`, ADR-0069 §4).
+    /// A secret field is absent from this list: its column carries the ciphertext
+    /// it already holds, which is the useful default — a reader on the other side
+    /// owns the key.
+    pub redacted: Vec<String>,
 }
 
 /// One declared face, as the export carries it (ADR-0048): the same six facts
@@ -311,6 +316,10 @@ impl CollectionSchema {
                 })
                 .collect(),
             faces: <R as Document>::FACES.to_vec(),
+            redacted: <R as Document>::REDACTED
+                .iter()
+                .map(|name| (*name).to_string())
+                .collect(),
         }
     }
 
@@ -589,6 +598,7 @@ mod serde_impls {
                 slots: &'a SlotMap,
                 indexes: &'a [IndexSchema],
                 faces: &'a [u8],
+                redacted: &'a [String],
             }
             Repr {
                 name: &self.name,
@@ -604,6 +614,7 @@ mod serde_impls {
                 slots: &self.slots,
                 indexes: &self.indexes,
                 faces: &self.faces,
+                redacted: &self.redacted,
             }
             .serialize(s)
         }
@@ -643,6 +654,10 @@ mod serde_impls {
                 indexes: Vec<IndexSchema>,
                 #[serde(default)]
                 faces: Vec<u8>,
+                /// Sidecars written before redaction existed carry none — the
+                /// same reading as a table that declares none.
+                #[serde(default)]
+                redacted: Vec<String>,
             }
             let r = Repr::deserialize(d)?;
             Ok(Self {
@@ -659,6 +674,7 @@ mod serde_impls {
                 slots: r.slots,
                 indexes: r.indexes,
                 faces: r.faces,
+                redacted: r.redacted,
             })
         }
     }

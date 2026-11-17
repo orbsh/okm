@@ -275,6 +275,14 @@ pub trait Document: Sized + Clone {
     /// OUT of it — the export's catalog column and the import-side lookup.
     /// Empty = unnamed: an export refuses it rather than spelling the struct.
     const TABLE_NAME: &'static str = "";
+    /// Field names whose export column is NULL (`#[ok_redact]`, ADR-0069 §4).
+    ///
+    /// A `Secret` field is NOT here by default: its stored bytes are the
+    /// ciphertext, and exporting it is the useful default — the reader on the
+    /// other side owns the key. Redaction is for a value that must not leave the
+    /// store in any form, and it is declared per field rather than inferred,
+    /// because a column that quietly disappears is harder to notice than a null.
+    const REDACTED: &'static [&'static str] = &[];
     /// Whether this document declares any `Vocab<N>` field (ADR-0032). `put`
     /// reads it to choose between encoding the caller's document directly and
     /// taking a mutable copy for the intern step — tables without categorical

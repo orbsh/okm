@@ -8,6 +8,7 @@
 //! document-group regime, not here.
 
 mod bytes;
+mod secret;
 pub mod offset;
 mod optional;
 mod quant;
@@ -20,6 +21,7 @@ pub mod vector;
 pub mod wire;
 
 pub use bytes::Bytes;
+pub use secret::Secret;
 pub use offset::{Offset, offset_decode, offset_encode};
 pub use optional::{Option, OptionalEnc, WireWidth};
 pub use quant::{Quant, dequantize, quantize, wire_to_be_bytes};
