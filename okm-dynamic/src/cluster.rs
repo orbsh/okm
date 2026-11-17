@@ -1656,6 +1656,109 @@ impl<S: VirtualStorage> Graph<S> {
         Ok((doomed, nodes, plan))
     }
 
+    /// Find a subgraph: breadth-first from one entity, `hops` deep, and answer it
+    /// as a [`Cut`].
+    ///
+    /// The dynamic form's counterpart of core's `subgraph`, and the step that
+    /// NAMES a selection when nothing has written one. `hops` counts the rings
+    /// that are INSIDE the selection, not the number of scans: the last ring's
+    /// faces are scanned and their far ends are NOT added, because those edges
+    /// ARE the boundary. Walking one ring further and adding what it finds would
+    /// answer an empty boundary every time.
+    ///
+    /// `predicates` limits the walk (both directions, per predicate), and
+    /// therefore what the answer sees: an edge the walk does not take is an edge
+    /// the boundary cannot report.
+    ///
+    /// Cost: one face scan per visited entity per hop, plus one pass over the
+    /// edges seen. The visited set is a `BTreeSet` over identities, so a cycle
+    /// costs nothing extra.
+    pub fn subgraph(
+        &mut self,
+        seed: &NodeRef,
+        hops: u8,
+        predicates: &[&str],
+    ) -> Result<Cut, String> {
+        let mut members: Vec<NodeRef> = vec![seed.clone()];
+        let mut inside: BTreeSet<([u8; 2], Vec<u8>)> =
+            BTreeSet::from([(seed.ns, seed.pkey.clone())]);
+        let mut seen: BTreeSet<EdgeIdentity> = BTreeSet::new();
+        let mut edges: Vec<EdgeKey> = Vec::new();
+        let mut frontier: Vec<NodeRef> = vec![seed.clone()];
+        for depth in 0..=hops {
+            let last = depth == hops;
+            let mut next: Vec<NodeRef> = Vec::new();
+            for node in &frontier {
+                let mut reached: Vec<EdgeKey> = Vec::new();
+                if predicates.is_empty() {
+                    reached.extend(self.out_edges(node)?);
+                    reached.extend(self.in_edges(node)?);
+                } else {
+                    for predicate in predicates {
+                        reached.extend(self.typed_out(predicate, node)?);
+                        reached.extend(self.typed_in(predicate, node)?);
+                    }
+                }
+                for key in reached {
+                    let far = if key.src == *node {
+                        key.dst.clone()
+                    } else {
+                        key.src.clone()
+                    };
+                    let identity = (
+                        key.src.ns_id(),
+                        key.src.pkey.clone(),
+                        key.predicate,
+                        key.dst.ns_id(),
+                        key.dst.pkey.clone(),
+                    );
+                    if seen.insert(identity) {
+                        edges.push(key);
+                    }
+                    if last {
+                        continue;
+                    }
+                    if inside.insert((far.ns, far.pkey.clone())) {
+                        members.push(far.clone());
+                        next.push(far);
+                    }
+                }
+            }
+            if next.is_empty() {
+                break;
+            }
+            frontier = next;
+        }
+
+        members.sort_by(|left, right| (left.ns, &left.pkey).cmp(&(right.ns, &right.pkey)));
+        members.dedup();
+        let mut interior = Vec::new();
+        let mut boundary = Vec::new();
+        for key in edges {
+            let src_in = inside.contains(&(key.src.ns, key.src.pkey.clone()));
+            let dst_in = inside.contains(&(key.dst.ns, key.dst.pkey.clone()));
+            match (src_in, dst_in) {
+                (true, true) => interior.push(key),
+                (true, false) => boundary.push(HalfEdge {
+                    member: key.src.clone(),
+                    far: key.dst.clone(),
+                    key,
+                }),
+                (false, true) => boundary.push(HalfEdge {
+                    member: key.dst.clone(),
+                    far: key.src.clone(),
+                    key,
+                }),
+                (false, false) => {}
+            }
+        }
+        Ok(Cut {
+            members,
+            interior,
+            boundary,
+        })
+    }
+
     /// Cut a selection: one half-edge per edge that crosses the boundary, plus
     /// the edges that die inside it.
     ///

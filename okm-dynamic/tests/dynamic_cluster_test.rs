@@ -1733,3 +1733,60 @@ fn a_cut_answers_the_boundary_of_a_selection() {
         );
     }
 }
+
+/// A walk names a selection on the dynamic form too: the rings inside `hops` are
+/// the members, and the last ring's faces are scanned WITHOUT adding their far
+/// ends — those edges are the boundary, and a k-hop neighbourhood's own boundary
+/// would otherwise be empty by construction.
+#[test]
+fn a_walk_names_a_selection_and_its_boundary_dynamic() {
+    for (engine, store) in TestStore::matrix() {
+        let mut g = graph(&store);
+        let mut facts = DynFragment::new([
+            Decl::edge(edge(person(1), person(2), "knows")),
+            Decl::edge(edge(person(1), org(9), "works_at")),
+            Decl::edge(edge(person(2), org(9), "works_at")),
+            Decl::edge(edge(person(3), org(9), "works_at")),
+        ]);
+        facts.on_edge_conflict(|_stored, declared| declared.clone());
+        g.incorporate(facts)
+            .unwrap_or_else(|e| panic!("{engine}: write: {e}"));
+
+        // Zero hops: the seed alone, every edge of it on the boundary.
+        let near = g
+            .subgraph(&person(1), 0, &[])
+            .unwrap_or_else(|e| panic!("{engine}: walk: {e}"));
+        assert_eq!(near.members, vec![person(1)], "{engine}: the seed alone");
+        assert!(near.interior.is_empty(), "{engine}: nothing inside yet");
+        assert_eq!(
+            near.boundary.len(),
+            2,
+            "{engine}: both of its edges leave it"
+        );
+
+        // One hop: neighbours join, their edges become the boundary.
+        let one = g
+            .subgraph(&person(1), 1, &[])
+            .unwrap_or_else(|e| panic!("{engine}: walk: {e}"));
+        assert_eq!(one.members.len(), 3, "{engine}: 1, 2 and the org");
+        assert_eq!(one.interior.len(), 3, "{engine}: every edge among them");
+        assert_eq!(one.boundary.len(), 1, "{engine}: the one leaving the org");
+        assert_eq!(one.boundary[0].member, org(9), "{engine}: the inside end");
+        assert_eq!(
+            one.boundary[0].far,
+            person(3),
+            "{engine}: the end to re-attach"
+        );
+
+        // The predicate limits the walk, so it limits what the answer can report.
+        let filtered = g
+            .subgraph(&person(1), 1, &["knows"])
+            .unwrap_or_else(|e| panic!("{engine}: walk: {e}"));
+        assert_eq!(filtered.members.len(), 2, "{engine}: only the knows neighbour");
+        assert_eq!(filtered.interior.len(), 1, "{engine}: one edge inside");
+        assert!(
+            filtered.boundary.is_empty(),
+            "{engine}: and nothing crosses out of two"
+        );
+    }
+}
