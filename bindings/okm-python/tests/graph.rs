@@ -52,9 +52,6 @@ const NS: u16 = 0x0190;
 // its schema (k10r: 1 = community, 5 = flow); the store never learns the words.
 const COMMUNITY: Kind = Kind(1);
 const EVENT: Kind = Kind(2);
-const SUBGRAPH: Kind = Kind(3);
-const SCOPE: Kind = Kind(4);
-const FLOW: Kind = Kind(5);
 
 /// The document collection's ns: same store, different table.
 const DOC_NS: u16 = 7;
