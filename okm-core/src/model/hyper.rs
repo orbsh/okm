@@ -406,6 +406,21 @@ pub struct WriteReport {
     pub node_sets: Vec<NodeSet>,
 }
 
+/// What one `replace` did: the rows it removed and the rows it wrote, in one
+/// batch.
+///
+/// Two counts, one commit — a replacement is a single state change, so a reader
+/// never sees the gap between "the old shape is gone" and "the new one is here".
+#[derive(Clone, Debug, Default)]
+pub struct ReplaceReport {
+    /// Nodes whose cascade removed something.
+    pub nodes: usize,
+    /// Edges removed: the declared heads and the ones a cascade pulled in.
+    pub edges: usize,
+    /// The write half: the edges asserted and the clusters allocated.
+    pub written: WriteReport,
+}
+
 /// What one `retract` removed — the inverse of [`WriteReport`], counted in rows
 /// that are no longer there. A refusal is never "the id was not there": an
 /// absent node or edge is nothing to do, and it contributes zero.
@@ -690,7 +705,7 @@ fn member_rows<S: VirtualStorage + ?Sized>(
 
 /// The node member rows of one cluster, in key order: one prefix scan of the
 /// node member face. The suffix IS the handle, eight bytes.
-fn node_member_handles<S: VirtualStorage + ?Sized>(
+pub(crate) fn node_member_handles<S: VirtualStorage + ?Sized>(
     store: &S,
     ns: &[u8; 2],
     cluster: ClusterRef,
@@ -1785,6 +1800,11 @@ where
     }
 }
 
+/// One cluster's entry in a batch's plan, keyed by `(kind id, cluster id)`.
+/// Both verbs build one, and `replace` hands the retract half's to the write half
+/// so the counts are computed once.
+type ClusterPlanMap = BTreeMap<(ClusterKindId, u64), ClusterPlan>;
+
 /// A conflict hook over the graph's own edge payload — one type per graph, so
 /// one field. It takes `(stored, declared)` and answers the payload to write.
 pub type EdgeConflict<G> = Box<dyn Fn(&G, &G) -> G>;
@@ -1802,6 +1822,9 @@ pub struct Fragment<G: GraphEncode + Default> {
     clusters: Vec<Cluster>,
     ops: Vec<ClusterOp>,
     edge_deletes: Vec<EdgeHead>,
+    /// Assertions moved from one head to another: `(from, to)`. The payload
+    /// travels inside okm, so a caller moving an edge's end never holds it.
+    repoints: Vec<(EdgeHead, EdgeHead)>,
     node_deletes: Vec<NodeRef>,
     node_conflicts: Vec<Box<dyn NodeConflict>>,
     edge_conflict: Option<EdgeConflict<G>>,
@@ -1823,6 +1846,7 @@ impl<G: GraphEncode + Default> Fragment<G> {
             clusters: Vec::new(),
             ops: Vec::new(),
             edge_deletes: Vec::new(),
+            repoints: Vec::new(),
             node_deletes: Vec::new(),
             node_conflicts: Vec::new(),
             edge_conflict: None,
@@ -2001,6 +2025,32 @@ impl<G: GraphEncode + Default> Fragment<G> {
         self
     }
 
+    /// Assert `to` with the payload the row at `from` holds, and retract `from` —
+    /// one action, one batch.
+    ///
+    /// This is re-attachment: an edge's head IS its identity (ADR-0067), so
+    /// moving one end is not an edit, it is a different row. Doing that as
+    /// `delete_edge` + a declaration would lose the payload, because a
+    /// declaration names a head and the new row's payload is the type's default.
+    /// So the payload is read from the row being replaced and carried:
+    ///
+    /// - `to` has no row: the source payload lands as is,
+    /// - `to` already has one: `on_edge_conflict(stored at 'to', source payload)`
+    ///   decides — the merge of two assertions, with the moved one as the
+    ///   declared side.
+    ///
+    /// The open attributes (the dynamic segment keyed by the edge) are NOT okm's:
+    /// they are a segment of their own, so a caller that wants them moved moves
+    /// them. Everything okm owns — the row, the three derived faces, the
+    /// predicate faces, the cluster memberships — follows in the same batch.
+    ///
+    /// Only [`Graph::replace`] takes a fragment carrying these: `incorporate` and
+    /// `retract` each have one meaning, and a repoint is both.
+    pub fn repoint(&mut self, from: EdgeHead, to: EdgeHead) -> &mut Self {
+        self.repoints.push((from, to));
+        self
+    }
+
     /// Delete one node AND every edge incident to it — both traversal faces, the
     /// predicate faces, the payload row, and those edges' cluster membership
     /// rows. A node cannot be left with a dangling edge.
@@ -2028,6 +2078,7 @@ impl<G: GraphEncode + Default> Fragment<G> {
     /// holds it), and a cluster merge is a write, so it does not.
     fn check_retractable(&self) -> Result<()> {
         let writes = self.rows.len()
+            + self.repoints.len()
             + self.clusters.len()
             + self.node_conflicts.len()
             + usize::from(self.edge_conflict.is_some())
@@ -2049,7 +2100,7 @@ impl<G: GraphEncode + Default> Fragment<G> {
     /// `incorporate` writes, and a fragment that declares deletions belongs to
     /// [`Graph::retract`] — two verbs with one meaning each.
     fn check_incorporable(&self) -> Result<()> {
-        let deletions = self.edge_deletes.len() + self.node_deletes.len();
+        let deletions = self.edge_deletes.len() + self.node_deletes.len() + self.repoints.len();
         if deletions > 0 {
             return Err(Error::IncorporateWithDeletes { deletions });
         }
@@ -2064,6 +2115,7 @@ impl<G: GraphEncode + Default> Fragment<G> {
         mut self,
         graph: &mut Graph<S, G>,
         batch: &mut Batch,
+        mut plan: ClusterPlanMap,
     ) -> Result<WriteReport> {
         let ns: [u8; 2] = graph.ns().to_be_bytes();
         let mut report = WriteReport::default();
@@ -2100,6 +2152,49 @@ impl<G: GraphEncode + Default> Fragment<G> {
         // batch itself (a refused fragment leaves none behind).
         let mut cache = HandleCache::default();
         let mut batch_rows: Vec<HandleKey> = Vec::new();
+
+        // ---- 2a. The repoints: read each moved payload, then state both ends ----
+        //
+        // The source row is read BEFORE anything is written, and its payload is
+        // resolved here rather than in the loop below: a moved assertion has a
+        // declared side the loop cannot compute (a declaration carries no
+        // payload). The pairing — state `to`, retract `from` — is what makes the
+        // move one assertion rather than a gap.
+        let mut carried: BTreeMap<crate::model::graph::EdgeIdentity, G> = BTreeMap::new();
+        for (from, to) in std::mem::take(&mut self.repoints) {
+            let Some(from_key) = graph.key_of(&from)? else {
+                continue;
+            };
+            let Some(body) = graph.get_edge(&from_key)? else {
+                continue;
+            };
+            let to_key = graph.write_key(&to)?;
+            let moved = G::decode_payload(&body.payload);
+            let stored = graph.get_edge(&to_key)?.map(|row| row.payload);
+            let payload = match (stored.as_deref(), self.edge_conflict.as_ref()) {
+                // Both ends hold a live row: the hook merges, the moved one is the
+                // declared side.
+                (Some(bytes), Some(resolve)) => resolve(&G::decode_payload(bytes), &moved),
+                (Some(_), None) => moved,
+                // The target is free: the payload lands as is, unless a hook wants
+                // to see that too (default, moved).
+                (None, Some(resolve)) => resolve(&G::default(), &moved),
+                (None, None) => moved,
+            };
+            carried.insert(
+                (
+                    to_key.src.ns_id(),
+                    to_key.src.pkey.clone(),
+                    to_key.predicate,
+                    to_key.dst.ns_id(),
+                    to_key.dst.pkey.clone(),
+                ),
+                payload,
+            );
+            self.rows.push(Decl::Edge(to));
+            self.edge_deletes.push(from);
+        }
+
         for decl in &self.rows {
             let Decl::Edge(head) = decl else {
                 continue;
@@ -2107,6 +2202,27 @@ impl<G: GraphEncode + Default> Fragment<G> {
             // The vocabulary id is part of the row, so the predicate is interned
             // before the existence probe — the write would intern it anyway.
             let key = graph.write_key(head)?;
+            // A moved assertion: the prepass resolved its payload, and the row it
+            // replaces is already queued for retraction.
+            if let Some(payload) = carried.remove(&(
+                key.src.ns_id(),
+                key.src.pkey.clone(),
+                key.predicate,
+                key.dst.ns_id(),
+                key.dst.pkey.clone(),
+            )) {
+                let row = match graph.row_of(&key)? {
+                    Some(row) => {
+                        graph.unlink_into(batch, &row)?;
+                        graph.assert_into(batch, head, &payload, &mut cache)?;
+                        row
+                    }
+                    None => graph.link_into(batch, head, &payload, &mut cache)?.1,
+                };
+                batch_rows.push(row);
+                report.edges.push(key);
+                continue;
+            }
             let row = match graph.row_of(&key)? {
                 Some(row) => {
                     // The handles are on file, but handle rows are permanent:
@@ -2236,7 +2352,10 @@ impl<G: GraphEncode + Default> Fragment<G> {
         }
 
         // ---- 4. The plan: one record per cluster this batch touches ----
-        let mut plan: BTreeMap<(ClusterKindId, u64), ClusterPlan> = BTreeMap::new();
+        //
+        // The plan ARRIVES seeded: `replace` hands the retract half's entries in,
+        // so one `apply_plan` sees the removals and the additions together and the
+        // maintained counts are computed once, from one base.
         for ((cluster, kind), id) in self.clusters.iter().zip(&declared_kinds).zip(&assigned) {
             let entry = plan.entry((kind.0, *id)).or_default();
             entry.declared = true;
@@ -2526,7 +2645,7 @@ impl<S: VirtualStorage, G: GraphEncode + Default> Graph<S, G> {
     pub fn incorporate(&mut self, fragment: Fragment<G>) -> Result<WriteReport> {
         fragment.check_incorporable()?;
         let mut rows = Batch::default();
-        let report = fragment.write_into(self, &mut rows)?;
+        let report = fragment.write_into(self, &mut rows, BTreeMap::new())?;
         self.store().commit_batch(rows)?;
         Ok(report)
     }
@@ -2553,12 +2672,11 @@ impl<S: VirtualStorage, G: GraphEncode + Default> Graph<S, G> {
     /// absence: an id no row holds, or a node no edge names, is nothing to do
     /// and reports zero. Everything runs in ONE batch, so a reader sees the
     /// whole removal or none of it.
-    pub fn retract(&mut self, mut fragment: Fragment<G>) -> Result<RetractReport> {
-        fragment.check_retractable()?;
+    fn retract_plan(
+        &mut self,
+        fragment: &Fragment<G>,
+    ) -> Result<(BTreeSet<HandleKey>, BTreeSet<NodeRef>, ClusterPlanMap)> {
         let ns: [u8; 2] = self.ns().to_be_bytes();
-        let mut report = RetractReport::default();
-        let mut batch = Batch::default();
-
         // ---- 1. The doomed edges: a node's cascade first, then the declared
         //         heads, deduplicated — one edge is one removal whatever named it.
         //
@@ -2661,6 +2779,16 @@ impl<S: VirtualStorage, G: GraphEncode + Default> Graph<S, G> {
             }
         }
 
+
+        Ok((doomed, nodes, plan))
+    }
+
+    pub fn retract(&mut self, mut fragment: Fragment<G>) -> Result<RetractReport> {
+        fragment.check_retractable()?;
+        let ns: [u8; 2] = self.ns().to_be_bytes();
+        let mut report = RetractReport::default();
+        let mut batch = Batch::default();
+        let (doomed, nodes, plan) = self.retract_plan(&fragment)?;
         // ---- 3. The edges themselves: exactly their rows, in this batch ----
         for row in &doomed {
             if !self.has_row(row)? {
@@ -2678,6 +2806,52 @@ impl<S: VirtualStorage, G: GraphEncode + Default> Graph<S, G> {
         self.store().commit_batch(batch)?;
         report.nodes = nodes.len();
         Ok(report)
+    }
+
+    /// Replace a subgraph: ONE fragment may retract and declare, and the batch
+    /// lands as a single state change.
+    ///
+    /// The two halves are planned together, not run one after the other:
+    /// [`Graph::retract`]'s removals become the seed of the write half's cluster
+    /// plan, so every touched cluster is read once, counted once and written
+    /// once. Run as two passes over one batch the second pass would read the
+    /// pre-batch state and re-stamp a count that ignores the first half's rows —
+    /// the shape of a silent corruption this verb exists to avoid.
+    ///
+    /// The rules a caller lives with:
+    ///
+    /// - **A cluster rides the fragment.** An edge the fragment declares joins
+    ///   the cluster this fragment declares it in (`Cluster::edges`); with no such
+    ///   declaration the edge belongs to no cluster, and the old cluster it left
+    ///   is not re-created. A `delete` clears the row first, and a declaration at
+    ///   the same id then merges into what is left — the plan is keyed by
+    ///   `(kind, id)`, one entry per cluster either way.
+    /// - **A head both removed and declared ends up declared.** The batch is an
+    ///   ordered list of ops and the later one wins, the same rule the cluster
+    ///   plan already states for `add` over `remove`.
+    /// - **Nothing here is derived.** No reduce runs for a replacement, and no
+    ///   counter is invented: what the fragment declares is what lands.
+    ///
+    /// Refusals are the caller's to ignore, exactly as in [`Graph::retract`]: a
+    /// head no row holds is nothing to do.
+    pub fn replace(&mut self, fragment: Fragment<G>) -> Result<ReplaceReport> {
+        let mut batch = Batch::default();
+        let (doomed, nodes, plan) = self.retract_plan(&fragment)?;
+        let mut edges = 0;
+        for row in &doomed {
+            if !self.has_row(row)? {
+                continue;
+            }
+            self.purge_into(&mut batch, row)?;
+            edges += 1;
+        }
+        let written = fragment.write_into(self, &mut batch, plan)?;
+        self.store().commit_batch(batch)?;
+        Ok(ReplaceReport {
+            nodes: nodes.len(),
+            edges,
+            written,
+        })
     }
 }
 

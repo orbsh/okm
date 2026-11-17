@@ -83,14 +83,15 @@ pub use engine::storage::{
 pub use model::document::{Collection, SeekScan};
 pub use model::field::{FieldDesc, FieldType};
 pub use model::graph::{
-    Direction, EdgeBody, EdgeHead, EdgeKey, EdgeStep, EdgeStream, Graph, GraphEncode, Handle,
-    HandleKey, HopHead, Members, NodeRef, NodeKinds,
+    Crossing, Direction, EdgeBody, EdgeHead, EdgeKey, EdgeStep, EdgeStream, Graph, GraphEncode,
+    Handle, HandleKey, HopHead, Members, NodeRef, NodeKinds, Subgraph,
 };
 pub use model::handles::{FIRST_HANDLE, HANDLE_NODE_SLOT, Handles, NODE_HANDLE_SLOT};
 pub use model::hyper::{
     CHILD_INDEX_SLOT, CLUSTER_SLOT, Cluster, ClusterConflict, ClusterRef, ClusterRow,
     ClusterStream, Decl, EdgeSet, NodeSet, DerivedReport, EDGE_CLUSTER_SLOT, EDGE_MEMBER_SLOT,
-    Fragment, Hyperedges, Kind, MEMBER_COUNT, RetractReport, WriteReport, edge_cluster_key,
+    Fragment, Hyperedges, Kind, MEMBER_COUNT, ReplaceReport, RetractReport, WriteReport,
+    edge_cluster_key,
     edge_clusters_prefix,
 };
 pub use model::index::{

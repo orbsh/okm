@@ -2154,3 +2154,197 @@ fn each_spelling_answers_its_own_conflict_hook() {
         );
     }
 }
+
+/// A node set reads as a SUBGRAPH: its members, the edges that die with the
+/// selection (both ends inside), and the cut that a replacement has to re-attach.
+/// The two halves are the whole point of the read — a replacement is built from
+/// nothing else.
+#[test]
+fn a_node_set_reads_as_a_subgraph_with_its_cut() {
+    for (engine, store) in TestStore::matrix() {
+        let mut g = graph(&store);
+        let mut fragment = Fragment::<Employment>::new([
+            edge(person(1), person(2)),
+            edge(person(1), org(3)),
+            edge(person(2), org(4)),
+            edge(org(3), org(4)),
+        ]);
+        fragment.on_edge_conflict(|_stored, _declared| Employment { weight: 1 });
+        g.incorporate(fragment)
+            .unwrap_or_else(|e| panic!("{engine}: edges: {e}"));
+
+        let mut set = Fragment::<Employment>::new([]);
+        set.cluster(Cluster::nodes(SCOPE, Dict::new(), [person(1), person(2)]));
+        let report = g
+            .incorporate(set)
+            .unwrap_or_else(|e| panic!("{engine}: set: {e}"));
+        let into = report.node_sets[0];
+
+        let sub = g
+            .subgraph(NodeSet::new(into.kind, into.id))
+            .unwrap_or_else(|e| panic!("{engine}: subgraph: {e}"));
+
+        let names: Vec<Vec<u8>> = sub.nodes.iter().map(|n| n.pkey.clone()).collect();
+        assert_eq!(
+            names,
+            vec![PersonId { id: 1 }.encode(), PersonId { id: 2 }.encode()],
+            "{engine}: the members are the declared entities"
+        );
+
+        // One edge with both ends inside, seen from BOTH ends and deduped.
+        assert_eq!(sub.internal.len(), 1, "{engine}: {:?}", sub.internal);
+        assert!(
+            sub.internal[0].src == person(1) && sub.internal[0].dst == person(2)
+                || sub.internal[0].src == person(2) && sub.internal[0].dst == person(1),
+            "{engine}: the internal edge is the one between the two members"
+        );
+
+        // Two edges leave the set; the edge between the two outside nodes does not.
+        assert_eq!(sub.external.len(), 2, "{engine}: {:?}", sub.external);
+        for crossing in &sub.external {
+            assert!(
+                crossing.inside == person(1) || crossing.inside == person(2),
+                "{engine}: the inside end is always a member"
+            );
+            assert!(
+                crossing.outside == org(3) || crossing.outside == org(4),
+                "{engine}: and the far end is outside"
+            );
+            assert!(
+                crossing.head.src == crossing.inside || crossing.head.dst == crossing.inside,
+                "{engine}: the head names the inside end, so a rewrite knows what to replace"
+            );
+        }
+    }
+}
+
+/// A replacement lands as ONE state change, and its cluster arithmetic sees both
+/// halves: the member a cascade drops and the members the write adds are counted
+/// against one base. Run as two passes over one batch the write half would read
+/// the pre-batch row and re-stamp `live + added`, losing the removal.
+#[test]
+fn a_replacement_counts_its_two_halves_against_one_base() {
+    for (engine, store) in TestStore::matrix() {
+        let mut g = graph(&store);
+        let mut facts = Fragment::<Employment>::new([
+            edge(person(1), person(2)),
+            edge(person(2), org(9)),
+        ]);
+        facts.on_edge_conflict(|_stored, _declared| Employment { weight: 1 });
+        g.incorporate(facts)
+            .unwrap_or_else(|e| panic!("{engine}: facts: {e}"));
+
+        let mut set = Fragment::<Employment>::new([]);
+        set.cluster(Cluster::nodes(SCOPE, Dict::new(), [person(1), person(2)]));
+        let report = g
+            .incorporate(set)
+            .unwrap_or_else(|e| panic!("{engine}: set: {e}"));
+        let scope = report.node_sets[0];
+
+        // Merge person 2 into person 1: its edges are re-pointed (1 -9), its own
+        // row is retracted, and the set is re-declared as {1, 3, 9} in the SAME
+        // fragment — the cluster is touched by both halves.
+        let mut replacement = Fragment::<Employment>::new([edge(person(1), org(9))]);
+        replacement
+            .on_edge_conflict(|_stored, _declared| Employment { weight: 3 })
+            .delete_node(person(2))
+            .cluster(Cluster::nodes(
+                SCOPE,
+                Dict::new(),
+                [person(1), person(3), org(9)],
+            ).at(scope.id));
+        let report = g
+            .replace(replacement)
+            .unwrap_or_else(|e| panic!("{engine}: replace: {e}"));
+        assert_eq!(report.edges, 2, "{engine}: 1-2 and 2-9 are the cascade");
+        assert_eq!(report.written.edges.len(), 1, "{engine}: one asserted edge");
+
+        let hy = hyper(&store);
+        let row = hy
+            .lookup(scope)
+            .expect("lookup")
+            .expect("the set row survives a replacement");
+        assert_eq!(
+            row.node_count(),
+            3,
+            "{engine}: two minus the cascaded member plus two added"
+        );
+        let members = hy.node_members(scope).expect("members");
+        assert!(
+            !members.contains(&person(2)),
+            "{engine}: the retracted entity left the set"
+        );
+        assert_eq!(members.len(), 3, "{engine}: {members:?}");
+
+        // The re-pointed edge is live and the retracted ones are gone.
+        let mut g = graph(&store);
+        let merged = g
+            .key_of(&head(person(1), org(9)))
+            .expect("lookup")
+            .expect("interned");
+        let lost = g
+            .key_of(&head(person(2), org(9)))
+            .expect("lookup")
+            .expect("interned");
+        assert!(
+            g.get_edge(&merged).expect("probe").is_some(),
+            "{engine}: the merged edge is asserted"
+        );
+        assert!(
+            g.get_edge(&lost).expect("probe").is_none(),
+            "{engine}: and the loser's edge is gone"
+        );
+    }
+}
+
+/// A repoint moves an assertion to a new head and KEEPS ITS PAYLOAD. The payload
+/// never passes through the caller: okm reads the row being replaced in the same
+/// batch that writes the new one, which is the whole reason this is a verb and
+/// not `delete_edge` + a declaration (a declaration names a head, not a payload,
+/// so its payload would be the type's default).
+#[test]
+fn a_repoint_carries_the_payload_it_replaces() {
+    for (engine, store) in TestStore::matrix() {
+        let mut g = graph(&store);
+        let mut facts = Fragment::<Employment>::new([
+            edge(person(1), org(9)),
+            edge(person(1), person(3)),
+        ]);
+        facts.on_edge_conflict(|_stored, _declared| Employment { weight: 11 });
+        g.incorporate(facts)
+            .unwrap_or_else(|e| panic!("{engine}: facts: {e}"));
+
+        // Merge person 1 into person 2: its edge is re-pointed, its own node goes.
+        let mut replacement = Fragment::<Employment>::new([]);
+        replacement
+            .repoint(head(person(1), org(9)), head(person(2), org(9)))
+            .delete_node(person(1));
+        let report = g
+            .replace(replacement)
+            .unwrap_or_else(|e| panic!("{engine}: replace: {e}"));
+        assert_eq!(report.written.edges.len(), 1, "{engine}: one moved assertion");
+
+        let moved = g
+            .key_of(&head(person(2), org(9)))
+            .expect("lookup")
+            .expect("interned");
+        let body = g
+            .get_edge(&moved)
+            .expect("read")
+            .expect("the moved edge is live");
+        assert_eq!(
+            Employment::decode_payload(&body.payload).weight,
+            11,
+            "{engine}: the payload travelled with the assertion"
+        );
+
+        let gone = g
+            .key_of(&head(person(1), org(9)))
+            .expect("lookup")
+            .expect("interned");
+        assert!(
+            g.get_edge(&gone).expect("read").is_none(),
+            "{engine}: and the head it replaced is gone"
+        );
+    }
+}

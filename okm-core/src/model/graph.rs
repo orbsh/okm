@@ -548,6 +548,39 @@ pub struct EdgeHead {
     pub predicate: String,
 }
 
+/// An edge's identity as bytes: `(src ns, src pkey, predicate id, dst ns, dst
+/// pkey)`. The head IS the identity (ADR-0067), so this is what "the same edge"
+/// means to a reader that has to dedupe or carry something per head.
+pub(crate) type EdgeIdentity = (u16, Vec<u8>, u16, u16, Vec<u8>);
+
+/// One edge that crosses a subgraph's cut.
+///
+/// The head IS the identity, so `head` is what a replacement retracts; `inside`
+/// is the end the new shape takes over, `outside` stays where it is.
+#[derive(Clone, Debug)]
+pub struct Crossing {
+    /// The edge as stored.
+    pub head: EdgeHead,
+    /// The member this edge touches: the end a rewrite replaces.
+    pub inside: NodeRef,
+    /// The end beyond the cut.
+    pub outside: NodeRef,
+}
+
+/// A selection of entities, read as a subgraph.
+///
+/// The three fields are the three answers a replacement needs: what is in it,
+/// what dies with it, and what has to be re-attached.
+#[derive(Clone, Debug, Default)]
+pub struct Subgraph {
+    /// The entities the set declares, in key order.
+    pub nodes: Vec<NodeRef>,
+    /// Edges with both ends inside — they live and die with the selection.
+    pub internal: Vec<EdgeHead>,
+    /// Edges with exactly one end inside — the cut.
+    pub external: Vec<Crossing>,
+}
+
 /// One edge read back: its identity (from the key it was read at) and its
 /// payload bytes.
 #[derive(Clone, Debug)]
@@ -1239,6 +1272,87 @@ impl<S: VirtualStorage, E: GraphEncode> Graph<S, E> {
             }
         }
         self.edges_from_rows(rows)
+    }
+
+    /// One edge that crosses a set's boundary: the stored head (which IS the
+    /// identity, so this is what a rewrite retracts), the member it touches, and
+    /// the end on the other side of the cut.
+    ///
+    /// The head's `src` or `dst` equals `inside` — that is the end a rewrite
+    /// replaces, so a caller never has to be told the direction.
+    /// One group of entities as a subgraph: its members, the edges with BOTH ends
+    /// inside, and the edges that cross the cut.
+    ///
+    /// A replacement is built from this and nothing else — the internal edges are
+    /// what dies with the selection, the crossings are what has to be re-attached,
+    /// and the members say which entities the new shape may name. Reading it
+    /// costs one scan per member's two traversal faces (0x06/0x07), which is the
+    /// degree of the selection, not the size of the graph.
+    ///
+    /// An internal edge is seen twice (once from each end), so it is deduped by
+    /// its head; a crossing is seen once, from the member's side, and its `head`
+    /// holds the end a rewrite replaces.
+    pub fn subgraph(
+        &mut self,
+        set: super::hyper::NodeSet,
+    ) -> crate::error::Result<Subgraph> {
+        let handles = super::hyper::node_member_handles(&self.store, &self.ns, set.into())?;
+        let members = self.handles().nodes(&handles)?;
+        let inside: std::collections::BTreeSet<([u8; 2], Vec<u8>)> = members
+            .iter()
+            .map(|node| (node.ns, node.pkey.clone()))
+            .collect();
+        let mut seen: std::collections::BTreeSet<EdgeIdentity> = std::collections::BTreeSet::new();
+        let mut internal = Vec::new();
+        let mut external = Vec::new();
+        for member in &members {
+            let outs = self.out_edges(member)?;
+            let ins = self.in_edges(member)?;
+            for (key, leaves) in outs
+                .into_iter()
+                .map(|key| (key, true))
+                .chain(ins.into_iter().map(|key| (key, false)))
+            {
+                let far = if leaves { key.dst.clone() } else { key.src.clone() };
+                let Some(predicate) = self.predicate_vocab_name(key.predicate)? else {
+                    return Err(crate::error::Error::Corrupt {
+                        what: "a subgraph edge names a predicate the vocabulary does not hold"
+                            .into(),
+                    });
+                };
+                if inside.contains(&(far.ns, far.pkey.clone())) {
+                    let row = (
+                        key.src.ns_id(),
+                        key.src.pkey.clone(),
+                        key.predicate,
+                        key.dst.ns_id(),
+                        key.dst.pkey.clone(),
+                    );
+                    if seen.insert(row) {
+                        internal.push(EdgeHead {
+                            src: key.src,
+                            dst: key.dst,
+                            predicate,
+                        });
+                    }
+                    continue;
+                }
+                external.push(Crossing {
+                    head: EdgeHead {
+                        src: key.src,
+                        dst: key.dst,
+                        predicate,
+                    },
+                    inside: member.clone(),
+                    outside: far,
+                });
+            }
+        }
+        Ok(Subgraph {
+            nodes: members,
+            internal,
+            external,
+        })
     }
 
     /// Predicate-qualified traversal (0x08/0x09): all edges of one predicate
