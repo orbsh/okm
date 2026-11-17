@@ -2457,6 +2457,9 @@ const EVENT: Kind = Kind(2);
         assert_eq!(EDGE_MEMBER_SLOT, 0x0D);
         assert_eq!(CHILD_INDEX_SLOT, 0x0E);
         assert_eq!(EDGE_CLUSTER_SLOT, 0x0F);
+        // The entity faces come after the registry that keys them (ADR-0068).
+        assert_eq!(NODE_MEMBER_SLOT, 0x12);
+        assert_eq!(NODE_CLUSTER_SLOT, 0x13);
     }
 
     #[test]
