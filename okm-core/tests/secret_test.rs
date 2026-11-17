@@ -149,3 +149,55 @@ fn redaction_is_declared_per_field_and_reaches_the_export_schema() {
     let plain = CollectionSchema::of::<VaultId, Guarded>();
     assert!(plain.redacted.is_empty());
 }
+
+/// The token-verification shape (ADR-0069 §3): a credential verified BY
+/// presentation is hashed by the application, and the 32-byte digest is what the
+/// index holds. `fields(token_hash, level)` puts a fixed-width field first and
+/// still compiles — that is the claim (`Bytes`/`Str` there would be refused as
+/// unlocatable), and it is why a digest is `[u8; 32]` rather than `Bytes`.
+#[derive(DocumentEncode, Clone, PartialEq, Debug)]
+#[ok_ref(VaultId)]
+#[ok_ns(79)]
+#[ok_index(by_token_hash { fields(token_hash, level) })]
+pub struct TokenRow {
+    pub token_hash: [u8; 32],
+    pub level: u32,
+}
+
+/// Not a real digest — a stand-in with the one property the test needs: it is not
+/// the token, so a leak of the token into an index key is detectable.
+fn stand_in_digest(token: &[u8]) -> [u8; 32] {
+    let mut out = [0u8; 32];
+    for (i, b) in token.iter().enumerate() {
+        out[i % 32] ^= b.wrapping_mul(i as u8 + 1);
+    }
+    out
+}
+
+#[test]
+fn a_digest_is_indexable_and_the_token_never_reaches_the_keyspace() {
+    let store = TestStore::slatedb_mem();
+    let col: Collection<_, VaultId, TokenRow> = Collection::new(&store);
+    let token = b"tok_live_0123456789abcdef";
+    let digest = stand_in_digest(token);
+    let row = TokenRow {
+        token_hash: digest,
+        level: 4,
+    };
+    let key = VaultId { id: 7 };
+    col.put(&key, &row).unwrap();
+
+    // The derive names each access method `__OkmIndex_<Row>_<index>`.
+    let entry = col.index_key::<__OkmIndex_TokenRow_by_token_hash>(&key, &row);
+    assert!(
+        entry.windows(32).any(|w| w == digest),
+        "the entry key carries the digest"
+    );
+    assert!(
+        !entry
+            .windows(token.len())
+            .any(|w| w == token.as_slice()),
+        "and never the token"
+    );
+    assert_eq!(col.get_row(&key).unwrap().unwrap().token_hash, digest);
+}
