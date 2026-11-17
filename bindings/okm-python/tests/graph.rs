@@ -347,12 +347,12 @@ fn a_write_is_visible_after_incorporate() {
     );
     // The reverse direction: which clusters does an edge belong to?
     assert_eq!(
-        g.clusters_of_dyn(&report.edges[1]).expect("clusters_of"),
+        g.edge_sets_of_dyn(&report.edges[1]).expect("edge sets"),
         vec![ClusterRef::new(g.kind_id_dyn("community").expect("kind"), cluster)]
     );
     assert!(
-        g.clusters_of_dyn(&key(&g, person(9), org(9), "works_at"))
-            .expect("clusters_of")
+        g.edge_sets_of_dyn(&key(&g, person(9), org(9), "works_at"))
+            .expect("edge sets")
             .is_empty(),
         "an edge nobody clustered answers nothing"
     );
@@ -669,7 +669,7 @@ fn member_of_answers_before_and_after_a_retract() {
         "the row's count was re-stamped"
     );
     assert!(
-        g.clusters_of_dyn(&keys[1]).expect("clusters_of").is_empty(),
+        g.edge_sets_of_dyn(&keys[1]).expect("edge sets").is_empty(),
         "the edge-first mirror lost the row too"
     );
 
@@ -1169,7 +1169,7 @@ mod python_face {
                 "a member is a head, not an id"
             );
             let refs = g
-                .call_method1("clusters_of", (heads[0].clone(),))
+                .call_method1("edge_sets_of", (heads[0].clone(),))
                 .unwrap();
             assert_eq!(refs.len().unwrap(), 1);
 
@@ -1183,7 +1183,7 @@ mod python_face {
                 "no face can hold an edge whose predicate was never interned"
             );
             assert_eq!(
-                g.call_method1("clusters_of", (unknown.clone(),))
+                g.call_method1("edge_sets_of", (unknown.clone(),))
                     .unwrap()
                     .len()
                     .unwrap(),
@@ -1321,7 +1321,7 @@ mod python_face {
                 2
             );
             let mine = g
-                .call_method1("node_clusters_of", (node_dict(py, 0x10, 9),))
+                .call_method1("node_sets_of", (node_dict(py, 0x10, 9),))
                 .unwrap()
                 .cast_into::<PyList>()
                 .unwrap();

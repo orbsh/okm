@@ -1066,7 +1066,7 @@ use okm_dynamic::{
     /// ADR-0067 retired the edge id: the tuple IS the identity, so this is the
     /// handle every edge-shaped read and delete takes, and it is what the write
     /// report and every read answer with — a head can feed straight back into
-    /// `edge` / `member_of` / `clusters_of` / a `retract`.
+    /// `edge` / `member_of` / `edge_sets_of` / a `retract`.
     struct Head {
         src: NodeRef,
         dst: NodeRef,
@@ -1546,19 +1546,32 @@ use okm_dynamic::{
         if let Some(v) = spec.get_item("reduce_cluster")? {
             if !v.is_none() {
                 let fields = fold_of(&v, "reduce_cluster")?;
-                fragment.on_cluster_conflict(move |stored: &Dict, declared: &Dict| {
-                    let mut row = stored.clone();
-                    for (name, value) in declared.iter() {
-                        row.insert(name.clone(), value.clone());
-                    }
-                    for (name, value) in &fields {
-                        row.insert(name.clone(), value.clone());
-                    }
-                    row
+                // A fold is not a decision: the binding states "these names land on
+                // every cluster payload this batch writes", and one statement covers
+                // both spellings — so it registers on both hooks.
+                let for_edges = fields.clone();
+                fragment.on_edge_set_conflict(move |stored: &Dict, declared: &Dict| {
+                    fold_payload(stored, declared, &for_edges)
+                });
+                fragment.on_node_set_conflict(move |stored: &Dict, declared: &Dict| {
+                    fold_payload(stored, declared, &fields)
                 });
             }
         }
         Ok(())
+    }
+
+    /// The fold body both cluster hooks run: the stored payload as the base, the
+    /// declaration's own entries over it, the caller's fields last.
+    fn fold_payload(stored: &Dict, declared: &Dict, fields: &Dict) -> Dict {
+        let mut row = stored.clone();
+        for (name, value) in declared.iter() {
+            row.insert(name.clone(), value.clone());
+        }
+        for (name, value) in fields {
+            row.insert(name.clone(), value.clone());
+        }
+        row
     }
 
     /// Whether a cluster entry is a DELETE TARGET (kind + id, nothing else) —
@@ -1918,11 +1931,16 @@ use okm_dynamic::{
                 .edge_count(kind, id)
         }
 
-        pub fn clusters_of_dyn(&self, key: &EdgeKey) -> Result<Vec<ClusterRef>, String> {
+        pub fn edge_sets_of_dyn(&self, key: &EdgeKey) -> Result<Vec<ClusterRef>, String> {
             self.inner
                 .lock()
                 .unwrap_or_else(std::sync::PoisonError::into_inner)
-                .clusters_of(key)
+                .edge_sets_of(key)
+                .map(|sets| {
+                    sets.into_iter()
+                        .map(|set| ClusterRef::new(set.kind, set.id))
+                        .collect()
+                })
         }
 
         /// The declared member NODES of a cluster, in key order (ADR-0068).
@@ -1935,7 +1953,7 @@ use okm_dynamic::{
 
         /// Is `node` a DECLARED member of `(kind, cluster)`? One point read — and
         /// the declared half only: a node an edge names is a member of the
-        /// clusters that edge belongs to, which is `clusters_of`.
+        /// clusters that edge belongs to, which is `edge_sets_of`.
         pub fn node_member_of_dyn(
             &self,
             kind: Kind,
@@ -1958,12 +1976,17 @@ use okm_dynamic::{
 
         /// Every cluster that DECLARES `node` a member: one scan of the node →
         /// cluster face. Incident edges are a different question — ask
-        /// `clusters_of` per edge for those.
-        pub fn node_clusters_of_dyn(&self, node: &NodeRef) -> Result<Vec<ClusterRef>, String> {
+        /// `edge_sets_of` per edge for those.
+        pub fn node_sets_of_dyn(&self, node: &NodeRef) -> Result<Vec<ClusterRef>, String> {
             self.inner
                 .lock()
                 .unwrap_or_else(std::sync::PoisonError::into_inner)
-                .node_clusters_of(node)
+                .node_sets_of(node)
+                .map(|sets| {
+                    sets.into_iter()
+                        .map(|set| ClusterRef::new(set.kind, set.id))
+                        .collect()
+                })
         }
 
         /// Intern a kind label (0x0A/0x0B) and hand back its id — a write of the
@@ -2089,7 +2112,7 @@ use okm_dynamic::{
         /// the heads this write asserted, in declaration order, and the cluster
         /// ids it allocated (a cluster `id` the caller supplied is not one of
         /// them). A head feeds straight back into `edge` / `member_of` /
-        /// `clusters_of` / a `retract`.
+        /// `edge_sets_of` / a `retract`.
         fn incorporate(&self, fragment: &Bound<'_, PyAny>) -> PyResult<Py<PyAny>> {
             let fragment = fragment_of(fragment, ReadFor::Write, &self.store, self.ns)?;
             let report = self
@@ -2205,7 +2228,7 @@ use okm_dynamic::{
 
         /// The member edges of one cluster, in key order: one prefix scan of
         /// the authority face. One HEAD per member — `{src, dst, predicate}`,
-        /// the shape `member_of` / `clusters_of` / `edge` take back.
+        /// the shape `member_of` / `edge_sets_of` / `edge` take back.
         fn edge_members(&self, kind: &Bound<'_, PyAny>, cluster: u64) -> PyResult<Vec<Py<PyAny>>> {
             let kind = kind_arg(&self.store, self.ns, kind, "members")?;
             let keys = self
@@ -2231,7 +2254,7 @@ use okm_dynamic::{
 
         /// Is `node` a DECLARED member of cluster `(kind, cluster)`? A node an
         /// edge touches is a member of the clusters that EDGE belongs to —
-        /// `clusters_of(head)` — which is the other half of the union.
+        /// `edge_sets_of(head)` — which is the other half of the union.
         fn node_member_of(
             &self,
             kind: &Bound<'_, PyAny>,
@@ -2253,10 +2276,10 @@ use okm_dynamic::{
 
         /// Every cluster that DECLARES `node` a member:
         /// `[{"kind": int, "id": int}]`, one scan of the derived mirror.
-        fn node_clusters_of(&self, node: &Bound<'_, PyAny>) -> PyResult<Vec<Py<PyAny>>> {
-            let node = node_of(node, "node_clusters_of")?;
+        fn node_sets_of(&self, node: &Bound<'_, PyAny>) -> PyResult<Vec<Py<PyAny>>> {
+            let node = node_of(node, "node_sets_of")?;
             let clusters = self
-                .node_clusters_of_dyn(&node)
+                .node_sets_of_dyn(&node)
                 .map_err(PyValueError::new_err)?;
             Python::attach(|py| {
                 clusters
@@ -2349,14 +2372,14 @@ use okm_dynamic::{
         ///
         /// The reverse of `members`, one scan of the derived mirror. This is the
         /// EDGE half only: for the declared half of the same question ask
-        /// `node_clusters_of` (ADR-0068 — the two are two facts, so they are two
+        /// `node_sets_of` (ADR-0068 — the two are two facts, so they are two
         /// verbs).
-        fn clusters_of(&self, head: &Bound<'_, PyAny>) -> PyResult<Vec<Py<PyAny>>> {
-            let Some(key) = self.key_of(head, "clusters_of")? else {
+        fn edge_sets_of(&self, head: &Bound<'_, PyAny>) -> PyResult<Vec<Py<PyAny>>> {
+            let Some(key) = self.key_of(head, "edge_sets_of")? else {
                 return Ok(Vec::new());
             };
             let clusters = self
-                .clusters_of_dyn(&key)
+                .edge_sets_of_dyn(&key)
                 .map_err(PyValueError::new_err)?;
             Python::attach(|py| {
                 clusters
@@ -2651,7 +2674,7 @@ use okm_dynamic::{
         /// `for step in g.out(n)` (and `next(it, None)`) work.
         ///
         /// `head` is the edge's IDENTITY (ADR-0067), so it feeds straight back
-        /// into `edge` / `member_of` / `clusters_of` / a `retract`. The predicate
+        /// into `edge` / `member_of` / `edge_sets_of` / a `retract`. The predicate
         /// is resolved to its name here (one vocabulary point read per step), and
         /// the FAR endpoint costs ONE registry point read — the near one is the
         /// node the walk started from, which the cursor resolved at its open.

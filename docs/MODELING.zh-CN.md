@@ -835,7 +835,7 @@ x.cluster(Cluster::edges(event, payload))       // 成员 = 这个碎片声明�
 //      .at(id) 并入已有簇；要装实体另写一个 Cluster::nodes(..) 声明——两种成员不在一份声明里
  .on_node_conflict::<User>(|old, _declared| User { seen: old.seen + 1 })
  .on_edge_conflict(|_stored, declared| Employment { weight: declared.weight + 1 })
- .on_cluster_conflict(|_stored, declared| {
+ .on_edge_set_conflict(|_stored, declared| {
      let mut row = declared.clone();
      row.insert("weight", …);
      row
@@ -914,9 +914,9 @@ let colleagues = graph.walk(&user).flat_map(|step| graph.walk(&step.far));
 
 **节点成员是声明的；边簇的参与者仍然是投影出来的**（ADR-0068）。点簇装的就是它点名的那些实体——包括一条边都碰不到的实体，这正是权限边界需要的、也是投影永远表达不了的。于是节点作为某条边的端点**或者**某个点簇的成员存在，而 `delete_node` 两条都要扫：关联的边，以及经节点 → 簇面一次扫描找到的、这个节点自己的成员行。簇行的值以定长 `parent_id` 开头，`0` 表示无父，所以嵌套不额外占面；一个簇的成员、某一类的簇、一个簇的子簇各是一个干净的前缀扫描：面前缀不同，不需要任何长度判断。声明的撤回是 `remove_nodes(cluster, nodes)`——声明的行走掉、实体留下，成员边仍然点名的实体留在并集里。
 
-写入口与边同一个碎片：把节点与边攒成一个碎片，再交给图——`x.cluster(Cluster::edges(kind, payload))` 建一个断言组、`x.cluster(Cluster::nodes(kind, payload, [alice(), bob()]))` 建一个实体组（两份声明，各管一半）、`.at(id)` 并入已有组，三个冲突钩子在同一批里落地，而声明之后的一切都是可选的（只有声明就只写节点与边）。每个钩子拿到**已存**载荷与**声明**载荷，回答要写入的那一行，所以「保留旧值」「直接覆盖」「取更大的 stamp」各自是一个表达式，而不是去改一个回调看不见的新值。`Decl` 只有两个变体，节点种类来自 `#[ok_nodes(..)]` 生成的枚举；成员加入幂等。计数两个：`edge_count` 数边、`node_count` 数声明的实体，都在每次动到那张面的写入里按面重写。两半各从哪来，是唯一的不对称，而构造函数把它说清楚：`Cluster::edges` 收这个碎片写的断言（同一次提交里的 `Decl::Edge` 才是「有一行可以当成员」），`Cluster::nodes` 收调用方点名的实体、且一个边都不碰——节点不是写入的副产品，把碎片碰到的每个节点都拉进来会是另一个答案。两样都要，是两个声明：断言一组、实体一组，由业务自己的逻辑去关联——原语不提供装两样的簇。每个动词都写明自己说的是哪种成员：`edge_members`、`node_members`、`edge_member_rows`、`edge_member_of`、`node_member_of`、`edge_count`、`node_count`、`remove_edges`、`remove_nodes`，`edge_sets_of` / `node_sets_of` 各收自己的主语。其余操作复用同一行型：`incorporate(sources, into)`、`split`、`reassign`、`lookup`、`children`、`diff`。
+写入口与边同一个碎片：把节点与边攒成一个碎片，再交给图——`x.cluster(Cluster::edges(kind, payload))` 建一个断言组、`x.cluster(Cluster::nodes(kind, payload, [alice(), bob()]))` 建一个实体组（两份声明，各管一半）、`.at(id)` 并入已有组，三个冲突钩子在同一批里落地，而声明之后的一切都是可选的（只有声明就只写节点与边）。每个钩子拿到**已存**载荷与**声明**载荷，回答要写入的那一行，所以「保留旧值」「直接覆盖」「取更大的 stamp」各自是一个表达式，而不是去改一个回调看不见的新值。`Decl` 只有两个变体，节点种类来自 `#[ok_nodes(..)]` 生成的枚举；成员加入幂等。计数两个：`edge_count` 数边、`node_count` 数声明的实体，都在每次动到那张面的写入里按面重写。两半各从哪来，是唯一的不对称，而构造函数把它说清楚：`Cluster::edges` 收这个碎片写的断言（同一次提交里的 `Decl::Edge` 才是「有一行可以当成员」），`Cluster::nodes` 收调用方点名的实体、且一个边都不碰——节点不是写入的副产品，把碎片碰到的每个节点都拉进来会是另一个答案。两样都要，是两个声明：断言一组、实体一组，由业务自己的逻辑去关联——原语不提供装两样的簇。每个动词都写明自己说的是哪种成员：`edge_members`、`node_members`、`edge_member_rows`、`edge_member_of`、`node_member_of`、`edge_count`、`node_count`、`remove_edges`、`remove_nodes`，`edge_sets_of` / `node_sets_of` 各收自己的主语。其余操作复用同一行型：`incorporate(sources, into)`（断言组）与 `incorporate_nodes(sources, into)`（实体组）——求并、成员带过去、源组删除，一种拼写一个入口，调用方混不了两类；另有 `lookup` 与 `children`。
 
-两张成员面各有一张镜像，而它们之间的不对称来自基数，不是偏好。边侧镜像之所以存在，是因为节点的度无界：没有它，第二个问题只能靠扫该 kind 的全部成员行做后缀匹配——每次收回一次还好，每次遍历一跳都这么做就不行；而边行领衔让它的条目按遍历本来就有的顺序排（两边都以 `src` 起头），于是"这些节点指向的边中，哪些是 C 的成员"是两条有序流之间的一次求交（`graph.node_sets_of(&key)` 对一个成员游标），而不是调用方先攒一个集合。`edge_member_of(kind, 簇, &key)` 就是那张面的精确键、一次点读，这正是「成员判断」可以当遍历里的 `.filter` 用的原因（`&step.key()` 就是这一步刚交出的元组）。点侧镜像用一次扫描回答实体的同一个问题，而**没有**边 → 点簇的面：一条边的端点恰好两个，所以"这条边沾到哪些点簇"是两次前缀扫——常数，而按度提问的那一侧永远不是。代价写在付出的地方：每次写每个成员多一条条目，而 `clusters_of(&node)` 答的是点侧镜像与关联边路径的并集。
+两张成员面各有一张镜像，而它们之间的不对称来自基数，不是偏好。边侧镜像之所以存在，是因为节点的度无界：没有它，第二个问题只能靠扫该 kind 的全部成员行做后缀匹配——每次收回一次还好，每次遍历一跳都这么做就不行；而边行领衔让它的条目按遍历本来就有的顺序排（两边都以 `src` 起头），于是"这些节点指向的边中，哪些是 C 的成员"是两条有序流之间的一次求交（`graph.node_sets_of(&key)` 对一个成员游标），而不是调用方先攒一个集合。`edge_member_of(kind, 簇, &key)` 就是那张面的精确键、一次点读，这正是「成员判断」可以当遍历里的 `.filter` 用的原因（`&step.key()` 就是这一步刚交出的元组）。点侧镜像用一次扫描回答实体的同一个问题，而**没有**边 → 点簇的面：一条边的端点恰好两个，所以"这条边沾到哪些点簇"是两次前缀扫——常数，而按度提问的那一侧永远不是。代价写在付出的地方：每次写每个成员多一条条目，而 `node_sets_of(&node)` 答的是那张镜像的一次扫描，与度无关。
 
 簇是断言，所以簇行与两张成员面在 changelog 里归 Truth，子簇索引与两张镜像归 Derived 且可整体重建。删一条边时它的成员行同批删除，而收留过它的每个簇都留下，`edge_count` 计数重写成诚实值；点簇不受影响，因为一条关于某个实体的断言消失，不等于这个实体离开组。删一个节点带走它的关联边，以及经节点 → 簇面一次扫描找到的、它自己的成员行。簇是**作用域**，不是成员的别名：它在声明时创建、只在显式删除时删除（`.delete(..)`），所以空簇和单成员簇都是合法的陈述——「这个主题敏感，别问」「这里曾经有东西，现在没了」「这个作用域此刻只装着一个东西」——唯一留下的写入前提是节点那条的放宽形态：节点作为某条边的端点、或某个点簇的成员存在。
 
@@ -932,7 +932,7 @@ let mut fragment = okm_dynamic::DynFragment::new([
 fragment
     .cluster(Cluster::edges(event, payload))        // `event` 是词；进来不带号，`.at(簇号)` 并入已有簇
     .on_edge_conflict(|stored: &Dict, declared: &Dict| { … })   // 进 Dict、出 Dict：没有声明类型
-    .on_cluster_conflict(|stored: &Dict, declared: &Dict| { … });
+    .on_edge_set_conflict(|stored: &Dict, declared: &Dict| { … })   // 实体那一半是 on_node_set_conflict
 graph.incorporate(fragment)?;                       // 边 + 簇 + 钩子，一个 batch
 graph.retract(fragment)?;                           // delete_node / delete_edge / delete(簇)
 ```

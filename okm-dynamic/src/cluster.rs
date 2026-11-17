@@ -245,7 +245,7 @@ fn member_keys<S: VirtualStorage + ?Sized>(
 /// One edge's stored ROW identity, read-only: `None` when either endpoint never
 /// appeared in an edge, because then no face can name it. The boundary between
 /// a caller's tuple and the face's handles, for the single-key verbs
-/// ([`Graph::member_of`], [`Graph::clusters_of`]).
+/// ([`Graph::member_of`], [`Graph::edge_sets_of`]).
 fn row_of_key<S: VirtualStorage>(
     store: &S,
     ns: &[u8; 2],
@@ -552,10 +552,10 @@ impl<S: VirtualStorage> Graph<S> {
     /// [`rebuild_derived`](Self::rebuild_derived) window — the operator contract
     /// every derived read already carries.
     ///
-    /// The NODE form is [`node_clusters_of`](Self::node_clusters_of): on this
-    /// form a node has two ways into a cluster, and the two verbs keep them
-    /// apart because they are two different facts.
-    pub fn clusters_of(&self, edge: &EdgeKey) -> Result<Vec<ClusterRef>, String> {
+    /// The NODE form is [`node_sets_of`](Self::node_sets_of): on this form a node
+    /// has two ways into a cluster, and the two verbs keep them apart because
+    /// they are two different facts.
+    pub fn edge_sets_of(&self, edge: &EdgeKey) -> Result<Vec<EdgeSet>, String> {
         let ns = self.ns_pair();
         // The edge's row is the face's leading segment; an edge whose endpoints
         // never appeared has no run at all.
@@ -572,7 +572,7 @@ impl<S: VirtualStorage> Graph<S> {
                         return None;
                     }
                     let kind = be_vocab(&suffix[..CLUSTER_KIND_WIDTH])?;
-                    be_u64(&suffix[CLUSTER_KIND_WIDTH..]).map(|id| ClusterRef::new(Kind(kind), id))
+                    be_u64(&suffix[CLUSTER_KIND_WIDTH..]).map(|id| EdgeSet::new(Kind(kind), id))
                 })
                 .collect(),
         )
@@ -583,9 +583,9 @@ impl<S: VirtualStorage> Graph<S> {
     ///
     /// This is the declared half only. An entity also reaches clusters through
     /// its incident edges, and that half is asked edge by edge with
-    /// [`clusters_of`](Self::clusters_of): the static form unions the two into
-    /// one cursor, this form keeps them as the two different facts they are.
-    pub fn node_clusters_of(&self, node: &NodeRef) -> Result<Vec<ClusterRef>, String> {
+    /// [`edge_sets_of`](Self::edge_sets_of): the two are separate questions on
+    /// both forms, because they are separate facts.
+    pub fn node_sets_of(&self, node: &NodeRef) -> Result<Vec<NodeSet>, String> {
         let ns = self.ns_pair();
         let Some(handle) = Handles::new(self.store_ref(), ns)
             .handle_of(node)
@@ -603,8 +603,7 @@ impl<S: VirtualStorage> Graph<S> {
                         return None;
                     }
                     let kind = be_vocab(&suffix[..CLUSTER_KIND_WIDTH])?;
-                    be_u64(&suffix[CLUSTER_KIND_WIDTH..])
-                        .map(|id| ClusterRef::new(Kind(kind), id))
+                    be_u64(&suffix[CLUSTER_KIND_WIDTH..]).map(|id| NodeSet::new(Kind(kind), id))
                 })
                 .collect(),
         )
@@ -808,9 +807,13 @@ struct Plan {
     /// The parent to write; `None` = keep whatever the row already says.
     parent: Option<u64>,
     payload: Dict,
-    /// Whether the payload came from the caller (so `on_cluster_conflict` runs on
+    /// Whether the payload came from the caller (so a set's `on_*_set_conflict` runs on
     /// it), as opposed to being carried over from the stored row.
     from_caller: bool,
+    /// Which spelling declared this row — `on_edge_set_conflict` and
+    /// `on_node_set_conflict` are two registration points, so the entry carries
+    /// the kind it was declared with. Only read when `from_caller`.
+    node_set: bool,
     /// Whether a declaration asked for this cluster (as opposed to an op that
     /// only moves members).
     declared: bool,
@@ -877,7 +880,8 @@ pub struct DynFragment {
     edge_deletes: Vec<EdgeKey>,
     node_deletes: Vec<NodeRef>,
     edge_conflict: Option<EdgeConflict>,
-    cluster_conflict: Option<ClusterConflict>,
+    edge_set_conflict: Option<ClusterConflict>,
+    node_set_conflict: Option<ClusterConflict>,
 }
 
 impl DynFragment {
@@ -925,8 +929,21 @@ impl DynFragment {
     /// `declared` is that map with this declaration's entries merged in; a
     /// cluster that does not exist yet is created by calling the hook with
     /// `(empty, declared)`.
-    pub fn on_cluster_conflict(&mut self, f: impl Fn(&Dict, &Dict) -> Dict + 'static) -> &mut Self {
-        self.cluster_conflict = Some(Box::new(f));
+    pub fn on_edge_set_conflict(
+        &mut self,
+        f: impl Fn(&Dict, &Dict) -> Dict + 'static,
+    ) -> &mut Self {
+        self.edge_set_conflict = Some(Box::new(f));
+        self
+    }
+
+    /// The ENTITY half — the same two-payload shape, chosen by the spelling that
+    /// declared the row.
+    pub fn on_node_set_conflict(
+        &mut self,
+        f: impl Fn(&Dict, &Dict) -> Dict + 'static,
+    ) -> &mut Self {
+        self.node_set_conflict = Some(Box::new(f));
         self
     }
 
@@ -1002,7 +1019,8 @@ impl DynFragment {
         let writes = self.edges.len()
             + self.clusters.len()
             + usize::from(self.edge_conflict.is_some())
-            + usize::from(self.cluster_conflict.is_some())
+            + usize::from(self.edge_set_conflict.is_some())
+            + usize::from(self.node_set_conflict.is_some())
             + self
                 .ops
                 .iter()
@@ -1145,6 +1163,7 @@ impl DynFragment {
             entry.declared = true;
             entry.parent = Some(cluster.parent);
             entry.from_caller = true;
+            entry.node_set = cluster.edges == MemberEdges::None;
             for (name, value) in cluster.payload.iter() {
                 entry.payload.insert(name.clone(), value.clone());
             }
@@ -1253,7 +1272,12 @@ impl DynFragment {
                 for (name, value) in entry.payload.iter() {
                     declared.insert(name.clone(), value.clone());
                 }
-                payload = match self.cluster_conflict.as_ref().filter(|_| entry.from_caller) {
+                let hook = if entry.node_set {
+                    self.node_set_conflict.as_ref()
+                } else {
+                    self.edge_set_conflict.as_ref()
+                };
+                payload = match hook.filter(|_| entry.from_caller) {
                     Some(resolve) => resolve(&state.payload, &declared),
                     None => declared,
                 };
@@ -1291,7 +1315,7 @@ impl DynFragment {
                 )
             };
 
-            // The counts are stamped LAST, so an `on_cluster_conflict` that
+            // The counts are stamped LAST, so an `on_*_set_conflict` that
             // writes the same name cannot make the row disagree with its rows.
             if !delete_row {
                 payload.insert(MEMBER_COUNT.to_string(), Variant::U64(members.len() as u64));
@@ -1407,7 +1431,7 @@ impl<S: VirtualStorage> Graph<S> {
     ///
     /// There is no update verb: an update is this verb with a conflict hook.
     /// Naming an edge at its own id ([`Decl::edge_at`], or `.at(..)` on a `Cluster::edges` declaration
-    /// existing cluster) hands `on_edge_conflict` / `on_cluster_conflict` that
+    /// existing cluster) hands `on_edge_conflict` / `on_edge_set_conflict` / `on_node_set_conflict` that
     /// row's stored payload beside the declared one, so the payload changes while
     /// the id, its faces and its membership rows stand.
     pub fn incorporate(&mut self, fragment: DynFragment) -> Result<WriteReport, String> {

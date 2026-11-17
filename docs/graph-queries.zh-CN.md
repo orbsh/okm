@@ -179,7 +179,7 @@ meta.insert("algorithm".into(), Variant::Str("lpa".into()));
 meta.insert("resolution".into(), Variant::F64(0.6));
 meta.insert("produced".into(), Variant::U64(run_started));
 fragment.cluster(Cluster::nodes("community", meta, community.nodes.clone()));
-let report = graph.incorporate(fragment)?;   // report.hyper_sets = 这次运行分配的 (kind, id)
+let report = graph.incorporate(fragment)?;   // report.edge_sets / report.node_sets = 这次运行分配的两类组
 ```
 
 因为重算是写一个**新的**簇号、而不是覆盖旧的，多次运行可以共存——换个算法、换个参数、上周的答案——并且可比：`hy.clusters(community_kind)` 枚举它们，`lookup` 取回载荷，按 `payload["algorithm"]` 过滤就选中某次运行。比较本身是在成员面上做集合比较，而两张面说的是图本来就在说的同一套句柄行。

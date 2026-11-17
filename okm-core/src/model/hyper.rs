@@ -94,7 +94,7 @@
 //!     .cluster(Cluster::edges(Kind(1), attrs("acme")))
 //!     .on_node_conflict::<Person>(|old, _declared| Person { seen: old.seen + 1 })
 //!     .on_edge_conflict(|old, declared| Employment { weight: old.weight.max(declared.weight) })
-//!     .on_cluster_conflict(|old, declared| {
+//!     .on_node_set_conflict(|old, declared| {
 //!         let mut row = declared.clone();
 //!         row.insert("weight".into(), Variant::U64(2));
 //!         row
@@ -163,7 +163,7 @@ pub use crate::model::layout::{
 };
 
 /// Payload name carrying the number of member EDGES, maintained by the write
-/// path. Reserved: the writer stamps it last, after `on_cluster_conflict` runs.
+/// path. Reserved: the writer stamps it last, after the set's `on_*_set_conflict` runs.
 pub const MEMBER_COUNT: &str = "members";
 
 /// Payload name carrying the number of member NODES, maintained by the same
@@ -299,7 +299,7 @@ pub enum MemberEdges {
 }
 
 /// A cluster declaration for one write: its kind LABEL, its id (`None` =
-/// create, and the identity comes back in [`WriteReport::hyper_sets`]), and
+/// create, and the identity comes back in [`WriteReport::edge_sets`] / [`WriteReport::node_sets`]), and
 /// its payload.
 ///
 /// `kind` is the caller's word, not a number: a cluster kind is a vocabulary
@@ -1157,11 +1157,11 @@ impl<S: VirtualStorage> Hyperedges<S> {
 /// What a cluster stream is asked about: one EDGE (`EdgeKey`) or one NODE
 /// (`NodeRef`, or a reference to one).
 ///
-/// It exists because the two questions share one name and Rust has no
-/// overloading: `graph.clusters_of(&key)` walks one edge's `0x0F` run, and
-/// `graph.clusters_of(&node)` walks the node's incident edges, flattens their
-/// runs, and finally walks the node's own membership run — both senses of "the
-/// clusters this entity is in", in one cursor. One name, three costs, one type.
+/// Plumbing behind the two named reads, not a public verb: the cursor is generic
+/// because the walk differs per subject — an edge's `0x0F` run is one prefix scan,
+/// a node's `0x13` run is one prefix scan too, and neither is the other's cost.
+/// A caller names the subject (`edge_sets_of` / `node_sets_of`) and never picks
+/// this trait.
 trait ClusterSubject {
     /// The cursor's open — the only thing the two subjects do differently.
     fn open<'a, S: VirtualStorage>(self, store: &'a S, ns: [u8; 2]) -> ClusterStream<'a, S>;
@@ -1585,8 +1585,8 @@ impl<S: VirtualStorage, G: GraphEncode> Graph<S, G> {
     /// note: the node form costs one scan per incident edge).
     ///
     /// ```ignore
-    /// for cluster in graph.clusters_of(&key) { /* derived, ordered by edge */ }
-    /// for cluster in graph.clusters_of(&node) { /* flat_map over its edges */ }
+    /// for set in graph.edge_sets_of(&key) { /* derived, ordered by edge */ }
+    /// for set in graph.node_sets_of(&node) { /* declared memberships, by handle */ }
     /// ```
     /// The ASSERTION groups this edge is a member of — one read of `0x0D`.
     pub fn edge_sets_of(&self, edge: &EdgeKey) -> ClusterStream<'_, S> {
@@ -1668,9 +1668,13 @@ struct ClusterPlan {
     /// The parent to write; `None` = keep whatever the row already says.
     parent: Option<u64>,
     payload: Dict,
-    /// Whether the payload came from the caller (so `on_cluster_conflict` runs
+    /// Whether the payload came from the caller (so a set's `on_*_set_conflict` runs
     /// on it), as opposed to being carried over from the stored row.
     from_caller: bool,
+    /// Which spelling declared this row (`on_edge_set_conflict` /
+    /// `on_node_set_conflict` are two registration points, so the plan entry has
+    /// to carry the kind it was declared with). Only read when `from_caller`.
+    node_set: bool,
     /// Whether a declaration asked for this cluster (as opposed to an op that
     /// only moves members).
     declared: bool,
@@ -1801,7 +1805,8 @@ pub struct Fragment<G: GraphEncode + Default> {
     node_deletes: Vec<NodeRef>,
     node_conflicts: Vec<Box<dyn NodeConflict>>,
     edge_conflict: Option<EdgeConflict<G>>,
-    cluster_conflict: Option<ClusterConflict>,
+    edge_set_conflict: Option<ClusterConflict>,
+    node_set_conflict: Option<ClusterConflict>,
 }
 
 impl<G: GraphEncode + Default> Fragment<G> {
@@ -1821,7 +1826,8 @@ impl<G: GraphEncode + Default> Fragment<G> {
             node_deletes: Vec::new(),
             node_conflicts: Vec::new(),
             edge_conflict: None,
-            cluster_conflict: None,
+            edge_set_conflict: None,
+            node_set_conflict: None,
         }
     }
 
@@ -1882,8 +1888,22 @@ impl<G: GraphEncode + Default> Fragment<G> {
     ///
     /// Optional, like every builder here: a batch with only declarations writes
     /// just the nodes and edges.
-    pub fn on_cluster_conflict(&mut self, f: impl Fn(&Dict, &Dict) -> Dict + 'static) -> &mut Self {
-        self.cluster_conflict = Some(Box::new(f));
+    pub fn on_edge_set_conflict(
+        &mut self,
+        f: impl Fn(&Dict, &Dict) -> Dict + 'static,
+    ) -> &mut Self {
+        self.edge_set_conflict = Some(Box::new(f));
+        self
+    }
+
+    /// The ENTITY half of [`on_edge_set_conflict`](Self::on_edge_set_conflict):
+    /// the same two-payload shape, chosen by which spelling declared the row.
+    /// Two registration points, not one hook that has to guess the kind.
+    pub fn on_node_set_conflict(
+        &mut self,
+        f: impl Fn(&Dict, &Dict) -> Dict + 'static,
+    ) -> &mut Self {
+        self.node_set_conflict = Some(Box::new(f));
         self
     }
 
@@ -1935,10 +1955,23 @@ impl<G: GraphEncode + Default> Fragment<G> {
         sources: I,
         into: EdgeSet,
     ) -> &mut Self {
-        self.ops.push(ClusterOp::Incorporate {
-            sources: sources.into_iter().map(Into::into).collect(),
-            into: into.into(),
-        });
+        self.incorporate_rows(sources.into_iter().map(Into::into).collect(), into.into())
+    }
+
+    /// Union several ENTITY groups into one, deleting the sources — the entity
+    /// half of [`incorporate`](Self::incorporate). The op carries both faces
+    /// (a merged set keeps its edges and its declared entities); the two entry
+    /// points exist so a caller cannot mix the kinds in one call.
+    pub fn incorporate_nodes<I: IntoIterator<Item = NodeSet>>(
+        &mut self,
+        sources: I,
+        into: NodeSet,
+    ) -> &mut Self {
+        self.incorporate_rows(sources.into_iter().map(Into::into).collect(), into.into())
+    }
+
+    fn incorporate_rows(&mut self, sources: Vec<ClusterRef>, into: ClusterRef) -> &mut Self {
+        self.ops.push(ClusterOp::Incorporate { sources, into });
         self
     }
 
@@ -1998,7 +2031,8 @@ impl<G: GraphEncode + Default> Fragment<G> {
             + self.clusters.len()
             + self.node_conflicts.len()
             + usize::from(self.edge_conflict.is_some())
-            + usize::from(self.cluster_conflict.is_some())
+            + usize::from(self.edge_set_conflict.is_some())
+            + usize::from(self.node_set_conflict.is_some())
             + self
                 .ops
                 .iter()
@@ -2208,6 +2242,7 @@ impl<G: GraphEncode + Default> Fragment<G> {
             entry.declared = true;
             entry.parent = Some(cluster.parent);
             entry.from_caller = true;
+            entry.node_set = cluster.edges == MemberEdges::None;
             for (name, value) in cluster.payload.iter() {
                 entry.payload.insert(name.clone(), value.clone());
             }
@@ -2345,7 +2380,12 @@ impl<G: GraphEncode + Default> Fragment<G> {
                 for (name, value) in entry.payload.iter() {
                     declared.insert(name.clone(), value.clone());
                 }
-                payload = match self.cluster_conflict.as_ref().filter(|_| entry.from_caller) {
+                let hook = if entry.node_set {
+                    self.node_set_conflict.as_ref()
+                } else {
+                    self.edge_set_conflict.as_ref()
+                };
+                payload = match hook.filter(|_| entry.from_caller) {
                     Some(resolve) => resolve(&state.payload, &declared),
                     None => declared,
                 };

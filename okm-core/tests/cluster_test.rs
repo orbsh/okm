@@ -749,7 +749,7 @@ fn the_three_conflict_hooks_run_in_the_write_fragment() {
             .cluster(Cluster::edges(COMMUNITY, Dict::new()))
             .on_node_conflict::<Person>(|old, _declared| Person { seen: old.seen + 1 })
             .on_edge_conflict(|_stored, _declared| Employment { weight: 1 })
-            .on_cluster_conflict(|_stored, declared| {
+            .on_edge_set_conflict(|_stored, declared| {
                 let mut row = declared.clone();
                 row.insert("weight".to_string(), Variant::U64(2));
                 row
@@ -843,7 +843,7 @@ fn a_cluster_hook_keeps_the_stored_payload_when_the_declared_one_is_older() {
             Fragment::<Employment>::new([edge(person(1), org(1)), edge(person(2), org(1))]);
         fragment
             .cluster(Cluster::edges(COMMUNITY, stamped))
-            .on_cluster_conflict(newest);
+            .on_edge_set_conflict(newest);
         let report = g.incorporate(fragment).expect("first write");
         let cluster = report.edge_sets[0];
         assert_eq!(
@@ -864,7 +864,7 @@ fn a_cluster_hook_keeps_the_stored_payload_when_the_declared_one_is_older() {
         let mut fragment = Fragment::<Employment>::new([edge(person(3), org(1))]);
         fragment
             .cluster(Cluster::edges(COMMUNITY, older).at(cluster.id))
-            .on_cluster_conflict(newest);
+            .on_edge_set_conflict(newest);
         g.incorporate(fragment).expect("second write");
 
         let row = hyper(&store).lookup(cluster).expect("lookup").expect("row");
@@ -2045,6 +2045,112 @@ fn a_declaration_wins_over_a_removal_in_one_fragment() {
         assert!(
             hy.node_member_of(NodeSet::new(kid(&store, SCOPE), 1), &a).expect("point read"),
             "{engine}: the declaration is the later claim and it wins"
+        );
+    }
+}
+
+// ---------------------------------------------------------------------------
+// The two spellings at the operation layer (ADR-0068 §7)
+// ---------------------------------------------------------------------------
+
+#[test]
+fn incorporating_entity_sets_carries_the_declared_members() {
+    for (engine, store) in TestStore::matrix() {
+        let mut g = graph(&store);
+        let (a, b, c) = (person(1), person(2), person(3));
+        let mut first = Fragment::<Employment>::new([]);
+        first.cluster(Cluster::nodes(SCOPE, Dict::new(), [a.clone(), b.clone()]));
+        let report = g
+            .incorporate(first)
+            .unwrap_or_else(|e| panic!("{engine}: commit: {e}"));
+        let source = report.node_sets[0];
+
+        let mut second = Fragment::<Employment>::new([]);
+        second.cluster(Cluster::nodes(SCOPE, Dict::new(), [c.clone()]));
+        let report = g
+            .incorporate(second)
+            .unwrap_or_else(|e| panic!("{engine}: commit: {e}"));
+        let into = report.node_sets[0];
+
+        // The union is declared members -> declared members: the op reads the
+        // source's `0x12` run, so the entities carry over without an edge.
+        let mut merge = Fragment::<Employment>::new([]);
+        merge.incorporate_nodes([source], into);
+        g.incorporate(merge)
+            .unwrap_or_else(|e| panic!("{engine}: merge: {e}"));
+
+        let hy = hyper(&store);
+        assert!(
+            hy.lookup(source).expect("lookup").is_none(),
+            "{engine}: the source row goes"
+        );
+        assert_eq!(
+            hy.node_members(into).expect("nodes"),
+            vec![a.clone(), b.clone(), c.clone()],
+            "{engine}: every declared entity lands in the target"
+        );
+        assert!(
+            hy.node_member_of(into, &a).expect("point read"),
+            "{engine}: and the mirror answers for them"
+        );
+        assert_eq!(
+            hy.lookup(into)
+                .expect("lookup")
+                .expect("row")
+                .node_count(),
+            3,
+            "{engine}: the count is re-stamped from the face"
+        );
+    }
+}
+
+#[test]
+fn each_spelling_answers_its_own_conflict_hook() {
+    for (engine, store) in TestStore::matrix() {
+        let mut g = graph(&store);
+        let mut first = Fragment::<Employment>::new([]);
+        let mut payload = Dict::new();
+        payload.insert("weight".to_string(), Variant::U64(1));
+        first.cluster(Cluster::edges(COMMUNITY, payload));
+        let report = g
+            .incorporate(first)
+            .unwrap_or_else(|e| panic!("{engine}: commit: {e}"));
+        let set = report.edge_sets[0];
+
+        // A second write over the same row: the ENTITY hook would overwrite the
+        // payload with a marker, so a payload that keeps its weight proves the
+        // edge-set hook — and only that one — ran.
+        let mut again = Fragment::<Employment>::new([]);
+        let mut marker = Dict::new();
+        marker.insert("wrong_hook".to_string(), Variant::U64(1));
+        again
+            .cluster(Cluster::edges(COMMUNITY, Dict::new()).at(set.id))
+            .on_edge_set_conflict(|_stored, declared| {
+                let mut row = declared.clone();
+                row.insert("edge_hook".to_string(), Variant::U64(1));
+                row
+            })
+            .on_node_set_conflict(move |_stored, _declared| marker.clone());
+        g.incorporate(again)
+            .unwrap_or_else(|e| panic!("{engine}: second commit: {e}"));
+
+        let row = hyper(&store)
+            .lookup(set)
+            .expect("lookup")
+            .expect("the row is still there");
+        assert_eq!(
+            row.payload.get("weight"),
+            Some(&Variant::U64(1)),
+            "{engine}: the edge-set hook kept the stored payload"
+        );
+        assert_eq!(
+            row.payload.get("edge_hook"),
+            Some(&Variant::U64(1)),
+            "{engine}: the edge-set hook ran"
+        );
+        assert!(
+            row.payload.get("wrong_hook").is_none(),
+            "{engine}: the entity-set hook did not run for an edge set"
         );
     }
 }

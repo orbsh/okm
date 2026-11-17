@@ -40,8 +40,8 @@ let mut fragment = Fragment::<G>::new([Decl::Node(G::Nodes::User, key), Decl::Ed
 fragment.cluster(Cluster { kind, id, payload })         // id None = create, Some = merge
  .on_node_conflict::<User>(|old, _declared| User { seen: old.seen + 1 })   // per collection: node rows are heterogeneous
  .on_edge_conflict(|_stored, declared| E { weight: declared.weight + 1 })  // one payload type per graph
- .on_cluster_conflict(|_stored, declared| declared.clone());                // clusters are dynamic
-graph.incorporate(fragment);                            // endpoints, edges, member rows, three hooks
+ .on_edge_set_conflict(|_stored, declared| declared.clone());             // a set's payload is dynamic
+graph.incorporate(fragment);                            // endpoints, edges, member rows, the hooks
 
 // Only the declarations are required: a fragment with nothing attached writes just the nodes and edges.
 graph.incorporate(Fragment::new([Decl::Node(G::Nodes::User, key)]));

@@ -39,7 +39,7 @@ let mut fragment = Fragment::<G>::new([Decl::Node(G::Nodes::User, key), Decl::Ed
 fragment.cluster(Cluster { kind, id, payload })         // id None = 新建，Some = 合并
  .on_node_conflict::<User>(|old, _declared| User { seen: old.seen + 1 })   // 按集合注册：节点行是异质的
  .on_edge_conflict(|_stored, declared| E { weight: declared.weight + 1 })  // 一张图只有一种边载荷
- .on_cluster_conflict(|_stored, declared| declared.clone());                // 簇是动态的
+ .on_edge_set_conflict(|_stored, declared| declared.clone());             // 簇的 payload 是动态的
 graph.incorporate(fragment);                            // 端点、边、成员行、三个冲突钩子
 
 // 只有声明是必须的：什么都不挂的碎片，就只写节点与边

@@ -1429,7 +1429,7 @@ fn a_node_cluster_holds_an_entity_that_has_no_edge() {
             "{engine}: no edge members at all"
         );
         assert_eq!(
-            g.node_clusters_of(&lonely)
+            g.node_sets_of(&lonely)
                 .expect("mirror")
                 .iter()
                 .map(|set| (set.kind, set.id))
@@ -1569,7 +1569,7 @@ fn removing_a_declared_member_leaves_the_entity_alone() {
             "{engine}: the declared row went"
         );
         assert_eq!(g.node_count(kid(&store, SCOPE), scope).expect("count"), 1, "{engine}");
-        assert!(g.node_clusters_of(&a).expect("mirror").is_empty(), "{engine}");
+        assert!(g.node_sets_of(&a).expect("mirror").is_empty(), "{engine}");
         assert_eq!(face(&store, 0x12).len(), 1, "{engine}: one member row left");
         assert_eq!(face(&store, 0x13).len(), 1, "{engine}: one mirror row left");
     }
@@ -1602,7 +1602,7 @@ fn a_removed_declaration_leaves_the_assertion_alone() {
         assert!(g.node_members(kid(&store, SCOPE), scope).expect("nodes").is_empty(), "{engine}");
         // No EDGE group ever held it: membership is declared per set, and this
         // verb speaks for the entity set alone.
-        let via = g.clusters_of(&report.edges[0]).expect("edge sets");
+        let via = g.edge_sets_of(&report.edges[0]).expect("edge sets");
         assert!(via.is_empty(), "{engine}: no edge set names the assertion");
         assert_eq!(g.edge_count(kid(&store, SCOPE), scope).expect("count"), 0, "{engine}");
     }

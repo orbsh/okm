@@ -184,7 +184,7 @@ meta.insert("algorithm".into(), Variant::Str("lpa".into()));
 meta.insert("resolution".into(), Variant::F64(0.6));
 meta.insert("produced".into(), Variant::U64(run_started));
 fragment.cluster(Cluster::nodes("community", meta, community.nodes.clone()));
-let report = graph.incorporate(fragment)?;   // report.hyper_sets = this run's (kind, id) pairs
+let report = graph.incorporate(fragment)?;   // report.edge_sets / report.node_sets = the sets this run allocated
 ```
 
 Because a recompute writes a NEW cluster id rather than overwriting one, several runs coexist — a different algorithm, a different parameter, last week's answer — and they are comparable: `hy.clusters(community_kind)` enumerates them, `lookup` hands back the payload, and filtering on `payload["algorithm"]` selects the run. The comparison itself is a set comparison over the member faces, which speak the same handle rows the graph already speaks.
