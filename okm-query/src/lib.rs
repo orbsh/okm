@@ -20,7 +20,7 @@
     )
 )]
 
-use okm_core::{Seekable, VirtualStorage};
+use okm_core::Seekable;
 
 /// Set algebra over key streams that are already ordered by key, as methods:
 /// `a.merge(b)`, `a.intersect(b)`, `a.difference(b)`, `a.union(b)`.
@@ -669,60 +669,6 @@ where
     })
 }
 
-/// One hop across one edge type, keyed by the node's encoded identity.
-/// The unifying currency of the graph layer is encoded key bytes — peer
-/// identities cross edge-type boundaries as bytes and are decoded by
-/// whoever consumes them (the node type is known at the call site).
-///
-/// A hop is exactly one prefix scan per direction: the edge layer
-/// already guarantees both directions exist (double write), so
-/// "neighbors" is the concatenation of the FWD and REV suffix scans —
-/// no deduplication here: FWD and REV entries of one link cannot both
-/// match one node's prefix unless the link is a self-loop, which the
-/// caller models or filters.
-pub trait GraphEdge<S: VirtualStorage + Clone> {
-    /// All peers of `node` (its encoded identity) across this edge
-    /// type, in both directions, as encoded peer-identity bytes.
-    fn peers(&self, store: S, node: &[u8]) -> Vec<Vec<u8>>;
-}
-
-/// Walk: breadth-first from `start` up to `max_hops` hops across the
-/// given edge types. `start`'s identity enters the frontier as bytes;
-/// every discovered node is returned as its encoded identity (deduped —
-/// a visited set over bytes is the graph discipline; revisiting is the
-/// KV-side way to spend an unbounded scan budget).
-///
-/// Each hop is one prefix scan per edge type per direction — the cost
-/// model is identical to `forward`/`reverse` in the edge layer; the
-/// only added structure is the frontier and the visited set.
-pub fn walk<S: VirtualStorage + Clone>(
-    edges: &[&dyn GraphEdge<S>],
-    store: S,
-    start: &[u8],
-    max_hops: usize,
-) -> Vec<Vec<u8>> {
-    let mut visited: Vec<Vec<u8>> = vec![start.to_vec()];
-    let mut frontier: Vec<Vec<u8>> = visited.clone();
-    for _ in 0..max_hops {
-        let mut next: Vec<Vec<u8>> = Vec::new();
-        for node in &frontier {
-            for e in edges {
-                for peer in e.peers(store.clone(), node) {
-                    if !visited.contains(&peer) && !next.contains(&peer) {
-                        next.push(peer);
-                    }
-                }
-            }
-        }
-        if next.is_empty() {
-            break;
-        }
-        visited.extend(next.iter().cloned());
-        frontier = next;
-    }
-    visited
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -769,113 +715,6 @@ mod tests {
     #[ok_index(by_mentioned { fields(mentioned_id) })]
     pub struct MentionsRow {
         mentioned_id: u32,
-    }
-
-    fn mk(id: u32) -> UserKey {
-        UserKey { id }
-    }
-
-    fn follows(store: &TestStore, user_id: u32, followee_id: u32) {
-        let table: okm_core::Collection<TestStore, FollowsKey, FollowsRow> =
-            okm_core::Collection::new(store.clone());
-        table
-            .put(
-                &FollowsKey {
-                    user_id,
-                    followee_id,
-                },
-                &FollowsRow { followee_id },
-            )
-            .unwrap();
-    }
-
-    fn mentions(store: &TestStore, user_id: u32, mentioned_id: u32) {
-        let table: okm_core::Collection<TestStore, MentionsKey, MentionsRow> =
-            okm_core::Collection::new(store.clone());
-        table
-            .put(
-                &MentionsKey {
-                    user_id,
-                    mentioned_id,
-                },
-                &MentionsRow { mentioned_id },
-            )
-            .unwrap();
-    }
-
-    #[test]
-    fn peers_spans_both_directions_and_both_edge_types() {
-        let store = TestStore::slatedb_mem();
-        follows(&store, 1, 2);
-        follows(&store, 3, 1); // incoming for node 1
-        mentions(&store, 1, 4);
-
-        let f = FollowsNeighbors;
-        let m = MentionsNeighbors;
-        let mut got = f.peers(store.clone(), &mk(1).encode());
-        got.extend(m.peers(store.clone(), &mk(1).encode()));
-        got.sort();
-        assert_eq!(got, vec![mk(2).encode(), mk(3).encode(), mk(4).encode()]);
-    }
-
-    struct FollowsNeighbors;
-    impl GraphEdge<TestStore> for FollowsNeighbors {
-        fn peers(&self, store: TestStore, node: &[u8]) -> Vec<Vec<u8>> {
-            let n = UserKey::decode(node);
-            let table: okm_core::Collection<TestStore, FollowsKey, FollowsRow> =
-                okm_core::Collection::new(store);
-            let mut out = Vec::new();
-            // 正向：主键第一列是 user_id，前缀扫描拿到他关注的人
-            let probe = okm_core::PrefixProbe::<FollowsKey>::new(n.encode());
-            for key in table.scan_keys(&probe).flatten() {
-                out.push(mk(key.followee_id).encode());
-            }
-            // 反向：by_followee 索引，回表拿关系行
-            for (_, key, _) in table
-                .scan::<__OkmIndex_FollowsRow_by_followee>(n.encode().as_slice())
-                .collect::<okm_core::error::Result<Vec<_>>>()
-                .expect("an index read")
-            {
-                out.push(mk(key.decoded.user_id).encode());
-            }
-            out
-        }
-    }
-
-    struct MentionsNeighbors;
-    impl GraphEdge<TestStore> for MentionsNeighbors {
-        fn peers(&self, store: TestStore, node: &[u8]) -> Vec<Vec<u8>> {
-            let n = UserKey::decode(node);
-            let table: okm_core::Collection<TestStore, MentionsKey, MentionsRow> =
-                okm_core::Collection::new(store);
-            let mut out = Vec::new();
-            let probe = okm_core::PrefixProbe::<MentionsKey>::new(n.encode());
-            for key in table.scan_keys(&probe).flatten() {
-                out.push(mk(key.mentioned_id).encode());
-            }
-            for (_, key, _) in table
-                .scan::<__OkmIndex_MentionsRow_by_mentioned>(n.encode().as_slice())
-                .collect::<okm_core::error::Result<Vec<_>>>()
-                .expect("an index read")
-            {
-                out.push(mk(key.decoded.user_id).encode());
-            }
-            out
-        }
-    }
-
-    #[test]
-    fn walk_two_hops_reaches_friends_of_friends() {
-        let store = TestStore::slatedb_mem();
-        // 1 → 2 → 3: two hops from 1 reach 3.
-        follows(&store, 1, 2);
-        follows(&store, 2, 3);
-
-        let f = FollowsNeighbors;
-        let got = walk(&[&f], store, &mk(1).encode(), 2);
-        let mut ids: Vec<u32> = got.iter().map(|b| UserKey::decode(b).id).collect();
-        ids.sort();
-        assert_eq!(ids, vec![1, 2, 3]);
     }
 
     /// Two tables that share a column: the join key is `name`, and each side
