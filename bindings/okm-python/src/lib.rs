@@ -1725,13 +1725,22 @@ use okm_dynamic::{
         dict.set_item("edges", edges)?;
         // Each allocated group answers `(kind id, cluster id)` with the word the
         // caller named it by: `kind_label` turns the id back into that word.
-        let mut sets: Vec<(u16, u64)> = report
+        // Two keys, one per spelling: a caller that wrote a declaration knows
+        // which kind it asked for, and the report says the same thing back
+        // instead of handing it a list that mixes the two.
+        let edge_sets: Vec<(u16, u64)> = report
             .edge_sets
             .iter()
             .map(|set| (set.kind.0, set.id))
             .collect();
-        sets.extend(report.node_sets.iter().map(|set| (set.kind.0, set.id)));
-        dict.set_item("clusters", sets)?; Ok(dict.into_any().unbind())
+        let node_sets: Vec<(u16, u64)> = report
+            .node_sets
+            .iter()
+            .map(|set| (set.kind.0, set.id))
+            .collect();
+        dict.set_item("edge_sets", edge_sets)?;
+        dict.set_item("node_sets", node_sets)?;
+        Ok(dict.into_any().unbind())
     }
 
     fn retract_report_to_py(py: Python<'_>, report: &RetractReport) -> PyResult<Py<PyAny>> {
@@ -2108,11 +2117,11 @@ use okm_dynamic::{
         /// okm-dynamic's own message ("incorporate writes; … that is retract's
         /// verb"), as `ValueError` — the same refusal the Rust face raises.
         ///
-        /// Answers `{"edges": [{src, dst, predicate}, …], "clusters": [(kind, id), …]}`:
-        /// the heads this write asserted, in declaration order, and the cluster
-        /// ids it allocated (a cluster `id` the caller supplied is not one of
-        /// them). A head feeds straight back into `edge` / `member_of` /
-        /// `edge_sets_of` / a `retract`.
+        /// Answers `{"edges": […], "edge_sets": [(kind, id), …], "node_sets": [(kind, id), …]}`:
+        /// the heads this write asserted, in declaration order, and the ids the
+        /// declarations were given — one key per spelling (an `id` the caller
+        /// supplied is not in either list). A head feeds straight back into
+        /// `edge` / `member_of` / `edge_sets_of` / a `retract`.
         fn incorporate(&self, fragment: &Bound<'_, PyAny>) -> PyResult<Py<PyAny>> {
             let fragment = fragment_of(fragment, ReadFor::Write, &self.store, self.ns)?;
             let report = self

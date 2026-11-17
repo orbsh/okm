@@ -951,7 +951,7 @@ mod python_face {
                 .iter()
                 .collect();
             let hypers: Vec<(u16, u64)> = report
-                .get_item("clusters")
+                .get_item("edge_sets")
                 .unwrap()
                 .unwrap()
                 .extract()
@@ -1269,7 +1269,7 @@ mod python_face {
                 .unwrap();
             let report = as_dict(g.call_method1("incorporate", (fragment,)).unwrap());
             let hypers: Vec<(u16, u64)> = report
-                .get_item("clusters")
+                .get_item("node_sets")
                 .unwrap()
                 .unwrap()
                 .extract()
