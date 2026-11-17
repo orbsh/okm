@@ -14,7 +14,7 @@ use okm_lake::bridge::EdgeTable;
 
 use okm_core::{
     Batch, Decl, DocumentEncode, EdgeHead, EdgeKey, Fragment, Graph, GraphEncode, KeyEncode,
-    NodeRef, NodeSet, VirtualStorage,
+    NodeRef, NodeKinds, VirtualStorage,
 };
 use okm_value::Dict;
 
@@ -120,10 +120,10 @@ pub struct Employment {
 // The derived NAME is pinned here: `<graph>Node`, singular. A type name names
 // one value, and a value of the member-set enum names one node collection;
 // the plural role ("the set of collections this graph admits") belongs to
-// `NodeSet::NS_VALUES`, never to the enum's name.
+// `NodeKinds::NS_VALUES`, never to the enum's name.
 #[test]
 fn the_member_enum_is_named_after_the_graph() {
-    assert_eq!(<EmploymentNode as okm_core::NodeSet>::NS_VALUES, &[10, 11]);
+    assert_eq!(<EmploymentNode as okm_core::NodeKinds>::NS_VALUES, &[10, 11]);
     assert!(EmploymentNode::contains(10));
     assert!(!EmploymentNode::contains(99));
 }
@@ -771,8 +771,8 @@ fn hex_lock_one_link() {
     assert_eq!(store.get(&rev).unwrap(), Some(src.clone()), "node → handle");
     assert_eq!(
         (okm_core::HANDLE_NODE_SLOT, okm_core::NODE_HANDLE_SLOT),
-        (0x0E, 0x0F),
-        "the two registry faces are 0x0E and 0x0F"
+        (0x10, 0x11),
+        "the two registry faces are 0x10 and 0x11 (0x0E/0x0F are the child index and the edge → cluster index)"
     );
     assert_eq!(
         (

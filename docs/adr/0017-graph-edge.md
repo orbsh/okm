@@ -1,7 +1,7 @@
 # ADR-0017: Graph Edge — the third relation carrier
 
 Date: 2026-09-19
-Status: Accepted (2026-09-20); **the identity clause is superseded by ADR-0067** (2026-11-14) — an edge has no number, its identity is the tuple `(src, predicate, dst)`, and the decision below is stated in that form. The declaration is a GRAPH declaration (`GraphEncode`): one ns, the edge's own payload (the document codec), the attribute faces it declares explicitly, and a compile-time node-type enum. `#[ok_nodes]` lists the member TABLES by type (`#[ok_nodes(EntityRow, MemberRow)]`) and the derive writes the member-set enum plus its `NodeSet` impl, each ns read off the table's own `#[ok_ns]`. The predicate vocabulary sits at 0x04/0x05, the graph's faces at 0x06–0x09; `Graph<S, E>` is a runtime handle that declares nothing, `Graph::new(store)` binds an engine instance, and a delete reads the edge row (0x06) and deletes its declared-face entries precisely. okm-dynamic's handle takes the ns + schema pair (`CollectionSchema::ns_prefix`, `members`).
+Status: Accepted (2026-09-20); **the identity clause is superseded by ADR-0067** (2026-11-14) — an edge has no number, its identity is the tuple `(src, predicate, dst)`, and the decision below is stated in that form. The declaration is a GRAPH declaration (`GraphEncode`): one ns, the edge's own payload (the document codec), the attribute faces it declares explicitly, and a compile-time node-type enum. `#[ok_nodes]` lists the member TABLES by type (`#[ok_nodes(EntityRow, MemberRow)]`) and the derive writes the member-set enum plus its `NodeKinds` impl, each ns read off the table's own `#[ok_ns]`. The predicate vocabulary sits at 0x04/0x05, the graph's faces at 0x06–0x09; `Graph<S, E>` is a runtime handle that declares nothing, `Graph::new(store)` binds an engine instance, and a delete reads the edge row (0x06) and deletes its declared-face entries precisely. okm-dynamic's handle takes the ns + schema pair (`CollectionSchema::ns_prefix`, `members`).
 Related: ADR-0015 (relation taxonomy), ADR-0016 (4-byte head, segment-numbered slots), ADR-0002 (namespace vocabulary)
 
 ## Context
@@ -277,7 +277,7 @@ pub struct Facts { … }                    the graph's name; the edge payload =
 
 One derive, one declaration: the macro emits the whole `GraphEncode` impl
 (the payload codec, the declared faces, the ns), the member-set enum, and its
-`NodeSet` impl, with `type Nodes` bound to that enum. A hand-written
+`NodeKinds` impl, with `type Nodes` bound to that enum. A hand-written
 `impl GraphEncode for Facts { type Nodes = … }` alongside the derive would
 be a second impl of the same trait — Rust has no associated-type defaults to
 leave the slot open.
@@ -293,7 +293,7 @@ never typed twice:
 
 // generated:
 pub enum FactsNode { EntityRow, MemberRow }   // one variant = one COLLECTION (one ns)
-impl NodeSet for FactsNode {
+impl NodeKinds for FactsNode {
     const NS_VALUES: &'static [u16] = &[36, 42];   // each table's own #[ok_ns]
 }
 ```
@@ -303,7 +303,7 @@ carries exactly that number, so membership is a check at the ns level
 (§2). The document type is only how the table is NAMED at the declaration
 site; the set the graph declares is a set of collections, and the generated
 variants carry nothing (no accessor, no key type — the ns is the whole
-content). The naming splits accordingly: the set role belongs to `NodeSet`
+content). The naming splits accordingly: the set role belongs to `NodeKinds`
 (`NS_VALUES` is every member's ns) while the enum itself is SINGULAR,
 `<Graph>Node` — a type name names one value, a value names one collection, and
 a plural name would claim something its value domain never satisfies.

@@ -124,7 +124,7 @@ pub fn derive_document_encode(input: TokenStream) -> TokenStream {
 /// collection's ns (`#[ok_ns]`), its own document payload, the attribute
 /// faces it declares explicitly (`#[ok_index]`), and the member node
 /// collections (`#[ok_nodes]` — a list of the node TABLES' types, from which
-/// the member-set enum and its `NodeSet` impl are generated with each table's
+/// the member-set enum and its `NodeKinds` impl are generated with each table's
 /// own ns). Endpoints need no declaration — refs are self-describing; they
 /// travel as runtime `NodeRef`s, never as declared struct fields.
 #[proc_macro_derive(

@@ -79,7 +79,9 @@ use crate::graph::{DynEdge, Graph};
 /// allocated id, and `MEMBER_COUNT` the same reserved payload name the write
 /// path stamps last.
 pub use okm_core::model::hyper::{
-    Cluster, ClusterRef, ClusterRow, DerivedReport, Kind, MEMBER_COUNT, NODE_COUNT, RetractReport,
+    Cluster, ClusterRef, ClusterRow, DerivedReport, EdgeSet, NodeSet, Kind, MEMBER_COUNT,
+    MemberEdges, NODE_COUNT,
+    RetractReport,
     WriteReport,
 };
 
@@ -444,7 +446,7 @@ impl<S: VirtualStorage> Graph<S> {
     /// The member edges of one cluster, in key order — the authority, resolved at
     /// the boundary: the member rows are handles, and this verb answers tuples
     /// (one registry scan for the whole set).
-    pub fn members(&self, kind: Kind, cluster: u64) -> Result<Vec<EdgeKey>, String> {
+    pub fn edge_members(&self, kind: Kind, cluster: u64) -> Result<Vec<EdgeKey>, String> {
         let ns = self.ns_pair();
         let rows = member_keys(self.store_ref(), &ns, ClusterRef::new(kind, cluster))?;
         resolve_rows(self.store_ref(), &ns, rows)
@@ -453,7 +455,7 @@ impl<S: VirtualStorage> Graph<S> {
     /// The member NODES of one cluster, in handle order — the declared entity
     /// set (ADR-0068), resolved at the boundary in one registry batch. An entity
     /// no edge touches is a legal member here, which is the whole point.
-    pub fn nodes(&self, kind: Kind, cluster: u64) -> Result<Vec<NodeRef>, String> {
+    pub fn node_members(&self, kind: Kind, cluster: u64) -> Result<Vec<NodeRef>, String> {
         let ns = self.ns_pair();
         let handles = node_member_keys(self.store_ref(), &ns, ClusterRef::new(kind, cluster))?;
         if handles.is_empty() {
@@ -489,8 +491,8 @@ impl<S: VirtualStorage> Graph<S> {
     /// Not a `bool`: a point read can fault, and a fault reported as "not a
     /// member" is how a broken store would read as an empty cluster. The
     /// traversal-filter spelling is
-    /// `.filter(|step| graph.member_of(kind, cluster, &step.key()).unwrap_or(false))`.
-    pub fn member_of(&self, kind: Kind, cluster: u64, edge: &EdgeKey) -> Result<bool, String> {
+    /// `.filter(|step| graph.edge_member_of(kind, cluster, &step.key()).unwrap_or(false))`.
+    pub fn edge_member_of(&self, kind: Kind, cluster: u64, edge: &EdgeKey) -> Result<bool, String> {
         let ns = self.ns_pair();
         let Some(row) = row_of_key(self.store_ref(), &ns, edge)? else {
             // An edge whose endpoints the graph never saw cannot be a member:
@@ -505,7 +507,7 @@ impl<S: VirtualStorage> Graph<S> {
     }
 
     /// The member count the cluster row states (0 when the name is absent).
-    pub fn member_count(&self, kind: Kind, id: u64) -> Result<u64, String> {
+    pub fn edge_count(&self, kind: Kind, id: u64) -> Result<u64, String> {
         Ok(self
             .lookup(kind, id)?
             .map(|row| count_of(&row.payload, MEMBER_COUNT))
@@ -842,7 +844,7 @@ struct Outcome {
 /// A cluster operation that rides the same plan the declarations do.
 enum ClusterOp {
     /// Drop this batch's edges from a cluster.
-    Remove(ClusterRef),
+    RemoveEdges(ClusterRef),
     /// Drop these nodes from a cluster's DECLARED membership.
     RemoveNodes(ClusterRef, BTreeSet<NodeRef>),
     /// Remove a cluster outright: its row, its member rows and its derived rows.
@@ -931,8 +933,8 @@ impl DynFragment {
     /// Drop this batch's edges from `cluster`. The cluster row stays: a scope is
     /// not an alias for the edges inside it, so losing the last member leaves an
     /// empty cluster with an honest count of zero.
-    pub fn remove(&mut self, cluster: ClusterRef) -> &mut Self {
-        self.ops.push(ClusterOp::Remove(cluster));
+    pub fn remove_edges(&mut self, set: EdgeSet) -> &mut Self {
+        self.ops.push(ClusterOp::RemoveEdges(set.into()));
         self
     }
 
@@ -943,19 +945,26 @@ impl DynFragment {
     /// and a declaration in the same fragment wins over a removal.
     pub fn remove_nodes(
         &mut self,
-        cluster: ClusterRef,
+        set: NodeSet,
         nodes: impl IntoIterator<Item = NodeRef>,
     ) -> &mut Self {
         self.ops
-            .push(ClusterOp::RemoveNodes(cluster, nodes.into_iter().collect()));
+            .push(ClusterOp::RemoveNodes(set.into(), nodes.into_iter().collect()));
         self
     }
 
     /// Remove `cluster` outright: its row, its member rows and its derived
     /// rows, in this batch. Idempotent — a cluster that is not there has
     /// nothing to delete.
-    pub fn delete(&mut self, cluster: ClusterRef) -> &mut Self {
-        self.ops.push(ClusterOp::Delete(cluster));
+    pub fn delete_edges(&mut self, set: EdgeSet) -> &mut Self {
+        self.ops.push(ClusterOp::Delete(set.into()));
+        self
+    }
+
+    /// Remove an ENTITY group outright — the row and its declared members; the
+    /// entities stay.
+    pub fn delete_nodes(&mut self, set: NodeSet) -> &mut Self {
+        self.ops.push(ClusterOp::Delete(set.into()));
         self
     }
 
@@ -997,7 +1006,7 @@ impl DynFragment {
             + self
                 .ops
                 .iter()
-                .filter(|op| matches!(op, ClusterOp::Remove(_)))
+                .filter(|op| matches!(op, ClusterOp::RemoveEdges(_)))
                 .count();
         if writes > 0 {
             return Err(format!(
@@ -1072,13 +1081,20 @@ impl DynFragment {
         }
 
         // ---- 2. Cluster ids: allocated at run time, per kind ----
-        let mut kinds: BTreeSet<ClusterKindId> = BTreeSet::new();
+        // The declaration carries the caller's LABEL; this is where it becomes an
+        // id, in the same batch that writes the row (ADR-0069's rule for a
+        // vocabulary, the one an edge's predicate already follows).
+        let mut declared_kinds: Vec<Kind> = Vec::with_capacity(self.clusters.len());
         for cluster in &self.clusters {
-            kinds.insert(cluster.kind.0);
+            declared_kinds.push(intern_kind(graph.store_ref(), &ns, &cluster.kind)?);
+        }
+        let mut kinds: BTreeSet<ClusterKindId> = BTreeSet::new();
+        for kind in &declared_kinds {
+            kinds.insert(kind.0);
         }
         for op in &self.ops {
             match op {
-                ClusterOp::Remove(cluster)
+                ClusterOp::RemoveEdges(cluster)
                 | ClusterOp::RemoveNodes(cluster, _)
                 | ClusterOp::Delete(cluster) => {
                     kinds.insert(cluster.kind.0);
@@ -1092,48 +1108,54 @@ impl DynFragment {
         // An explicit id reserves the range above it, so a `None` declared
         // BEFORE it cannot take a number it has already claimed — and `0` is
         // reserved for "no parent", so it is nobody's id.
-        for cluster in &self.clusters {
+        for (cluster, kind) in self.clusters.iter().zip(&declared_kinds) {
             match cluster.id {
                 Some(0) => {
                     return Err("hyper_id 0 is reserved: it is the head's \"no parent\"".into());
                 }
                 Some(id) => {
-                    let slot = next_id.entry(cluster.kind.0).or_insert(1);
+                    let slot = next_id.entry(kind.0).or_insert(1);
                     *slot = (*slot).max(id.saturating_add(1));
                 }
                 None => {}
             }
         }
         let mut assigned: Vec<u64> = Vec::with_capacity(self.clusters.len());
-        for cluster in &self.clusters {
-            let slot = next_id.entry(cluster.kind.0).or_insert(1);
+        for (cluster, kind) in self.clusters.iter().zip(&declared_kinds) {
+            let slot = next_id.entry(kind.0).or_insert(1);
             match cluster.id {
                 Some(id) => assigned.push(id),
                 None => {
                     let id = *slot;
                     *slot = slot.saturating_add(1);
                     assigned.push(id);
-                    report.hyper_ids.push(id);
+                    if cluster.edges == MemberEdges::Fragment {
+                        report.edge_sets.push(EdgeSet::new(*kind, id));
+                    } else {
+                        report.node_sets.push(NodeSet::new(*kind, id));
+                    }
                 }
             }
         }
 
         // ---- 3. The plan: one record per cluster this batch touches ----
         let mut plan: BTreeMap<(ClusterKindId, u64), Plan> = BTreeMap::new();
-        for (cluster, id) in self.clusters.iter().zip(&assigned) {
-            let entry = plan.entry((cluster.kind.0, *id)).or_default();
+        for ((cluster, kind), id) in self.clusters.iter().zip(&declared_kinds).zip(&assigned) {
+            let entry = plan.entry((kind.0, *id)).or_default();
             entry.declared = true;
             entry.parent = Some(cluster.parent);
             entry.from_caller = true;
             for (name, value) in cluster.payload.iter() {
                 entry.payload.insert(name.clone(), value.clone());
             }
-            entry.add.extend(batch_rows.iter().cloned());
+            if cluster.edges == MemberEdges::Fragment {
+                entry.add.extend(batch_rows.iter().cloned());
+            }
             entry.add_nodes.extend(cluster.nodes.iter().cloned());
         }
         for op in &self.ops {
             match op {
-                ClusterOp::Remove(cluster) => {
+                ClusterOp::RemoveEdges(cluster) => {
                     plan.entry((cluster.kind.0, cluster.id))
                         .or_default()
                         .remove
@@ -1384,7 +1406,7 @@ impl<S: VirtualStorage> Graph<S> {
     /// allocated.
     ///
     /// There is no update verb: an update is this verb with a conflict hook.
-    /// Naming an edge at its own id ([`Decl::edge_at`], or `Cluster::into` on an
+    /// Naming an edge at its own id ([`Decl::edge_at`], or `.at(..)` on a `Cluster::edges` declaration
     /// existing cluster) hands `on_edge_conflict` / `on_cluster_conflict` that
     /// row's stored payload beside the declared one, so the payload changes while
     /// the id, its faces and its membership rows stand.

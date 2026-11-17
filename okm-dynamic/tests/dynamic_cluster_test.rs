@@ -41,19 +41,25 @@ use okm_core::{
     DocumentEncode, EdgeKey, EdgeStep, GraphEncode, HandleKey, KeyEncode, NodeRef, Seekable,
     VirtualStorage, write_slot,
 };
-use okm_dynamic::{Cluster, ClusterRef, Decl, DynEdge, DynFragment, Graph, Kind};
+use okm_core::model::hyper::intern_kind;
+use okm_dynamic::{Cluster, Decl, DynEdge, DynFragment, Graph, Kind, EdgeSet, NodeSet};
 use okm_query::intersect_seek;
 use okm_value::{Dict, Variant};
 
 const NS: u16 = 0x0190; // 400 — the same ns the byte-equality suite uses
 
-// The CALLER's vocabulary, defined here because a test is a caller: `Kind` is one
-// byte and okm assigns it no meaning. An application picks its own bytes beside
-// its schema (k10r: 1 = community, 5 = flow); the store never learns the words.
-const COMMUNITY: Kind = Kind(1);
-const EVENT: Kind = Kind(2);
-const SCOPE: Kind = Kind(4);
+// The CALLER's vocabulary, defined here because a test is a caller: a kind is a
+// WORD the store interns, and okm assigns it no meaning. The words are the only
+// input; the ids are what the vocabulary answers.
+const COMMUNITY: &str = "community";
+const EVENT: &str = "event";
+const SCOPE: &str = "scope";
 
+/// A word -> the id the vocabulary holds for it (interning is idempotent, so this
+/// is the same id a write will land on).
+fn kid(store: &TestStore, label: &str) -> Kind {
+    intern_kind(store, &NS.to_be_bytes(), label).expect("kind")
+}
 
 fn node(ns: u16, key: u64) -> NodeRef {
     NodeRef::new(&ns.to_be_bytes(), &key.to_be_bytes())
@@ -134,11 +140,11 @@ fn graph(store: &TestStore) -> Graph<TestStore> {
 // ---- the layout, spelled out by hand ----
 
 /// `[ns 2B][slot][kind][hyper_id][tail…]` — the face address the ADR states.
-fn row_key(slot: u8, hyper_id: u64, tail: &[u8]) -> Vec<u8> {
+fn row_key(kind: Kind, slot: u8, hyper_id: u64, tail: &[u8]) -> Vec<u8> {
     let mut k = Vec::with_capacity(3 + 1 + 8 + tail.len());
     k.extend_from_slice(&NS.to_be_bytes());
     k.push(slot);
-    k.extend_from_slice(&COMMUNITY.id().to_be_bytes());
+    k.extend_from_slice(&kind.0.to_be_bytes());
     k.extend_from_slice(&hyper_id.to_be_bytes());
     k.extend_from_slice(tail);
     k
@@ -146,8 +152,8 @@ fn row_key(slot: u8, hyper_id: u64, tail: &[u8]) -> Vec<u8> {
 
 /// The cluster row's key: `[ns][0x0A][kind][hyper_id]`, one segment shorter
 /// than its members'.
-fn cluster_face(hyper_id: u64, tail: &[u8]) -> Vec<u8> {
-    row_key(0x0C, hyper_id, tail)
+fn cluster_face(kind: Kind, hyper_id: u64, tail: &[u8]) -> Vec<u8> {
+    row_key(kind, 0x0C, hyper_id, tail)
 }
 
 /// The stored row identity of a caller's tuple — the registry read twice, which
@@ -208,32 +214,29 @@ fn every_cluster_face_round_trips_at_the_adr_layout() {
             )),
             Decl::edge(edge(person(2), org(9), "works_at")),
         ]);
-        fragment.cluster(Cluster::new(
-            COMMUNITY,
-            attrs(&[("label", Variant::Str("acme".into()))]),
-        ));
+        fragment.cluster(Cluster::edges("community", attrs(&[("label", Variant::Str("acme".into()))])));
         let report = g
             .incorporate(fragment)
             .unwrap_or_else(|e| panic!("{engine}: commit: {e}"));
 
         assert_eq!(report.edges.len(), 2, "{engine}: one edge per edge decl");
-        assert_eq!(report.hyper_ids.len(), 1, "{engine}: one id per cluster");
-        let id = report.hyper_ids[0];
+        assert_eq!(report.edge_sets.len() + report.node_sets.len(), 1, "{engine}: one id per cluster");
+        let id = report.edge_sets[0].id;
         assert_eq!(id, 1, "{engine}: ids start at 1 — 0 is \"no parent\"");
 
         // 0x0A — `[parent u64 BE][dynamic payload]`, and NOTHING longer lives
         // under it: the members sit on a face of their own.
         let row = store
-            .get(&cluster_face(id, &[]))
+            .get(&cluster_face(kid(&store, COMMUNITY), id, &[]))
             .expect("read")
             .unwrap_or_else(|| panic!("{engine}: cluster row"));
         assert_eq!(&row[..8], &0u64.to_be_bytes(), "{engine}: root head");
         assert_eq!(
-            store.get(&cluster_face(id, &[0x00])).expect("read"),
+            store.get(&cluster_face(kid(&store, COMMUNITY), id, &[0x00])).expect("read"),
             None,
             "{engine}: the cluster row is the only row of its face"
         );
-        let stored = g.lookup(COMMUNITY, id).expect("lookup").expect("row");
+        let stored = g.lookup(kid(&store, COMMUNITY), id).expect("lookup").expect("row");
         assert_eq!(stored.parent, 0, "{engine}: no parent");
         assert_eq!(
             stored.payload.get("label"),
@@ -241,7 +244,7 @@ fn every_cluster_face_round_trips_at_the_adr_layout() {
             "{engine}: the Dict payload round-trips through the field vocabulary"
         );
         assert_eq!(
-            g.member_count(COMMUNITY, id).expect("count"),
+            g.edge_count(kid(&store, COMMUNITY), id).expect("count"),
             2,
             "{engine}: member count stamped in the row"
         );
@@ -250,7 +253,7 @@ fn every_cluster_face_round_trips_at_the_adr_layout() {
         // cluster prefix then the edge's handle row `[src_h 8][pred 2][dst_h 8]`
         // (ADR-0067), never the tuple's variable-width references.
         assert_eq!(
-            g.members(COMMUNITY, id).expect("members"),
+            g.edge_members(kid(&store, COMMUNITY), id).expect("members"),
             report.edges,
             "{engine}: one scan of 0x0B"
         );
@@ -263,7 +266,7 @@ fn every_cluster_face_round_trips_at_the_adr_layout() {
             );
             assert_eq!(
                 store
-                    .get(&row_key(0x0D, id, &spelled.wire()))
+                    .get(&row_key(kid(&store, COMMUNITY), 0x0D, id, &spelled.wire()))
                     .expect("read"),
                 Some(Vec::new()),
                 "{engine}: a member row carries no value — the edge does"
@@ -276,7 +279,7 @@ fn every_cluster_face_round_trips_at_the_adr_layout() {
                 store
                     .get(&edge_cluster_face(
                         &row_of(&store, edge),
-                        COMMUNITY,
+                        kid(&store, COMMUNITY),
                         id
                     ))
                     .expect("read"),
@@ -300,24 +303,24 @@ fn every_cluster_face_round_trips_at_the_adr_layout() {
             Decl::edge(edge(person(3), org(3), "works_at")),
             Decl::edge(edge(person(4), org(4), "works_at")),
         ]);
-        fragment.cluster(Cluster::new(COMMUNITY, Dict::new()).under(id));
+        fragment.cluster(Cluster::edges("community", Dict::new()).under(id));
         let child = g
             .incorporate(fragment)
             .unwrap_or_else(|e| panic!("{engine}: child: {e}"))
-            .hyper_ids[0];
+            .edge_sets[0].id;
 
         assert_eq!(
-            g.children(COMMUNITY, id).expect("children"),
+            g.children(kid(&store, COMMUNITY), id).expect("children"),
             vec![child],
             "{engine}: one scan of 0x0C"
         );
         assert_eq!(
-            g.parent(COMMUNITY, child).expect("parent"),
+            g.parent(kid(&store, COMMUNITY), child).expect("parent"),
             id,
             "{engine}: the head is the parent, one point read"
         );
         assert_eq!(
-            g.clusters(COMMUNITY).expect("clusters"),
+            g.clusters(kid(&store, COMMUNITY)).expect("clusters"),
             vec![id, child],
             "{engine}: one scan of 0x0A, ids only"
         );
@@ -342,14 +345,11 @@ fn a_double_add_is_one_row_and_leaves_the_attributes_standing() {
             )),
             Decl::edge(edge(person(2), org(2), "works_at")),
         ]);
-        fragment.cluster(Cluster::new(
-            COMMUNITY,
-            attrs(&[("label", Variant::Str("a".to_string()))]),
-        ));
+        fragment.cluster(Cluster::edges("community", attrs(&[("label", Variant::Str("a".to_string()))])));
         let first = g
             .incorporate(fragment)
             .unwrap_or_else(|e| panic!("{engine}: commit: {e}"));
-        let id = first.hyper_ids[0];
+        let id = first.edge_sets[0].id;
         let ids = first.edges.clone();
 
         let members_before = face(&store, 0x0D);
@@ -364,7 +364,7 @@ fn a_double_add_is_one_row_and_leaves_the_attributes_standing() {
                 Decl::edge(edge(person(1), org(1), "works_at")),
                 Decl::edge(edge(person(2), org(2), "works_at")),
             ]);
-            fragment.cluster(Cluster::into(COMMUNITY, id, Dict::new()));
+            fragment.cluster(Cluster::edges("community", Dict::new()).at(id));
             let again = g
                 .incorporate(fragment)
                 .unwrap_or_else(|e| panic!("{engine}: re-assert {round}: {e}"));
@@ -373,7 +373,7 @@ fn a_double_add_is_one_row_and_leaves_the_attributes_standing() {
                 "{engine}: the same heads are answered back"
             );
             assert!(
-                again.hyper_ids.is_empty(),
+                again.edge_sets.is_empty() && again.node_sets.is_empty(),
                 "{engine}: nothing was created, so nothing was allocated"
             );
         }
@@ -403,7 +403,7 @@ fn a_double_add_is_one_row_and_leaves_the_attributes_standing() {
             "{engine}: the Dict payload stands"
         );
         assert_eq!(
-            g.member_count(COMMUNITY, id).expect("count"),
+            g.edge_count(kid(&store, COMMUNITY), id).expect("count"),
             2,
             "{engine}: the count did not double"
         );
@@ -426,11 +426,11 @@ fn deleting_a_node_takes_every_edge_incident_to_it() {
             Decl::edge(edge(person(2), org(1), "works_at")),
             Decl::edge(edge(person(3), org(3), "works_at")),
         ]);
-        fragment.cluster(Cluster::new(COMMUNITY, Dict::new()));
+        fragment.cluster(Cluster::edges("community", Dict::new()));
         let report = g
             .incorporate(fragment)
             .unwrap_or_else(|e| panic!("{engine}: write: {e}"));
-        let id = report.hyper_ids[0];
+        let id = report.edge_sets[0].id;
         let (first, second) = (report.edges[0].clone(), report.edges[1].clone());
         let shared = report.edges[2].clone();
         let unrelated = report.edges[3].clone();
@@ -493,12 +493,12 @@ fn deleting_a_node_takes_every_edge_incident_to_it() {
             "{engine}: the other edge into o1 stays"
         );
         assert_eq!(
-            g.members(COMMUNITY, id).expect("members"),
+            g.edge_members(kid(&store, COMMUNITY), id).expect("members"),
             vec![shared, unrelated],
             "{engine}: the cluster kept the members that still exist"
         );
         assert_eq!(
-            g.member_count(COMMUNITY, id).expect("count"),
+            g.edge_count(kid(&store, COMMUNITY), id).expect("count"),
             2,
             "{engine}: the count follows the cascade"
         );
@@ -518,11 +518,11 @@ fn deleting_an_edge_leaves_both_endpoints_and_their_other_edges() {
             Decl::edge(edge(person(1), org(2), "works_at")),
             Decl::edge(edge(person(2), org(3), "works_at")),
         ]);
-        fragment.cluster(Cluster::new(COMMUNITY, Dict::new()));
+        fragment.cluster(Cluster::edges("community", Dict::new()));
         let report = g
             .incorporate(fragment)
             .unwrap_or_else(|e| panic!("{engine}: write: {e}"));
-        let id = report.hyper_ids[0];
+        let id = report.edge_sets[0].id;
         let (doomed, kept) = (report.edges[0].clone(), report.edges[1].clone());
 
         let mut fragment = DynFragment::new([]);
@@ -567,7 +567,7 @@ fn deleting_an_edge_leaves_both_endpoints_and_their_other_edges() {
             "{engine}: the endpoint took a new edge"
         );
         assert_eq!(
-            g.members(COMMUNITY, id).expect("members"),
+            g.edge_members(kid(&store, COMMUNITY), id).expect("members"),
             vec![kept, report.edges[2].clone()],
             "{engine}: the cluster kept its other members"
         );
@@ -587,21 +587,21 @@ fn member_of_answers_before_and_after_a_retract() {
             Decl::edge(edge(person(2), org(2), "works_at")),
             Decl::edge(edge(person(3), org(3), "works_at")),
         ]);
-        fragment.cluster(Cluster::new(COMMUNITY, Dict::new()));
+        fragment.cluster(Cluster::edges("community", Dict::new()));
         let report = g
             .incorporate(fragment)
             .unwrap_or_else(|e| panic!("{engine}: write: {e}"));
-        let id = report.hyper_ids[0];
+        let id = report.edge_sets[0].id;
         let ids = report.edges.clone();
 
         assert!(
-            g.member_of(COMMUNITY, id, &ids[1])
+            g.edge_member_of(kid(&store, COMMUNITY), id, &ids[1])
                 .unwrap_or_else(|e| panic!("{engine}: member_of: {e}")),
             "{engine}: a member answers true — one point read of 0x0D"
         );
         assert!(
-            !g.member_of(
-                COMMUNITY,
+            !g.edge_member_of(
+                kid(&store, COMMUNITY),
                 id,
                 &EdgeKey::new(person(9), ids[1].predicate, org(9))
             )
@@ -609,7 +609,7 @@ fn member_of_answers_before_and_after_a_retract() {
             "{engine}: an edge that is not a member answers false"
         );
         assert!(
-            !g.member_of(EVENT, id, &ids[1])
+            !g.edge_member_of(kid(&store, EVENT), id, &ids[1])
                 .unwrap_or_else(|e| panic!("{engine}: member_of: {e}")),
             "{engine}: the same head under another kind is a different cluster"
         );
@@ -623,12 +623,12 @@ fn member_of_answers_before_and_after_a_retract() {
             .unwrap_or_else(|e| panic!("{engine}: retract: {e}"));
 
         assert!(
-            !g.member_of(COMMUNITY, id, &ids[0])
+            !g.edge_member_of(kid(&store, COMMUNITY), id, &ids[0])
                 .unwrap_or_else(|e| panic!("{engine}: member_of: {e}")),
             "{engine}: the mirror left with the member row"
         );
         assert_eq!(
-            g.members(COMMUNITY, id).expect("members"),
+            g.edge_members(kid(&store, COMMUNITY), id).expect("members"),
             vec![ids[1].clone(), ids[2].clone()],
             "{engine}: the authority still holds the surviving members"
         );
@@ -638,14 +638,14 @@ fn member_of_answers_before_and_after_a_retract() {
             "{engine}: the derived face followed it exactly"
         );
         assert_eq!(
-            g.member_count(COMMUNITY, id).expect("count"),
+            g.edge_count(kid(&store, COMMUNITY), id).expect("count"),
             2,
             "{engine}: the count is the member rows' own number"
         );
 
         // A cluster's `delete` is a removal, so it rides `retract` too.
         let mut fragment = DynFragment::new([]);
-        fragment.delete(ClusterRef::new(COMMUNITY, id));
+        fragment.delete_edges(EdgeSet::new(kid(&store, COMMUNITY), id));
         let removed = g
             .retract(fragment)
             .unwrap_or_else(|e| panic!("{engine}: delete cluster: {e}"));
@@ -654,7 +654,7 @@ fn member_of_answers_before_and_after_a_retract() {
             "{engine}: the cluster's remaining member rows went with it"
         );
         assert!(
-            g.lookup(COMMUNITY, id).expect("lookup").is_none(),
+            g.lookup(kid(&store, COMMUNITY), id).expect("lookup").is_none(),
             "{engine}: the cluster row is gone"
         );
     }
@@ -676,14 +676,11 @@ fn the_derived_faces_rebuild_to_the_write_paths_bytes() {
             Decl::edge(edge(person(2), org(2), "works_at")),
             Decl::edge(edge(person(3), org(3), "works_at")),
         ]);
-        fragment.cluster(Cluster::new(
-            COMMUNITY,
-            attrs(&[("label", Variant::Str("a".to_string()))]),
-        ));
+        fragment.cluster(Cluster::edges("community", attrs(&[("label", Variant::Str("a".to_string()))])));
         let first = g
             .incorporate(fragment)
             .unwrap_or_else(|e| panic!("{engine}: first: {e}"));
-        let parent = first.hyper_ids[0];
+        let parent = first.edge_sets[0].id;
         let ids = first.edges.clone();
 
         // The same three heads re-asserted under a second cluster: the edges are
@@ -693,7 +690,7 @@ fn the_derived_faces_rebuild_to_the_write_paths_bytes() {
             Decl::edge(edge(person(2), org(2), "works_at")),
             Decl::edge(edge(person(3), org(3), "works_at")),
         ]);
-        fragment.cluster(Cluster::new(EVENT, Dict::new()));
+        fragment.cluster(Cluster::edges("event", Dict::new()));
         g.incorporate(fragment)
             .unwrap_or_else(|e| panic!("{engine}: second: {e}"));
 
@@ -701,7 +698,7 @@ fn the_derived_faces_rebuild_to_the_write_paths_bytes() {
             Decl::edge(edge(person(4), org(4), "works_at")),
             Decl::edge(edge(person(5), org(5), "works_at")),
         ]);
-        fragment.cluster(Cluster::new(COMMUNITY, Dict::new()).under(parent));
+        fragment.cluster(Cluster::edges("community", Dict::new()).under(parent));
         g.incorporate(fragment)
             .unwrap_or_else(|e| panic!("{engine}: child: {e}"));
 
@@ -749,7 +746,7 @@ fn the_derived_faces_rebuild_to_the_write_paths_bytes() {
         );
         // Derived rows are an INDEX, not a second truth.
         assert_eq!(
-            g.members(COMMUNITY, parent).expect("members"),
+            g.edge_members(kid(&store, COMMUNITY), parent).expect("members"),
             ids,
             "{engine}: the authority was never touched"
         );
@@ -1083,14 +1080,14 @@ fn a_traversal_find_reads_fewer_entries_than_the_face_holds() {
             Decl::edge(edge(person(1), org(1), "works_at")),
             Decl::edge(edge(person(1), org(2), "works_at")),
         ]);
-        fragment.cluster(Cluster::new(COMMUNITY, Dict::new()));
+        fragment.cluster(Cluster::edges("community", Dict::new()));
         let grouped = g
             .incorporate(fragment)
             .unwrap_or_else(|e| panic!("{engine}: cluster: {e}"));
-        let cluster = grouped.hyper_ids[0];
+        let cluster = grouped.edge_sets[0].id;
 
         let member_keys: Vec<Vec<u8>> = g
-            .members(COMMUNITY, cluster)
+            .edge_members(kid(&store, COMMUNITY), cluster)
             .expect("members")
             .iter()
             .map(|edge| out_face_key(&store, edge))
@@ -1113,8 +1110,8 @@ fn a_traversal_find_reads_fewer_entries_than_the_face_holds() {
         let filtered: Vec<EdgeKey> = g
             .out(&person(1))
             .filter(|step| {
-                g.member_of(
-                    COMMUNITY,
+                g.edge_member_of(
+                    kid(&store, COMMUNITY),
                     cluster,
                     &g.edge_key(step).expect("a step resolves"),
                 )
@@ -1182,28 +1179,28 @@ fn the_two_verbs_refuse_each_others_declarations() {
         // row lands with an honest count of one instead of being refused, and the
         // edge it holds lands with it.
         let mut fragment = DynFragment::new([Decl::edge(edge(person(4), org(4), "works_at"))]);
-        fragment.cluster(Cluster::new(COMMUNITY, Dict::new()));
+        fragment.cluster(Cluster::edges("community", Dict::new()));
         let report = g
             .incorporate(fragment)
             .expect("a one-member cluster is a scope, not a refusal");
-        let one = report.hyper_ids[0];
+        let one = report.edge_sets[0].id;
         assert_eq!(
             g.out_edges(&person(4)).expect("out").len(),
             1,
             "{engine}: the edge that would have been its member landed"
         );
         assert_eq!(
-            g.member_count(COMMUNITY, one).expect("count"),
+            g.edge_count(kid(&store, COMMUNITY), one).expect("count"),
             1,
             "{engine}: the row states the count it has"
         );
         assert_eq!(
-            g.members(COMMUNITY, one).expect("members").len(),
+            g.edge_members(kid(&store, COMMUNITY), one).expect("members").len(),
             1,
             "{engine}: one member row, written in the same batch"
         );
         assert_eq!(
-            g.clusters(COMMUNITY).expect("clusters").len(),
+            g.clusters(kid(&store, COMMUNITY)).expect("clusters").len(),
             1,
             "{engine}: and the cluster row exists at that id"
         );
@@ -1320,20 +1317,17 @@ fn a_cluster_created_with_no_members_at_all_is_a_scope() {
         // a statement — "something used to be here and is gone now" — so the row
         // it makes is legal and says zero.
         let mut fragment = DynFragment::new([]);
-        fragment.cluster(Cluster::new(
-            SCOPE,
-            attrs(&[("label", Variant::Str("gone".to_string()))]),
-        ));
+        fragment.cluster(Cluster::edges("scope", attrs(&[("label", Variant::Str("gone".to_string()))])));
         let report = g
             .incorporate(fragment)
             .expect("an empty scope is a declared scope");
-        assert_eq!(report.hyper_ids.len(), 1, "{engine}: one id allocated");
+        assert_eq!(report.edge_sets.len() + report.node_sets.len(), 1, "{engine}: one id allocated");
         assert!(report.edges.is_empty(), "{engine}: no edge declared");
-        let scope = report.hyper_ids[0];
+        let scope = report.edge_sets[0].id;
 
-        let row = g.lookup(SCOPE, scope).expect("lookup").expect("row");
+        let row = g.lookup(kid(&store, SCOPE), scope).expect("lookup").expect("row");
         assert_eq!(
-            g.member_count(SCOPE, scope).expect("count"),
+            g.edge_count(kid(&store, SCOPE), scope).expect("count"),
             0,
             "{engine}: zero is the honest count"
         );
@@ -1343,11 +1337,11 @@ fn a_cluster_created_with_no_members_at_all_is_a_scope() {
             "{engine}: the payload is the statement the scope makes"
         );
         assert!(
-            g.members(SCOPE, scope).expect("members").is_empty(),
+            g.edge_members(kid(&store, SCOPE), scope).expect("members").is_empty(),
             "{engine}: an empty member list, not an error"
         );
         assert_eq!(
-            g.clusters(SCOPE).expect("clusters"),
+            g.clusters(kid(&store, SCOPE)).expect("clusters"),
             vec![scope],
             "{engine}: and the kind scan still lists it"
         );
@@ -1366,13 +1360,13 @@ fn an_explicitly_declared_empty_cluster_survives_a_rebuild() {
         // the child index is derived from the cluster rows, so the rebuild has to
         // work off rows whose member face is empty.
         let mut fragment = DynFragment::new([]);
-        fragment.cluster(Cluster::new(SCOPE, Dict::new()));
-        let parent = g.incorporate(fragment).expect("parent").hyper_ids[0];
+        fragment.cluster(Cluster::edges("scope", Dict::new()));
+        let parent = g.incorporate(fragment).expect("parent").edge_sets[0].id;
         let mut fragment = DynFragment::new([]);
-        fragment.cluster(Cluster::new(SCOPE, Dict::new()).under(parent));
-        let child = g.incorporate(fragment).expect("child").hyper_ids[0];
+        fragment.cluster(Cluster::edges("scope", Dict::new()).under(parent));
+        let child = g.incorporate(fragment).expect("child").edge_sets[0].id;
         assert_eq!(
-            g.children(SCOPE, parent).expect("children"),
+            g.children(kid(&store, SCOPE), parent).expect("children"),
             vec![child],
             "{engine}: the child index was written with the rows"
         );
@@ -1382,17 +1376,17 @@ fn an_explicitly_declared_empty_cluster_survives_a_rebuild() {
         assert_eq!(report.members, 0, "{engine}: and no member row exists");
 
         for (id, label) in [(parent, "parent"), (child, "child")] {
-            g.lookup(SCOPE, id)
+            g.lookup(kid(&store, SCOPE), id)
                 .expect("lookup")
                 .unwrap_or_else(|| panic!("{engine}: {label} survived the rebuild"));
             assert_eq!(
-                g.member_count(SCOPE, id).expect("count"),
+                g.edge_count(kid(&store, SCOPE), id).expect("count"),
                 0,
                 "{engine}: {label} still says zero"
             );
         }
         assert_eq!(
-            g.children(SCOPE, parent).expect("children"),
+            g.children(kid(&store, SCOPE), parent).expect("children"),
             vec![child],
             "{engine}: the derived child index rebuilt from the rows alone"
         );
@@ -1408,35 +1402,39 @@ fn a_node_cluster_holds_an_entity_that_has_no_edge() {
     for (engine, store) in TestStore::matrix() {
         let lonely = person(99);
         let mut fragment = DynFragment::new([]);
-        fragment.cluster(Cluster::new(SCOPE, attrs(&[])).nodes([lonely.clone()]));
+        fragment.cluster(Cluster::nodes("scope", attrs(&[]), [lonely.clone()]));
         let mut g = graph(&store);
         let report = g
             .incorporate(fragment)
             .unwrap_or_else(|e| panic!("{engine}: commit: {e}"));
-        let scope = report.hyper_ids[0];
+        let scope = report.node_sets[0].id;
 
         assert_eq!(
-            g.nodes(SCOPE, scope).expect("nodes"),
+            g.node_members(kid(&store, SCOPE), scope).expect("nodes"),
             vec![lonely.clone()],
             "{engine}: the declared entity is a member, resolved at the boundary"
         );
         assert!(
-            g.node_member_of(SCOPE, scope, &lonely).expect("point read"),
+            g.node_member_of(kid(&store, SCOPE), scope, &lonely).expect("point read"),
             "{engine}: the member face's exact key answers"
         );
         assert_eq!(
-            g.node_count(SCOPE, scope).expect("count"),
+            g.node_count(kid(&store, SCOPE), scope).expect("count"),
             1,
             "{engine}: the entity count"
         );
         assert_eq!(
-            g.member_count(SCOPE, scope).expect("count"),
+            g.edge_count(kid(&store, SCOPE), scope).expect("count"),
             0,
             "{engine}: no edge members at all"
         );
         assert_eq!(
-            g.node_clusters_of(&lonely).expect("mirror"),
-            vec![ClusterRef::new(SCOPE, scope)],
+            g.node_clusters_of(&lonely)
+                .expect("mirror")
+                .iter()
+                .map(|set| (set.kind, set.id))
+                .collect::<Vec<_>>(),
+            vec![(kid(&store, SCOPE), scope)],
             "{engine}: the per-entity question is one scan of the mirror"
         );
         assert_eq!(face(&store, 0x12).len(), 1, "{engine}: one member row");
@@ -1450,10 +1448,10 @@ fn retracting_a_node_takes_its_own_memberships() {
     for (engine, store) in TestStore::matrix() {
         let member = person(7);
         let mut fragment = DynFragment::new([]);
-        fragment.cluster(Cluster::new(SCOPE, attrs(&[])).nodes([member.clone()]));
+        fragment.cluster(Cluster::nodes("scope", attrs(&[]), [member.clone()]));
         let mut g = graph(&store);
         let report = g.incorporate(fragment).expect("commit");
-        let scope = report.hyper_ids[0];
+        let scope = report.node_sets[0].id;
 
         let mut retract = DynFragment::new([]);
         retract.delete_node(member.clone());
@@ -1465,11 +1463,11 @@ fn retracting_a_node_takes_its_own_memberships() {
             "{engine}: a node whose only trace is a membership still counts"
         );
         assert!(
-            !g.node_member_of(SCOPE, scope, &member).expect("point read"),
+            !g.node_member_of(kid(&store, SCOPE), scope, &member).expect("point read"),
             "{engine}: the membership went with the entity"
         );
         assert_eq!(
-            g.node_count(SCOPE, scope).expect("count"),
+            g.node_count(kid(&store, SCOPE), scope).expect("count"),
             0,
             "{engine}: the count is the honest zero"
         );
@@ -1491,27 +1489,34 @@ fn retracting_an_edge_leaves_every_node_cluster_alone() {
             predicate: "works_at".to_string(),
             attrs: attrs(&[]),
         })]);
-        fragment.cluster(Cluster::new(COMMUNITY, attrs(&[])).nodes([src.clone()]));
+        fragment.cluster(Cluster::nodes("community", attrs(&[]), [src.clone()]));
         let mut g = graph(&store);
         let report = g.incorporate(fragment).expect("commit");
-        let cluster = report.hyper_ids[0];
-        assert_eq!((g.member_count(COMMUNITY, cluster).expect("count"), g.node_count(COMMUNITY, cluster).expect("count")), (1, 1), "{engine}");
+        let cluster = report.node_sets[0].id;
+        assert_eq!(
+            (
+                g.edge_count(kid(&store, COMMUNITY), cluster).expect("count"),
+                g.node_count(kid(&store, COMMUNITY), cluster).expect("count")
+            ),
+            (0, 1),
+            "{engine}: an entity group holds the entity and no assertion"
+        );
 
         let mut retract = DynFragment::new([]);
         retract.delete_edge(report.edges[0].clone());
         g.retract(retract).expect("retract");
 
         assert!(
-            g.node_member_of(COMMUNITY, cluster, &src).expect("point read"),
+            g.node_member_of(kid(&store, COMMUNITY), cluster, &src).expect("point read"),
             "{engine}: deleting an assertion does not remove an entity from a group"
         );
         assert_eq!(
-            g.member_count(COMMUNITY, cluster).expect("count"),
+            g.edge_count(kid(&store, COMMUNITY), cluster).expect("count"),
             0,
             "{engine}: the edge member row left"
         );
         assert_eq!(
-            g.node_count(COMMUNITY, cluster).expect("count"),
+            g.node_count(kid(&store, COMMUNITY), cluster).expect("count"),
             1,
             "{engine}: the entity stayed"
         );
@@ -1523,7 +1528,7 @@ fn the_node_index_rebuilds_from_the_node_member_rows_alone() {
     for (engine, store) in TestStore::matrix() {
         let mut fragment = DynFragment::new([]);
         fragment.cluster(
-            Cluster::new(SCOPE, attrs(&[])).nodes([person(1), person(2), org(1)]),
+            Cluster::nodes("scope", attrs(&[]), [person(1), person(2), org(1)]),
         );
         let mut g = graph(&store);
         g.incorporate(fragment).expect("commit");
@@ -1549,21 +1554,21 @@ fn removing_a_declared_member_leaves_the_entity_alone() {
         let a = person(1);
         let b = person(2);
         let mut fragment = DynFragment::new([]);
-        fragment.cluster(Cluster::new(SCOPE, attrs(&[])).nodes([a.clone(), b.clone()]));
+        fragment.cluster(Cluster::nodes("scope", attrs(&[]), [a.clone(), b.clone()]));
         let mut g = graph(&store);
         let report = g.incorporate(fragment).expect("commit");
-        let scope = report.hyper_ids[0];
+        let scope = report.node_sets[0].id;
 
         let mut removal = DynFragment::new([]);
-        removal.remove_nodes(ClusterRef::new(SCOPE, scope), [a.clone()]);
+        removal.remove_nodes(NodeSet::new(kid(&store, SCOPE), scope), [a.clone()]);
         g.incorporate(removal).expect("removal");
 
-        assert_eq!(g.nodes(SCOPE, scope).expect("nodes"), vec![b.clone()], "{engine}");
+        assert_eq!(g.node_members(kid(&store, SCOPE), scope).expect("nodes"), vec![b.clone()], "{engine}");
         assert!(
-            !g.node_member_of(SCOPE, scope, &a).expect("point read"),
+            !g.node_member_of(kid(&store, SCOPE), scope, &a).expect("point read"),
             "{engine}: the declared row went"
         );
-        assert_eq!(g.node_count(SCOPE, scope).expect("count"), 1, "{engine}");
+        assert_eq!(g.node_count(kid(&store, SCOPE), scope).expect("count"), 1, "{engine}");
         assert!(g.node_clusters_of(&a).expect("mirror").is_empty(), "{engine}");
         assert_eq!(face(&store, 0x12).len(), 1, "{engine}: one member row left");
         assert_eq!(face(&store, 0x13).len(), 1, "{engine}: one mirror row left");
@@ -1571,7 +1576,7 @@ fn removing_a_declared_member_leaves_the_entity_alone() {
 }
 
 #[test]
-fn a_removed_declaration_still_reads_through_a_member_edge() {
+fn a_removed_declaration_leaves_the_assertion_alone() {
     for (engine, store) in TestStore::matrix() {
         let src = person(1);
         let dst = org(1);
@@ -1581,26 +1586,24 @@ fn a_removed_declaration_still_reads_through_a_member_edge() {
             predicate: "works_at".to_string(),
             attrs: attrs(&[]),
         })]);
-        fragment.cluster(Cluster::new(SCOPE, attrs(&[])).nodes([src.clone()]));
+        fragment.cluster(Cluster::nodes("scope", attrs(&[]), [src.clone()]));
         let mut g = graph(&store);
         let report = g.incorporate(fragment).expect("commit");
-        let scope = report.hyper_ids[0];
+        let scope = report.node_sets[0].id;
 
         let mut removal = DynFragment::new([]);
-        removal.remove_nodes(ClusterRef::new(SCOPE, scope), [src.clone()]);
+        removal.remove_nodes(NodeSet::new(kid(&store, SCOPE), scope), [src.clone()]);
         g.incorporate(removal).expect("removal");
 
         assert!(
-            !g.node_member_of(SCOPE, scope, &src).expect("point read"),
+            !g.node_member_of(kid(&store, SCOPE), scope, &src).expect("point read"),
             "{engine}: the declared half is what the verb speaks for"
         );
-        assert!(g.nodes(SCOPE, scope).expect("nodes").is_empty(), "{engine}");
-        // Still reachable through the edge half, which this verb never touches.
-        let via = g.clusters_of(&report.edges[0]).expect("edge half");
-        assert!(
-            via.contains(&ClusterRef::new(SCOPE, scope)),
-            "{engine}: the edge half still answers"
-        );
-        assert_eq!(g.member_count(SCOPE, scope).expect("count"), 1, "{engine}");
+        assert!(g.node_members(kid(&store, SCOPE), scope).expect("nodes").is_empty(), "{engine}");
+        // No EDGE group ever held it: membership is declared per set, and this
+        // verb speaks for the entity set alone.
+        let via = g.clusters_of(&report.edges[0]).expect("edge sets");
+        assert!(via.is_empty(), "{engine}: no edge set names the assertion");
+        assert_eq!(g.edge_count(kid(&store, SCOPE), scope).expect("count"), 0, "{engine}");
     }
 }

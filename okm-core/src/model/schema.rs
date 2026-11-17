@@ -117,7 +117,7 @@ pub struct CollectionSchema {
     pub members: Vec<u16>,
     /// `(ns, key width)` for every member collection — the table an edge key is
     /// parsed by, because an edge carries no length prefix per endpoint
-    /// (ADR-0067). It is the runtime half of the compile-time `NodeSet`, and a
+    /// (ADR-0067). It is the runtime half of the compile-time `NodeKinds`, and a
     /// dynamic writer needs it to build and read a key at all: without the width,
     /// `[src][pred][dst]` has no boundary.
     pub member_widths: Vec<(u16, usize)>,
@@ -334,9 +334,9 @@ impl CollectionSchema {
     /// rides the schema as DATA (ADR-0025: mode is a property of the writer),
     /// never as a stored slot.
     pub fn of_graph<E: crate::model::graph::GraphEncode>() -> Self {
-        use crate::model::graph::{Members, NodeSet};
+        use crate::model::graph::{Members, NodeKinds};
         let mut schema = Self::of::<crate::model::graph::EdgeKey, E>();
-        schema.members = <E::Nodes as NodeSet>::NS_VALUES.to_vec();
+        schema.members = <E::Nodes as NodeKinds>::NS_VALUES.to_vec();
         schema.member_widths = Members::of::<E::Nodes>().pairs().to_vec();
         schema
     }

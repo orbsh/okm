@@ -17,13 +17,13 @@
 //!
 //! // generated, never written by hand:
 //! // pub enum EmploymentNode { User, Org }
-//! // impl okm_core::NodeSet for EmploymentNode {
+//! // impl okm_core::NodeKinds for EmploymentNode {
 //! //     const NS_VALUES: &'static [u16] = &[10, 11];   // the tables' own ns
 //! // }
 //! ```
 //!
 //! The member set is a set of TABLES, so `#[ok_nodes]` lists document types and
-//! the derive writes the enum over them plus its `NodeSet` impl. The ns values
+//! the derive writes the enum over them plus its `NodeKinds` impl. The ns values
 //! come from each table's own `#[ok_ns]`, never from a hand-copied number — a
 //! new member is one type name in the edge's declaration, and the ns cannot
 //! drift from the table. A variant is one COLLECTION (that is what membership
@@ -37,10 +37,10 @@
 //!
 //! Generated: the full `Document` impl (payload codec, `#[ok_index]` marker
 //! structs and entries, `NS_PREFIX`/`NS` from `#[ok_ns]`), the member-set enum
-//! `<Name>Node`, its `NodeSet` impl, and `impl GraphEncode { type Nodes }`.
+//! `<Name>Node`, its `NodeKinds` impl, and `impl GraphEncode { type Nodes }`.
 //! The suffix is SINGULAR because a type name names one value: a value of this
 //! enum names one node collection (one ns), and the plural role — "the set of
-//! collections this graph admits" — belongs to `NodeSet::NS_VALUES`, never to
+//! collections this graph admits" — belongs to `NodeKinds::NS_VALUES`, never to
 //! the enum's name. `<Name>Nodes` would claim the type holds many nodes, which
 //! no value ever does.
 //! Identity is the mechanism's `EdgeKey` (the tuple — an edge has no number,
@@ -209,7 +209,7 @@ pub fn expand(input: syn::DeriveInput) -> syn::Result<TS2> {
             #(#endpoint_fns)*
         }
 
-        impl ::okm_core::NodeSet for #set_ident {
+        impl ::okm_core::NodeKinds for #set_ident {
             const NS_VALUES: &'static [u16] = &[#(#ns_items),*];
 
             /// Each member's pkey width, from its key's own `KEY_LEN` — the table

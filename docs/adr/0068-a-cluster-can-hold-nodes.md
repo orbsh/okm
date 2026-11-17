@@ -28,7 +28,7 @@ There is **no edge → node-cluster face**. An edge's endpoints are exactly two,
 
 **2. The member kind is carried by the face — not by `kind`, not by a flag.** `kind` stays the caller's vocabulary, with okm assigning it no meaning. ADR-0066 states that the store never learns its application's nouns; the same rule forbids okm from imposing its own noun (member kind) on the application's vocabulary, and a flag byte in the row head would cost a value-layout stamp while still leaving an empty cluster unable to answer, because there is no row to read it from.
 
-So a cluster may hold edge members, node members, or both, and **"who is in this cluster" is the union of the declared node members and the endpoints of its member edges**. A scope's size is a fact about its rows, and the rows are the answer.
+So a cluster may hold edge members, node members, or both, and **"who is in this cluster" is the union of the declared node members and the endpoints of its member edges**. A scope's size is a fact about its rows, and the rows are the answer. The API declares one of the two, never both at once: a group of assertions and a group of entities are two sets, and a caller that wants both declares both and ties them together itself.
 
 **3. Node membership is DECLARED truth, not a projection of the member edges.** This is the part that narrows ADR-0066 §2. A projection cannot hold an entity with no edge, and it cannot survive an edge deletion without dropping a group the entity still belongs to; a member row can do both, and it is the same "one row per member" that ADR-0066 §1 chose over reifying the group as a node.
 
@@ -36,9 +36,9 @@ So a cluster may hold edge members, node members, or both, and **"who is in this
 
 **5. Faces and roles match the edge side exactly.** `0x12` is Truth, `0x13` is Derived and rebuildable from `0x12` alone; `rebuild_derived` gains a phase for it beside the one `0x0F` already has. Deletion follows the same rule: deleting a cluster takes both member faces and both mirrors, deleting a **node** takes its `0x12` rows (found through one `0x13` scan), and deleting an **edge** leaves every node cluster alone — an entity does not leave a group because an assertion about it went away.
 
-**6. Counts are re-stamped, never incremented.** `members` stays the edge-member count; `nodes` is the node-member count. Both are computed from the face on every write that touches it, which is how the existing count already works and why the write path needs no read-modify-write.
+**6. Counts are re-stamped, never incremented.** `edge_count` is the edge-member count; `node_count` is the node-member count. Both are computed from the face on every write that touches it, which is how the existing count already works and why the write path needs no read-modify-write.
 
-**7. One declaration, no special case.** `Cluster::nodes(iter)` declares node members; the fragment's edges still join the same cluster, so a mixed scope is one declaration rather than two shapes. The verbs follow the subject: `members` answers edges, `nodes` answers nodes, `member_of` / `node_member_of` are the two point tests, and `clusters_of(node)` is the union of `0x13` and the incident-edge path. A declaration is retracted with `remove_nodes(cluster, nodes)`, which speaks for the declared half only — an entity a member edge still names stays in the union, and the node itself is never touched.
+**7. One declaration, no special case, and the constructor says which members it brings.** The two spellings are `EdgeSet` and `NodeSet` — the schema's `NodeKinds` trait keeps its own name, because a set of member TABLES and a set of member ENTITIES are different things. `Cluster::nodes(kind, payload, iter)` declares a cluster of ENTITIES and takes no edge — an edge the same fragment writes cannot slip in. `Cluster::edges(kind, payload)` declares a cluster of this fragment's assertions. There is no declaration that brings both, and no `with_nodes`: an entity group and an assertion group are two sets, a caller that wants both declares both, and the plan is keyed by `(kind, id)` so two declarations at one `id` still write one row. The verbs name the member kind rather than letting the edge side win the unmarked name: `edge_members` / `node_members`, `edge_member_of` / `node_member_of`, `edge_count` / `node_count`, `remove_edges` / `remove_nodes`, and `node_sets_of(node)` is one scan of `0x13`. A verb called `members` beside one called `node_members` would spell the node side as the exception, and it is not one: the two faces are peers whose only asymmetry is cardinality. A declaration is retracted with `remove_nodes(cluster, nodes)`, which speaks for the declared half only — an entity a member edge still names stays in the union, and the node itself is never touched.
 
 ## Naming
 
@@ -49,7 +49,7 @@ The prose says **edge cluster** and **node cluster**; the code needs no new word
 ## Costs, stated where they are paid
 
 - A node member row is 21 bytes against the edge member row's 31, and its mirror is 21 against 31.
-- A declared node group writes exactly the nodes it declares — no per-edge multiplier. Its write pays one scan of the cluster's own `0x12` run to re-stamp `nodes`, the same shape the edge face already pays for `members`.
+- A declared node group writes exactly the nodes it declares — no per-edge multiplier. Its write pays one scan of the cluster's own `0x12` run to re-stamp `nodes`, the same shape the edge face already pays for `edge_count`.
 - Ordinary node and edge writes still touch no cluster face: the plan is built from the fragment's declarations alone, so a fragment that declares no cluster has an empty plan and reads nothing.
 - Cascade: deleting a node adds one `0x13` prefix scan (precise, and cheaper than the full-face suffix scan the edge path needs), plus one re-read per affected cluster for the count.
 - An edge cluster's participants are still a read-side projection. That is unchanged and still the cheap answer: the group's edges are contiguous, and the dedupe is a sorted insert.
@@ -66,5 +66,5 @@ The prose says **edge cluster** and **node cluster**; the code needs no new word
 
 - "Which groups is this entity in" is one scan of `0x13`, with the incident-edge path unioned in — the entity-side recall stops being degree-linear.
 - A community run can write a vertex partition directly, with no boundary convention for cross-group edges.
-- Two relations share one cluster identity: an edge cluster's participants are derived, a node cluster's are declared, and a mixed scope answers the union. No invariant ties the two faces together, because they are different facts and not two copies of one.
+- Two relations live on one row type: an edge group's participants are derived, an entity group's are declared. The API declares them separately (`Cluster::edges` / `Cluster::nodes`) and no verb answers a union; a row carrying both faces exists only when a caller declares both at one id, which is its own decision. No invariant ties the two faces together, because they are different facts and not two copies of one.
 - The chain of node existence is no longer single: an endpoint, or a declared member. Every path that assumed the first must say which one it means.

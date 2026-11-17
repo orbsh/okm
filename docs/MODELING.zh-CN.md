@@ -799,7 +799,7 @@ struct Membership {
 节点就是普通 document collection。类型集在编译期封闭时，节点的"类型"是它的 collection（ns 即类型标记）；kind 在运行期才到达时，kind 是一个 collection 内部带索引的字段（k10r 案例见下）。两种形态下，节点 kind / 属性过滤都走 collection 自己的声明索引和词汇表——与任何文档 collection 布局零差异。新增的东西都在边这一侧：
 
 ```rust
-use okm_core::{Graph, GraphEncode, NodeRef, NodeSet};
+use okm_core::{Graph, GraphEncode, NodeRef, NodeKinds};
 
 /// 图的边 collection——声明**就是**这张图（ADR-0017 §4）：一个 ns、边自己的
 /// 载荷（就是一份普通文档载荷：热/冷段摆放、两个方向都生成的编解码）、它**显式
@@ -816,10 +816,10 @@ struct Employment {
 
 // 由 derive **生成**——不手写，也不需要人跟着改：
 //   enum EmploymentNode { User, Org }
-//   impl NodeSet for EmploymentNode { const NS_VALUES: &'static [u16] = &[10, 11]; }
+//   impl NodeKinds for EmploymentNode { const NS_VALUES: &'static [u16] = &[10, 11]; }
 // 枚举名单数（图名 + `Node`）：一个类型名命名一个值，一个值指名一个 COLLECTION
 // （成员资格 = 该 ns 在不在集合里）；"这些 collection 是这张图的成员"归
-// `NodeSet::NS_VALUES`。每个 ns 取自那张表自己的 `#[ok_ns]`——加一个成员就是在边
+// `NodeKinds::NS_VALUES`。每个 ns 取自那张表自己的 `#[ok_ns]`——加一个成员就是在边
 // 声明里多写一个类型名。
 
 // 写：把节点与边的声明攒成一个碎片，再交给图——一批落地
@@ -831,7 +831,8 @@ let mut x = Fragment::<Employment>::new([
         predicate: "employs".into(),   // 边的类型：一个头部段 + 图自己的词汇表
     }),
 ]);
-x.cluster(Cluster::new(event, payload))         // `event` = kind_id("event")；None 新建，Cluster::into(id) 并入
+x.cluster(Cluster::edges(event, payload))       // 成员 = 这个碎片声明的 EDGE（上面那条 employs）；同碎片里的 Decl::Node 只是节点行，不是成员
+//      .at(id) 并入已有簇；要装实体另写一个 Cluster::nodes(..) 声明——两种成员不在一份声明里
  .on_node_conflict::<User>(|old, _declared| User { seen: old.seen + 1 })
  .on_edge_conflict(|_stored, declared| Employment { weight: declared.weight + 1 })
  .on_cluster_conflict(|_stored, declared| {
@@ -841,6 +842,7 @@ x.cluster(Cluster::new(event, payload))         // `event` = kind_id("event")；
  });
 graph.incorporate(x).unwrap();                  // 端点、边、成员行、三个冲突钩子
 
+// 只想装实体：x.cluster(Cluster::nodes(pack, payload, [alice(), bob()]))——那是点簇，同碎片里的边进不来。
 // 声明之后的一切都是可选的：碎片只有声明，就只写节点与边
 graph.incorporate(Fragment::new([Decl::Node(EmploymentNode::User, user1_key)]));
 
@@ -850,7 +852,7 @@ use __OkmIndex_Employment_by_since as BySince;   // 声明生成的那条面的�
 g.by_attr_face(<BySince as KvIndex>::SLOT, &2020u16.to_be_bytes());
 ```
 
-- **端点引用**是 `[ns 2B][pkey]`——ns 标明集合，pkey 是那个集合自己的键编码，**前面没有长度**。宽度是声明里的事实：`#[ok_nodes(User, Org)]` 是一组闭合的成员表，`KeyEncode` 定死每张表的键宽，于是图只靠宽度解析 `[src][pred][dst]`、按值排序、每跳零开销。同节点 = 同字节（遍历面精确前缀命中），而想当成员的表必须有定宽键——变长身份在声明处就被拒。声明同时就是校验：端点 ns 不是成员，写入期即 `Error::ForeignEndpoint`；pkey 宽度不符即 `Error::Corrupt`。derive 从这份清单生成 `XxxNode` 枚举与 `NodeSet` 实现，每个 ns 取自那张表自己的 `#[ok_ns]`。
+- **端点引用**是 `[ns 2B][pkey]`——ns 标明集合，pkey 是那个集合自己的键编码，**前面没有长度**。宽度是声明里的事实：`#[ok_nodes(User, Org)]` 是一组闭合的成员表，`KeyEncode` 定死每张表的键宽，于是图只靠宽度解析 `[src][pred][dst]`、按值排序、每跳零开销。同节点 = 同字节（遍历面精确前缀命中），而想当成员的表必须有定宽键——变长身份在声明处就被拒。声明同时就是校验：端点 ns 不是成员，写入期即 `Error::ForeignEndpoint`；pkey 宽度不符即 `Error::Corrupt`。derive 从这份清单生成 `XxxNode` 枚举与 `NodeKinds` 实现，每个 ns 取自那张表自己的 `#[ok_ns]`。
 - **面**：`0x06` **就是**边——`[ns][0x06][src][pred][dst] -> 载荷`——一次 `incorporate` 写它 + 三张派生的空面（0x07 入边、0x08/0x09 谓词限定）+ 每条**声明**的 `#[ok_index]` 一条条目（计数族 0x4nnn），一个 batch。不写 `0x00` 行：没有边号，主表也就没有元组之外的东西可放。每张面都带着**两端**与谓词（`[src][pred][dst]`，0x08/0x09 上谓词领衔），所以「这条事实在不在这里」是元组上的一次 seek，一跳也知道自己的谓词；**没有独立的谓词索引**——0x08 的裸 `[pred]` 前缀就是它。收回时读 0x06 那一行、按载荷重新生成声明面的条目再精确删掉（不做前缀清扫）；全动态形态把开放属性写进动态段（固定面 0x01，键是同一个元组）。谓词名走**图自己的谓词词汇表**（固定面 0x04/0x05，先见者得号）——与载荷的字段名词汇表（0x02/0x03）以及任何节点字段的词汇表都分开，所以"列出这张图的谓词"就是扫一次 0x04 前缀，永不靠走索引面反推。
 - **句柄不声明任何东西。** `Graph<S, E>` 绑定一个引擎实例与每实例状态（谓词词汇表缓存）；ns 来自声明、成员集来自 `E::Nodes`——与 `Collection<S, K, R>` 同形，后者也只收引擎。
 - **平行边**在谓词不同时是各自独立的边：同一对端点、不同谓词是两个元组，也就是两行。同一个元组写两次是**同一条**边——重述就是重断言那一行，由 `on_edge_conflict` 决定载荷，所以「创建」与「更新」是同一个动词。于是同一种关系的重复断言是载荷里的多值（`Variant` 装数组，整体替换），而不是第二行——k10r 的 functional 裁决与计数器回写都走这条路（ADR-0010 的 owed item）。
@@ -895,6 +897,8 @@ let colleagues = graph.walk(&user).flat_map(|step| graph.walk(&step.far));
 
 同一个图里还有第三种组织方式：把若干东西声明成一个整体——一次事件的全部证据、一个社区、一段子图、一条权限边界。它就是簇：一行命名一个作用域，外加每个成员各自一行、落在自己的面上。面号归 `model::layout`，这一节只说这些行是什么意思。
 
+簇有两种成员，地位相等：**边簇**编组断言（「这些事实属于一起」），**点簇**编组实体（「这些东西属于一起」）。成员类型由**面**承载，不由标记位、也不由 `kind` 承载——所以一个簇可以装边、装节点，或者都装，而簇的身份只有一个。调用方手里是一组事实时用边簇（社区检测的产出、一次事件的证据、一个任务的断言），手里是一份名单时用点簇（权限边界、技能包、顶点划分）——名单能容纳还没有任何边的实体，事实集合不能。真的两样都有的簇，是一个簇带两个声明的半边，不是两个要互相追赶的簇。
+
 ```text
 簇行          [ns][kind][簇号]              → [parent_id u64 BE][载荷]
 边成员        [ns][kind][簇号][边行]        → 空（权威）
@@ -906,15 +910,15 @@ let colleagues = graph.walk(&user).flat_map(|step| graph.walk(&step.far));
 
 成员是边，而边就是它存下来的行身份，所以边成员行携带 `[src_h 8][pred 2][dst_h 8]`——任何图里都是固定的十八字节，没有宽度表、没有长度前缀。节点成员行携带节点的八字节句柄，这正是节点类型可以任意异质的原因：成员表的键宽根本到不了这两张面上的任何一张。后三张面归 Derived，可由持有真值的行重建（子簇索引来自簇行，两张镜像各自来自自己的成员面）。
 
-**一个簇可以装边、装节点，或者都装，由面来说它装的是哪种。**「谁在这个簇里」= 声明的节点成员与成员边端点的并集；只想要其中一半的读者按面去要（边的 `members`、点的 `nodes`）。成员类型住在面号里——不写进 `kind`（那是调用方的词汇——用 `kind_id(label)` intern 一次，落在 `0x0A`/`0x0B` 两张面上——okm 两个方向都不对它赋予含义），也不写成簇行里的标记位（那要付一次值布局的戳，而且空簇依然答不了：没有行可读）。
+**一个簇装边或者装节点，由声明它的那个构造函数说清是哪一种。**「谁在这个簇里」只有一份答案：边组是成员边的端点，实体组是声明的句柄——两者不在一份声明里汇合；只想要其中一半的读者按面去要（边的 `edge_members`、点的 `node_members`）。成员类型住在面号里——不写进 `kind`（那是调用方的词汇——用 `kind_id(label)` intern 一次，落在 `0x0A`/`0x0B` 两张面上——okm 两个方向都不对它赋予含义），也不写成簇行里的标记位（那要付一次值布局的戳，而且空簇依然答不了：没有行可读）。
 
 **节点成员是声明的；边簇的参与者仍然是投影出来的**（ADR-0068）。点簇装的就是它点名的那些实体——包括一条边都碰不到的实体，这正是权限边界需要的、也是投影永远表达不了的。于是节点作为某条边的端点**或者**某个点簇的成员存在，而 `delete_node` 两条都要扫：关联的边，以及经节点 → 簇面一次扫描找到的、这个节点自己的成员行。簇行的值以定长 `parent_id` 开头，`0` 表示无父，所以嵌套不额外占面；一个簇的成员、某一类的簇、一个簇的子簇各是一个干净的前缀扫描：面前缀不同，不需要任何长度判断。声明的撤回是 `remove_nodes(cluster, nodes)`——声明的行走掉、实体留下，成员边仍然点名的实体留在并集里。
 
-写入口与边同一个碎片：把节点与边攒成一个碎片，再交给图——`x.cluster(Cluster::new(kind, payload))` 建簇（`Cluster::into(id)` 并入已有簇）、`.nodes([alice(), bob()])` 声明节点成员（声明，不是推导），三个冲突钩子在同一批里落地，而声明之后的一切都是可选的（只有声明就只写节点与边）。每个钩子拿到**已存**载荷与**声明**载荷，回答要写入的那一行，所以「保留旧值」「直接覆盖」「取更大的 stamp」各自是一个表达式，而不是去改一个回调看不见的新值。`Decl` 只有两个变体，节点种类来自 `#[ok_nodes(..)]` 生成的枚举；成员加入幂等。计数两个：`members` 数边、`nodes` 数声明的实体，都在每次动到那张面的写入里按面重写。其余操作复用同一行型：`remove`、`incorporate(sources, into)`、`split`、`reassign`、`lookup`、`members`、`nodes`、`member_of`、`node_member_of`、`clusters_of`、`children`、`diff`。
+写入口与边同一个碎片：把节点与边攒成一个碎片，再交给图——`x.cluster(Cluster::edges(kind, payload))` 建一个断言组、`x.cluster(Cluster::nodes(kind, payload, [alice(), bob()]))` 建一个实体组（两份声明，各管一半）、`.at(id)` 并入已有组，三个冲突钩子在同一批里落地，而声明之后的一切都是可选的（只有声明就只写节点与边）。每个钩子拿到**已存**载荷与**声明**载荷，回答要写入的那一行，所以「保留旧值」「直接覆盖」「取更大的 stamp」各自是一个表达式，而不是去改一个回调看不见的新值。`Decl` 只有两个变体，节点种类来自 `#[ok_nodes(..)]` 生成的枚举；成员加入幂等。计数两个：`edge_count` 数边、`node_count` 数声明的实体，都在每次动到那张面的写入里按面重写。两半各从哪来，是唯一的不对称，而构造函数把它说清楚：`Cluster::edges` 收这个碎片写的断言（同一次提交里的 `Decl::Edge` 才是「有一行可以当成员」），`Cluster::nodes` 收调用方点名的实体、且一个边都不碰——节点不是写入的副产品，把碎片碰到的每个节点都拉进来会是另一个答案。两样都要，是两个声明：断言一组、实体一组，由业务自己的逻辑去关联——原语不提供装两样的簇。每个动词都写明自己说的是哪种成员：`edge_members`、`node_members`、`edge_member_rows`、`edge_member_of`、`node_member_of`、`edge_count`、`node_count`、`remove_edges`、`remove_nodes`，`edge_sets_of` / `node_sets_of` 各收自己的主语。其余操作复用同一行型：`incorporate(sources, into)`、`split`、`reassign`、`lookup`、`children`、`diff`。
 
-两张成员面各有一张镜像，而它们之间的不对称来自基数，不是偏好。边侧镜像之所以存在，是因为节点的度无界：没有它，第二个问题只能靠扫该 kind 的全部成员行做后缀匹配——每次收回一次还好，每次遍历一跳都这么做就不行；而边行领衔让它的条目按遍历本来就有的顺序排（两边都以 `src` 起头），于是"这些节点指向的边中，哪些是 C 的成员"是两条有序流之间的一次求交（`graph.clusters_of(&key)` 对一个成员游标），而不是调用方先攒一个集合。`member_of(kind, 簇, &key)` 就是那张面的精确键、一次点读，这正是「成员判断」可以当遍历里的 `.filter` 用的原因（`&step.key()` 就是这一步刚交出的元组）。点侧镜像用一次扫描回答实体的同一个问题，而**没有**边 → 点簇的面：一条边的端点恰好两个，所以"这条边沾到哪些点簇"是两次前缀扫——常数，而按度提问的那一侧永远不是。代价写在付出的地方：每次写每个成员多一条条目，而 `clusters_of(&node)` 答的是点侧镜像与关联边路径的并集。
+两张成员面各有一张镜像，而它们之间的不对称来自基数，不是偏好。边侧镜像之所以存在，是因为节点的度无界：没有它，第二个问题只能靠扫该 kind 的全部成员行做后缀匹配——每次收回一次还好，每次遍历一跳都这么做就不行；而边行领衔让它的条目按遍历本来就有的顺序排（两边都以 `src` 起头），于是"这些节点指向的边中，哪些是 C 的成员"是两条有序流之间的一次求交（`graph.node_sets_of(&key)` 对一个成员游标），而不是调用方先攒一个集合。`edge_member_of(kind, 簇, &key)` 就是那张面的精确键、一次点读，这正是「成员判断」可以当遍历里的 `.filter` 用的原因（`&step.key()` 就是这一步刚交出的元组）。点侧镜像用一次扫描回答实体的同一个问题，而**没有**边 → 点簇的面：一条边的端点恰好两个，所以"这条边沾到哪些点簇"是两次前缀扫——常数，而按度提问的那一侧永远不是。代价写在付出的地方：每次写每个成员多一条条目，而 `clusters_of(&node)` 答的是点侧镜像与关联边路径的并集。
 
-簇是断言，所以簇行与两张成员面在 changelog 里归 Truth，子簇索引与两张镜像归 Derived 且可整体重建。删一条边时它的成员行同批删除，而收留过它的每个簇都留下，`members` 计数重写成诚实值；点簇不受影响，因为一条关于某个实体的断言消失，不等于这个实体离开组。删一个节点带走它的关联边，以及经节点 → 簇面一次扫描找到的、它自己的成员行。簇是**作用域**，不是成员的别名：它在声明时创建、只在显式删除时删除（`.delete(..)`），所以空簇和单成员簇都是合法的陈述——「这个主题敏感，别问」「这里曾经有东西，现在没了」「这个作用域此刻只装着一个东西」——唯一留下的写入前提是节点那条的放宽形态：节点作为某条边的端点、或某个点簇的成员存在。
+簇是断言，所以簇行与两张成员面在 changelog 里归 Truth，子簇索引与两张镜像归 Derived 且可整体重建。删一条边时它的成员行同批删除，而收留过它的每个簇都留下，`edge_count` 计数重写成诚实值；点簇不受影响，因为一条关于某个实体的断言消失，不等于这个实体离开组。删一个节点带走它的关联边，以及经节点 → 簇面一次扫描找到的、它自己的成员行。簇是**作用域**，不是成员的别名：它在声明时创建、只在显式删除时删除（`.delete(..)`），所以空簇和单成员簇都是合法的陈述——「这个主题敏感，别问」「这里曾经有东西，现在没了」「这个作用域此刻只装着一个东西」——唯一留下的写入前提是节点那条的放宽形态：节点作为某条边的端点、或某个点簇的成员存在。
 
 ### 声明是数据时，同一批簇
 
@@ -926,7 +930,7 @@ let mut fragment = okm_dynamic::DynFragment::new([
     Decl::edge(DynEdge { src: bob(), dst: acme(), predicate: "works_at".into(), attrs }),
 ]);
 fragment
-    .cluster(Cluster::new(event, payload))          // `event` = kind_id("event")；None 新建；Cluster::into(kind, 簇号, …) 并入
+    .cluster(Cluster::edges(event, payload))        // `event` 是词；进来不带号，`.at(簇号)` 并入已有簇
     .on_edge_conflict(|stored: &Dict, declared: &Dict| { … })   // 进 Dict、出 Dict：没有声明类型
     .on_cluster_conflict(|stored: &Dict, declared: &Dict| { … });
 graph.incorporate(fragment)?;                       // 边 + 簇 + 钩子，一个 batch
@@ -935,7 +939,7 @@ graph.retract(fragment)?;                           // delete_node / delete_edge
 
 两条删除规则与静态形态形状一致：删**节点**会带走所有以它为端点的边——遍历那一行、其余三张遍历面、动态段，以及那些边的成员行——再加上它自己的节点成员，经节点 → 簇面一次扫描找到；删**边**（`.delete_edge(head)`，head 就是身份）则不动两端，即便它们此后不连任何东西，也不动任何点簇，因为一条关于某个实体的断言消失，不等于这个实体离开组。两者都不动簇行：少了成员不等于少了作用域，簇留下来、计数改小（含零）。成员加入同样幂等（同一 `(kind, 簇, 边)` 写两次是一行，`(kind, 簇, 句柄)` 写两次也是一行）；重断言一条边只改它的帧——声明的 `Dict` 就是载荷，live id 上钩子拿到的**已存**那份与声明的并排交付，所以「更新」就是带冲突钩子的 `incorporate`，不需要第五个动词。
 
-读的形状也相同，所以「声明是数据」的存储答同样的问题：`member_of(kind, 簇, &key)` 是边侧镜像的精确键（一次点读，因此可以当遍历上的 `.filter`），`node_member_of(kind, 簇, 节点)` 是节点成员面的精确键（一次点读，也是「一个一条边都没有的实体属于哪里」的答案），`members(kind, 簇)` 扫一次边成员面、`nodes(kind, 簇)` 扫一次节点成员面，`children(kind, 父簇)` 扫一次子簇索引，`lookup(kind, 簇号)` 点读那一行，`rebuild_derived(chunk)` 用簇行重建子簇索引、两张镜像各自只用自己的成员面重建。
+读的形状也相同，所以「声明是数据」的存储答同样的问题：`member_of(kind, 簇, &key)` 是边侧镜像的精确键（一次点读，因此可以当遍历上的 `.filter`），`node_member_of(kind, 簇, 节点)` 是节点成员面的精确键（一次点读，也是「一个一条边都没有的实体属于哪里」的答案），`edge_members(kind, 簇)` 扫一次边成员面、`node_members(kind, 簇)` 扫一次节点成员面，`children(kind, 父簇)` 扫一次子簇索引，`lookup(kind, 簇号)` 点读那一行，`rebuild_derived(chunk)` 用簇行重建子簇索引、两张镜像各自只用自己的成员面重建。
 
 遍历是同一股流，两个方向共用一个类型：`out` / `inn` / `walk` 给出 `DynEdgeStream`，产出 `EdgeStep { far, head }`，远端端点从条目的键里读（一跳不读任何行）；`.by("谓词")` 下推到 `0x08`/`0x09` 前缀而不是事后过滤；`find` / `take` / `take_while` 只读到答案为止。这条流在原始条目键上实现同一个 `Seekable` 契约，所以 `okm-query` 的 `intersect_seek`、`difference`、`union` 原样可用。对「声明是数据」的存储来说，要紧的一点是**查询形状不分叉**：「这个节点的哪些边在簇 C 里」永远是两条有序流的一次对齐——一条遍历、一份成员集——与载荷是声明类型还是 `Dict` 无关。
 
@@ -1033,7 +1037,7 @@ struct Facts { /* scope、since、confidence、weight、三个计数、两个时
 // 成员集由上面那份清单**生成**：`FactsNode { EntityRow, MemberRow }`——每个节点
 // collection 一个变体（成员资格 = 该 ns 在不在集合里），每个 ns 取自那张表自己的
 // `#[ok_ns]`（36、42）。枚举名单数（图名 + `Node`）：一个值指名一个 collection，
-// "这组 collection 是成员"归 `NodeSet::NS_VALUES`。成员关系是编译期事实，写入与解码
+// "这组 collection 是成员"归 `NodeKinds::NS_VALUES`。成员关系是编译期事实，写入与解码
 // 各校验一次；引用仍是 wire 数据。人与物住在不同 collection，同在一张图里。
 ```
 

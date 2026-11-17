@@ -1,7 +1,7 @@
 # ADR-0017：图 Edge——第三种关系载体
 
 日期：2026-09-19
-状态：已接受（2026-09-20）；**身份子句已被 ADR-0067 取代**（2026-11-14）——边没有号，身份就是元组 `(src, predicate, dst)`，下文按这一形态陈述。声明就是**图的声明**（`GraphEncode`）：一个 ns、边自己的载荷（复用文档编解码）、它显式声明的属性面，外加一个编译期节点类型枚举。`#[ok_nodes]` 按类型列出成员**表**（`#[ok_nodes(EntityRow, MemberRow)]`），derive 写出成员集枚举及其 `NodeSet` impl，每个 ns 取自那张表自己的 `#[ok_ns]`。谓词词汇表在 0x04/0x05，图的面在 0x06–0x09；`Graph<S, E>` 是不声明任何东西的运行期句柄，`Graph::new(store)` 绑定引擎实例，删除时读 0x06 那一行、精确删掉它声明面的条目。okm-dynamic 的句柄收 ns + schema 一对（`CollectionSchema::ns_prefix`、`members`）。
+状态：已接受（2026-09-20）；**身份子句已被 ADR-0067 取代**（2026-11-14）——边没有号，身份就是元组 `(src, predicate, dst)`，下文按这一形态陈述。声明就是**图的声明**（`GraphEncode`）：一个 ns、边自己的载荷（复用文档编解码）、它显式声明的属性面，外加一个编译期节点类型枚举。`#[ok_nodes]` 按类型列出成员**表**（`#[ok_nodes(EntityRow, MemberRow)]`），derive 写出成员集枚举及其 `NodeKinds` impl，每个 ns 取自那张表自己的 `#[ok_ns]`。谓词词汇表在 0x04/0x05，图的面在 0x06–0x09；`Graph<S, E>` 是不声明任何东西的运行期句柄，`Graph::new(store)` 绑定引擎实例，删除时读 0x06 那一行、精确删掉它声明面的条目。okm-dynamic 的句柄收 ns + schema 一对（`CollectionSchema::ns_prefix`、`members`）。
 关联：ADR-0015（关系分类学）、ADR-0016（4 字节头、段号制 slot）、ADR-0002（命名空间词汇表）
 
 ## 背景
@@ -83,7 +83,7 @@ pkey 宽度**不是 wire 数据**，它来自图的声明：`#[ok_nodes(..)]` �
 pub struct Facts { … }                     图名即声明名；边的载荷 = 它的属性
 ```
 
-一条 derive 就是一份声明：宏生成整个 `GraphEncode` impl（载荷编解码、声明的面、ns）、成员集枚举以及它的 `NodeSet` impl，`type Nodes` 绑定这个枚举。再手写 `impl GraphEncode for Facts { type Nodes = … }` 等于给同一个 trait 写第二个 impl——Rust 的关联类型也没有默认值可留白。
+一条 derive 就是一份声明：宏生成整个 `GraphEncode` impl（载荷编解码、声明的面、ns）、成员集枚举以及它的 `NodeKinds` impl，`type Nodes` 绑定这个枚举。再手写 `impl GraphEncode for Facts { type Nodes = … }` 等于给同一个 trait 写第二个 impl——Rust 的关联类型也没有默认值可留白。
 
 成员集是一个**类型**——枚举，一个变体指名一个节点 collection，于是"允许哪些节点"是代码里的编译期事实，而不是挂在载荷上的注记。属性列的是**表**（代码里一张表由它的文档类型命名），枚举由 derive 写出，所以一个成员的 ns 不会被写两遍：
 
@@ -92,12 +92,12 @@ pub struct Facts { … }                     图名即声明名；边的载荷 =
 
 // 生成：
 pub enum FactsNode { EntityRow, MemberRow }   // 一个变体 = 一个 collection（一个 ns）
-impl NodeSet for FactsNode {
+impl NodeKinds for FactsNode {
     const NS_VALUES: &'static [u16] = &[36, 42];   // 各表自己的 #[ok_ns]
 }
 ```
 
-成员的单位是**集合**（它的 ns），不是文档类型——引用里带的就是那个号，所以成员判定在 ns 层（§2）。文档类型只是表在声明处的**名字**；图声明的成员集是一组**集合**，生成的变体不携带任何东西（没有访问器、没有 key 类型——ns 就是全部内容）。命名因此分两层：集合角色归 `NodeSet`（`NS_VALUES` 是全部成员的 ns），枚举本身取单数 `<图名>Node`——一个类型名命名一个值，一个值指名一个 collection，复数会让这个名字声称一件它的值域从不成立的事。
+成员的单位是**集合**（它的 ns），不是文档类型——引用里带的就是那个号，所以成员判定在 ns 层（§2）。文档类型只是表在声明处的**名字**；图声明的成员集是一组**集合**，生成的变体不携带任何东西（没有访问器、没有 key 类型——ns 就是全部内容）。命名因此分两层：集合角色归 `NodeKinds`（`NS_VALUES` 是全部成员的 ns），枚举本身取单数 `<图名>Node`——一个类型名命名一个值，一个值指名一个 collection，复数会让这个名字声称一件它的值域从不成立的事。
 
 一张图 = 一份边声明（该图所有边共享）+ 一个生成的 `Node` 枚举（图名 + `Node`）+ 一个 ns。边与边的差别是谓词（运行期数据，走词汇表分配）；节点与节点的差别是枚举变体（编译期类型）。两者都由声明派生——没有手写表，也没有装配期声明。
 

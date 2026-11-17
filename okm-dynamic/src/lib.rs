@@ -54,6 +54,9 @@ mod reduce;
 mod write;
 
 pub use okm_core::TableMeta;
+// The two cluster spellings travel with the crate: a caller of the dynamic surface
+// names them, and they are okm-core's types (one row, two relations).
+pub use okm_core::{EdgeSet, NodeSet};
 pub use okm_core::field::FieldType;
 pub use okm_core::schema::{CollectionSchema, FieldSchema};
 pub use okm_value::{CodecError, Dict, Variant as Value};
