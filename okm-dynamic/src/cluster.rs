@@ -783,6 +783,8 @@ struct Outcome {
 enum ClusterOp {
     /// Drop this batch's edges from a cluster.
     Remove(ClusterRef),
+    /// Drop these nodes from a cluster's DECLARED membership.
+    RemoveNodes(ClusterRef, BTreeSet<NodeRef>),
     /// Remove a cluster outright: its row, its member rows and its derived rows.
     Delete(ClusterRef),
 }
@@ -871,6 +873,21 @@ impl DynFragment {
     /// empty cluster with an honest count of zero.
     pub fn remove(&mut self, cluster: ClusterRef) -> &mut Self {
         self.ops.push(ClusterOp::Remove(cluster));
+        self
+    }
+
+    /// Retract a DECLARED membership: these entities leave `cluster`, and the
+    /// entity itself stays in the graph untouched — the claim being withdrawn is
+    /// about the group, not about the node. The declared half only: a member edge
+    /// that still has the node as an endpoint keeps it in the union (ADR-0068),
+    /// and a declaration in the same fragment wins over a removal.
+    pub fn remove_nodes(
+        &mut self,
+        cluster: ClusterRef,
+        nodes: impl IntoIterator<Item = NodeRef>,
+    ) -> &mut Self {
+        self.ops
+            .push(ClusterOp::RemoveNodes(cluster, nodes.into_iter().collect()));
         self
     }
 
@@ -1001,7 +1018,9 @@ impl DynFragment {
         }
         for op in &self.ops {
             match op {
-                ClusterOp::Remove(cluster) | ClusterOp::Delete(cluster) => {
+                ClusterOp::Remove(cluster)
+                | ClusterOp::RemoveNodes(cluster, _)
+                | ClusterOp::Delete(cluster) => {
                     kinds.insert(cluster.kind.0);
                 }
             }
@@ -1059,6 +1078,12 @@ impl DynFragment {
                         .or_default()
                         .remove
                         .extend(batch_rows.iter().cloned());
+                }
+                ClusterOp::RemoveNodes(cluster, nodes) => {
+                    plan.entry((cluster.kind.0, cluster.id))
+                        .or_default()
+                        .remove_nodes
+                        .extend(nodes.iter().cloned());
                 }
                 ClusterOp::Delete(cluster) => {
                     // The row goes, and it is DECLARED: a delete names the

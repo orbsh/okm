@@ -1949,3 +1949,90 @@ fn the_node_index_rebuilds_from_the_node_member_rows_alone() {
         );
     }
 }
+
+#[test]
+fn removing_a_declared_member_leaves_the_entity_alone() {
+    for (engine, store) in TestStore::matrix() {
+        let a = person(1);
+        let b = person(2);
+        let mut fragment = Fragment::<Employment>::new([]);
+        fragment.cluster(Cluster::new(SCOPE, Dict::new()).nodes([a.clone(), b.clone()]));
+        let report = graph(&store).incorporate(fragment).expect("commit");
+        let cluster = ClusterRef::new(SCOPE, report.hyper_ids[0]);
+
+        // A retracted DECLARATION, not a deleted entity: the node keeps every row
+        // it ever had, and only the claim about the group goes (ADR-0068 §4).
+        let mut removal = Fragment::<Employment>::new([]);
+        removal.remove_nodes(cluster, [a.clone()]);
+        graph(&store).incorporate(removal).expect("removal");
+
+        let hy = hyper(&store);
+        assert_eq!(hy.nodes(cluster).expect("nodes"), vec![b.clone()], "{engine}");
+        assert!(
+            !hy.node_member_of(cluster, &a).expect("point read"),
+            "{engine}: the declared row went"
+        );
+        assert_eq!(
+            hy.lookup(cluster).expect("lookup").expect("row").node_count(),
+            1,
+            "{engine}: the count follows the face"
+        );
+        assert_eq!(face(&store, 0x12).len(), 1, "{engine}: one member row left");
+        assert_eq!(face(&store, 0x13).len(), 1, "{engine}: one mirror row left");
+    }
+}
+
+#[test]
+fn a_removed_declaration_still_reads_through_a_member_edge() {
+    for (engine, store) in TestStore::matrix() {
+        let src = person(1);
+        let dst = org(1);
+        let mut fragment = Fragment::<Employment>::new([edge(src.clone(), dst.clone())]);
+        fragment.cluster(Cluster::new(SCOPE, Dict::new()).nodes([src.clone()]));
+        let mut g = graph(&store);
+        let report = g.incorporate(fragment).expect("commit");
+        let cluster = ClusterRef::new(SCOPE, report.hyper_ids[0]);
+
+        let mut removal = Fragment::<Employment>::new([]);
+        removal.remove_nodes(cluster, [src.clone()]);
+        g.incorporate(removal).expect("removal");
+
+        let hy = hyper(&store);
+        assert!(
+            !hy.node_member_of(cluster, &src).expect("point read"),
+            "{engine}: the declared half is what the verb speaks for"
+        );
+        assert!(hy.nodes(cluster).expect("nodes").is_empty(), "{engine}");
+        // The union still names it: the edge half is a projection of the member
+        // edges, and this verb never touches an edge.
+        let via: Vec<u64> = g.clusters_of(src.clone()).map(|c| c.id).collect();
+        assert!(via.contains(&cluster.id), "{engine}: the edge half still answers");
+        assert_eq!(
+            hy.lookup(cluster).expect("lookup").expect("row").member_count(),
+            1,
+            "{engine}: the edge member never left"
+        );
+    }
+}
+
+#[test]
+fn a_declaration_wins_over_a_removal_in_one_fragment() {
+    for (engine, store) in TestStore::matrix() {
+        let a = person(1);
+        let mut fragment = Fragment::<Employment>::new([]);
+        fragment.cluster(Cluster::new(SCOPE, Dict::new()).nodes([a.clone()]));
+        fragment.remove_nodes(ClusterRef::new(SCOPE, 1), [a.clone()]);
+        // The id is not known until the write allocates it, so this fragment names
+        // the first cluster of its kind: the same rule as `Cluster::into(..)` on a
+        // freshly allocated row.
+        graph(&store)
+            .incorporate(fragment)
+            .unwrap_or_else(|e| panic!("{engine}: commit: {e}"));
+
+        let hy = hyper(&store);
+        assert!(
+            hy.node_member_of(ClusterRef::new(SCOPE, 1), &a).expect("point read"),
+            "{engine}: the declaration is the later claim and it wins"
+        );
+    }
+}

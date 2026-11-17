@@ -38,7 +38,7 @@ So a cluster may hold edge members, node members, or both, and **"who is in this
 
 **6. Counts are re-stamped, never incremented.** `members` stays the edge-member count; `nodes` is the node-member count. Both are computed from the face on every write that touches it, which is how the existing count already works and why the write path needs no read-modify-write.
 
-**7. One declaration, no special case.** `Cluster::nodes(iter)` declares node members; the fragment's edges still join the same cluster, so a mixed scope is one declaration rather than two shapes. The verbs follow the subject: `members` answers edges, `nodes` answers nodes, `member_of` / `node_member_of` are the two point tests, and `clusters_of(node)` is the union of `0x13` and the incident-edge path.
+**7. One declaration, no special case.** `Cluster::nodes(iter)` declares node members; the fragment's edges still join the same cluster, so a mixed scope is one declaration rather than two shapes. The verbs follow the subject: `members` answers edges, `nodes` answers nodes, `member_of` / `node_member_of` are the two point tests, and `clusters_of(node)` is the union of `0x13` and the incident-edge path. A declaration is retracted with `remove_nodes(cluster, nodes)`, which speaks for the declared half only — an entity a member edge still names stays in the union, and the node itself is never touched.
 
 ## Naming
 

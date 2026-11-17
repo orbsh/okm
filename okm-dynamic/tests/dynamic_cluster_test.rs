@@ -1543,3 +1543,64 @@ fn the_node_index_rebuilds_from_the_node_member_rows_alone() {
         );
     }
 }
+#[test]
+fn removing_a_declared_member_leaves_the_entity_alone() {
+    for (engine, store) in TestStore::matrix() {
+        let a = person(1);
+        let b = person(2);
+        let mut fragment = DynFragment::new([]);
+        fragment.cluster(Cluster::new(SCOPE, attrs(&[])).nodes([a.clone(), b.clone()]));
+        let mut g = graph(&store);
+        let report = g.incorporate(fragment).expect("commit");
+        let scope = report.hyper_ids[0];
+
+        let mut removal = DynFragment::new([]);
+        removal.remove_nodes(ClusterRef::new(SCOPE, scope), [a.clone()]);
+        g.incorporate(removal).expect("removal");
+
+        assert_eq!(g.nodes(SCOPE, scope).expect("nodes"), vec![b.clone()], "{engine}");
+        assert!(
+            !g.node_member_of(SCOPE, scope, &a).expect("point read"),
+            "{engine}: the declared row went"
+        );
+        assert_eq!(g.node_count(SCOPE, scope).expect("count"), 1, "{engine}");
+        assert!(g.node_clusters_of(&a).expect("mirror").is_empty(), "{engine}");
+        assert_eq!(face(&store, 0x12).len(), 1, "{engine}: one member row left");
+        assert_eq!(face(&store, 0x13).len(), 1, "{engine}: one mirror row left");
+    }
+}
+
+#[test]
+fn a_removed_declaration_still_reads_through_a_member_edge() {
+    for (engine, store) in TestStore::matrix() {
+        let src = person(1);
+        let dst = org(1);
+        let mut fragment = DynFragment::new([Decl::edge(DynEdge {
+            src: src.clone(),
+            dst: dst.clone(),
+            predicate: "works_at".to_string(),
+            attrs: attrs(&[]),
+        })]);
+        fragment.cluster(Cluster::new(SCOPE, attrs(&[])).nodes([src.clone()]));
+        let mut g = graph(&store);
+        let report = g.incorporate(fragment).expect("commit");
+        let scope = report.hyper_ids[0];
+
+        let mut removal = DynFragment::new([]);
+        removal.remove_nodes(ClusterRef::new(SCOPE, scope), [src.clone()]);
+        g.incorporate(removal).expect("removal");
+
+        assert!(
+            !g.node_member_of(SCOPE, scope, &src).expect("point read"),
+            "{engine}: the declared half is what the verb speaks for"
+        );
+        assert!(g.nodes(SCOPE, scope).expect("nodes").is_empty(), "{engine}");
+        // Still reachable through the edge half, which this verb never touches.
+        let via = g.clusters_of(&report.edges[0]).expect("edge half");
+        assert!(
+            via.contains(&ClusterRef::new(SCOPE, scope)),
+            "{engine}: the edge half still answers"
+        );
+        assert_eq!(g.member_count(SCOPE, scope).expect("count"), 1, "{engine}");
+    }
+}

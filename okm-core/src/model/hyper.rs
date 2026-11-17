@@ -1544,6 +1544,8 @@ struct ClusterOutcome {
 enum ClusterOp {
     /// Drop this batch's edges from a cluster.
     Remove(ClusterRef),
+    /// Drop these nodes from a cluster's DECLARED membership.
+    RemoveNodes(ClusterRef, BTreeSet<NodeRef>),
     /// Remove a cluster outright.
     Delete(ClusterRef),
     /// Union several clusters' members into one, deleting the sources.
@@ -1732,6 +1734,25 @@ impl<G: GraphEncode + Default> Fragment<G> {
     /// empty cluster with an honest count of zero (ADR-0066 §3).
     pub fn remove(&mut self, cluster: ClusterRef) -> &mut Self {
         self.ops.push(ClusterOp::Remove(cluster));
+        self
+    }
+
+    /// Retract a DECLARED membership: these entities leave `cluster`, and the
+    /// entity itself stays in the graph untouched — the claim being withdrawn is
+    /// about the group, not about the node.
+    ///
+    /// It speaks for the declared half only. If a member EDGE of the same cluster
+    /// still has one of these nodes as an endpoint, "who is in C" reports it
+    /// anyway, because that half is a projection of the member edges (ADR-0068)
+    /// and this verb does not touch an edge. A declaration in the same fragment
+    /// wins over a removal, so a fragment that both adds and removes a node adds.
+    pub fn remove_nodes<I: IntoIterator<Item = NodeRef>>(
+        &mut self,
+        cluster: ClusterRef,
+        nodes: I,
+    ) -> &mut Self {
+        self.ops
+            .push(ClusterOp::RemoveNodes(cluster, nodes.into_iter().collect()));
         self
     }
 
@@ -1957,7 +1978,7 @@ impl<G: GraphEncode + Default> Fragment<G> {
         }
         for op in &self.ops {
             match op {
-                ClusterOp::Remove(cluster) => {
+                ClusterOp::Remove(cluster) | ClusterOp::RemoveNodes(cluster, _) => {
                     kinds.insert(cluster.kind.0);
                 }
                 ClusterOp::Incorporate { sources, into } => {
@@ -2023,6 +2044,12 @@ impl<G: GraphEncode + Default> Fragment<G> {
                         .or_default()
                         .remove
                         .extend(batch_edges.iter().cloned());
+                }
+                ClusterOp::RemoveNodes(cluster, nodes) => {
+                    plan.entry((cluster.kind.0, cluster.id))
+                        .or_default()
+                        .remove_nodes
+                        .extend(nodes.iter().cloned());
                 }
                 ClusterOp::Delete(cluster) => {
                     // The row goes, and it is DECLARED: a delete names the cluster
