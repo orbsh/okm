@@ -33,9 +33,19 @@ PRIMARY = 0
 DYNAMIC = 1
 FIELD_VOCAB_ID = 2
 FIELD_VOCAB_NAME = 3
-INDEX_BASE = (1 << 12) | 1
-REDUCE_BASE = (2 << 12) | 1
-JUNCTION_BASE = 3 << 12
+# The predicate vocabulary is a SECOND pair (ADR-0017 §3): a graph's predicates
+# and a node collection's kind tokens are not the document's field vocabulary.
+PREDICATE_VOCAB_ID = 4
+PREDICATE_VOCAB_NAME = 5
+# The family numbers are okm-core's `index::segment` map, not this file's choice:
+# 0x4 index, 0x5 reduce, 0x6 lead. Family 0x0 is the fixed band and 0x1 collides
+# with it on the delimiter byte, so an index minted as `0x1nnn` is refused by
+# `write_slot` — which is what happened to this file until it followed the map.
+INDEX_BASE = (4 << 12) | 1
+REDUCE_BASE = (5 << 12) | 1
+# Lead faces (ADR-0054) count in their own family, so a declaration cannot take
+# a number an index would have used.
+LEAD_BASE = (6 << 12) | 1
 
 # Wire types: fixed-width (name, kind, byte width) plus the variable-length
 # cold kinds. `int`/`int64` spell u64 (two's complement = the BE wire).
@@ -295,9 +305,11 @@ def assemble(document_cls) -> dict:
             "dynamic": DYNAMIC,
             "field_vocab_id": FIELD_VOCAB_ID,
             "field_vocab_name": FIELD_VOCAB_NAME,
+            "predicate_vocab_id": PREDICATE_VOCAB_ID,
+            "predicate_vocab_name": PREDICATE_VOCAB_NAME,
             "declared_index_base": INDEX_BASE,
             "declared_reduce_base": REDUCE_BASE,
-            "junction_base": JUNCTION_BASE,
+            "declared_lead_base": LEAD_BASE,
         },
     }
 
