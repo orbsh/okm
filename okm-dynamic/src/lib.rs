@@ -69,7 +69,8 @@ pub use okm_value::{CodecError, Dict, Variant as Value};
 /// streams, and the same two write verbs (`incorporate` / `retract`).
 pub use cluster::{
     Cluster, ClusterConflict, ClusterRef, ClusterRow, Decl, DerivedReport, DynFragment,
-    EdgeConflict, Kind, MEMBER_COUNT, RetractReport, WriteReport,
+    EdgeConflict, Kind, MEMBER_COUNT, NODE_COUNT, RetractReport, WriteReport, intern_kind,
+    interned_kinds, interned_label,
 };
 pub use collection::DynamicCollection;
 pub use encode::{encode_fields, encode_key, encode_payload};

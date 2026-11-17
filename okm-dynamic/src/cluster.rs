@@ -67,7 +67,7 @@ use okm_core::model::hyper::{
     node_clusters_prefix, node_member_key, node_members_prefix,
 };
 use okm_core::model::layout::{CLUSTER_KIND_WIDTH, ClusterKindId};
-use okm_core::model::obj_vocab::{FIELD_VOCAB, Faces, FieldNameId, Vocabulary};
+use okm_core::model::obj_vocab::{CLUSTER_KIND, FIELD_VOCAB, Faces, FieldNameId, Names, Vocabulary};
 use okm_core::storage::{Batch, BatchStore, VirtualStorage, prefix_end, scan_suffix_kv};
 use okm_value::{Dict, Variant, decode_named};
 
@@ -101,6 +101,46 @@ fn be_vocab(bytes: &[u8]) -> Option<ClusterKindId> {
 
 fn be_u64(bytes: &[u8]) -> Option<u64> {
     <[u8; U64_WIDTH]>::try_from(bytes).ok().map(u64::from_be_bytes)
+}
+
+/// Intern the caller's label as a cluster kind (0x0A/0x0B): first seen claims the
+/// next id, append-only, never renumbered — the dynamic twin of the typed face's
+/// `kind_id`, and the door a binding needs, because on this form nothing declares
+/// a kind up front (ADR-0068: `Kind` is an id, the word is the caller's).
+pub fn intern_kind<S: VirtualStorage + ?Sized>(
+    store: &S,
+    ns: &[u8; 2],
+    label: &str,
+) -> Result<Kind, String> {
+    let mut door = Faces::<_, ClusterKindId>::new(store, ns, CLUSTER_KIND);
+    let mut vocab = Vocabulary::<ClusterKindId>::new();
+    Ok(Kind(vocab.ensure(&mut door, label).map_err(|e| e.to_string())?))
+}
+
+/// The label a kind was interned under — `None` for a number nobody minted.
+pub fn interned_label<S: VirtualStorage + ?Sized>(
+    store: &S,
+    ns: &[u8; 2],
+    kind: Kind,
+) -> Result<Option<String>, String> {
+    let mut door = Faces::<_, ClusterKindId>::new(store, ns, CLUSTER_KIND);
+    let mut vocab = Vocabulary::<ClusterKindId>::new();
+    vocab.name_of(&mut door, kind.0).map_err(|e| e.to_string())
+}
+
+/// Every kind this namespace has interned, id-ordered: one prefix scan of 0x0A.
+pub fn interned_kinds<S: VirtualStorage + ?Sized>(
+    store: &S,
+    ns: &[u8; 2],
+) -> Result<Vec<(ClusterKindId, String)>, String> {
+    let mut door = Faces::<_, ClusterKindId>::new(store, ns, CLUSTER_KIND);
+    let mut pairs: Vec<(ClusterKindId, String)> = Names::scan(&mut door)
+        .map_err(|e| e.to_string())?
+        .into_iter()
+        .map(|(label, id)| (id, label))
+        .collect();
+    pairs.sort_by_key(|(id, _)| *id);
+    Ok(pairs)
 }
 
 fn count_of(payload: &Dict, name: &str) -> u64 {
@@ -332,6 +372,26 @@ fn next_free_cluster<S: VirtualStorage + ?Sized>(
 }
 
 impl<S: VirtualStorage> Graph<S> {
+    /// Intern a kind label (0x0A/0x0B) and hand back its two-byte id — a WRITE,
+    /// which is why it takes `&mut`: the vocabulary belongs to the collection,
+    /// not to a batch.
+    pub fn kind_id(&mut self, label: &str) -> Result<Kind, String> {
+        let ns = self.ns_pair();
+        intern_kind(self.store_ref(), &ns, label)
+    }
+
+    /// The label a kind was interned under; `None` for a number nobody minted.
+    pub fn kind_label(&mut self, kind: Kind) -> Result<Option<String>, String> {
+        let ns = self.ns_pair();
+        interned_label(self.store_ref(), &ns, kind)
+    }
+
+    /// Every interned kind, id-ordered.
+    pub fn kinds(&mut self) -> Result<Vec<(ClusterKindId, String)>, String> {
+        let ns = self.ns_pair();
+        interned_kinds(self.store_ref(), &ns)
+    }
+
     /// One cluster row: its parent and payload. `None` = no such cluster.
     pub fn lookup(&self, kind: Kind, id: u64) -> Result<Option<ClusterRow>, String> {
         let ns = self.ns_pair();

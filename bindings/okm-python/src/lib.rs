@@ -1167,11 +1167,29 @@ pub mod pyo3_impl {
     fn kind_of(obj: &Bound<'_, PyAny>, what: &str) -> PyResult<Kind> {
         let id = obj.extract::<u16>().map_err(|_| {
             PyTypeError::new_err(format!(
-                "{what}: kind is an interned id (0-65535); the meaning of each value belongs to \
-                 the caller, and the labels live in the collection's cluster-kind vocabulary"
+                "{what}: kind is a LABEL (str) or its interned id (int, 0-65535); the labels live \
+                 in the collection's cluster-kind vocabulary, and `kind_id` is what writes one"
             ))
         })?;
         Ok(Kind(id))
+    }
+
+    /// A kind argument at the binding's boundary: an interned id, or the caller's
+    /// LABEL — which interns on first sight. ADR-0068's `Kind` is a number with no
+    /// vocabulary of its own, so a script that says `kind="community"` must have a
+    /// door that turns the word into the number; this is it for every verb that
+    /// takes a kind.
+    fn kind_arg(
+        store: &EngineBox,
+        ns: u16,
+        obj: &Bound<'_, PyAny>,
+        what: &str,
+    ) -> PyResult<Kind> {
+        if let Ok(label) = obj.extract::<String>() {
+            return okm_dynamic::intern_kind(store, &ns.to_be_bytes(), &label)
+                .map_err(PyValueError::new_err);
+        }
+        kind_of(obj, what)
     }
 
     /// One `{name: value}` dict → the dynamic segment's `Dict`. Every name here
@@ -1261,16 +1279,23 @@ pub mod pyo3_impl {
             .is_some_and(|v| !v.is_none())
     }
 
-    /// One cluster entry as a DECLARATION: `{kind, payload?, parent?, id?}`.
-    /// `id` incorporates into the cluster already there (`None` allocates one
-    /// and reports it), `parent` nests it under another.
-    fn cluster_decl_of(obj: &Bound<'_, PyAny>, what: &str) -> PyResult<Cluster> {
+    /// One cluster entry as a DECLARATION: `{kind, payload?, parent?, id?,
+    /// nodes?}`. `id` incorporates into the cluster already there (`None`
+    /// allocates one and reports it), `parent` nests it under another, and
+    /// `nodes` declares node members — `[{ns, key}, …]`, the same node shape
+    /// `delete_nodes` takes (ADR-0068).
+    fn cluster_decl_of(
+        store: &EngineBox,
+        ns: u16,
+        obj: &Bound<'_, PyAny>,
+        what: &str,
+    ) -> PyResult<Cluster> {
         let dict = obj.cast::<pyo3::types::PyDict>().map_err(|_| {
             PyTypeError::new_err(format!(
-                "{what}: a cluster declaration is a dict {{kind, payload?, parent?, id?}}"
+                "{what}: a cluster declaration is a dict {{kind, payload?, parent?, id?, nodes?}}"
             ))
         })?;
-        let kind = kind_of(&need(dict, "kind", what)?, what)?;
+        let kind = kind_arg(store, ns, &need(dict, "kind", what)?, what)?;
         let payload = match dict.get_item("payload")? {
             Some(v) if !v.is_none() => dyn_map_of(&v, &format!("{what}.payload"))?,
             _ => Dict::new(),
@@ -1283,6 +1308,17 @@ pub mod pyo3_impl {
             Some(v) if !v.is_none() => v.extract()?,
             _ => 0,
         };
+        let cluster = match dict.get_item("nodes")? {
+            Some(v) if !v.is_none() => {
+                let what_nodes = format!("{what}.nodes");
+                let nodes: Vec<NodeRef> = v
+                    .try_iter()?
+                    .map(|item| node_of(&item?, &what_nodes))
+                    .collect::<PyResult<Vec<NodeRef>>>()?;
+                cluster.nodes(nodes)
+            }
+            _ => cluster,
+        };
         Ok(if parent == 0 {
             cluster
         } else {
@@ -1291,12 +1327,17 @@ pub mod pyo3_impl {
     }
 
     /// One `{kind, id}` pair: the identity every cluster verb speaks.
-    fn cluster_ref_of(obj: &Bound<'_, PyAny>, what: &str) -> PyResult<ClusterRef> {
+    fn cluster_ref_of(
+        store: &EngineBox,
+        ns: u16,
+        obj: &Bound<'_, PyAny>,
+        what: &str,
+    ) -> PyResult<ClusterRef> {
         let dict = obj
             .cast::<pyo3::types::PyDict>()
             .map_err(|_| PyTypeError::new_err(format!("{what}: a cluster is a dict {{kind, id}}")))?;
         Ok(ClusterRef::new(
-            kind_of(&need(dict, "kind", what)?, what)?,
+            kind_arg(store, ns, &need(dict, "kind", what)?, what)?,
             need(dict, "id", what)?.extract::<u64>()?,
         ))
     }
@@ -1357,7 +1398,7 @@ pub mod pyo3_impl {
             let mut node_deletes: Vec<NodeRef> = Vec::new();
             let mut cluster_decls: Vec<Cluster> = Vec::new();
             let mut cluster_deletes: Vec<ClusterRef> = Vec::new();
-            let mut removes: Vec<ClusterRef> = Vec::new();
+            let mut removes: Vec<(ClusterRef, Vec<NodeRef>)> = Vec::new();
 
             for item in list_of(dict, "edges")? {
                 // A HEAD is a delete target, a dict with attributes (or the tuple)
@@ -1376,9 +1417,9 @@ pub mod pyo3_impl {
 
             for item in list_of(dict, "clusters")? {
                 if verb == ReadFor::Delete && cluster_is_target(&item) {
-                    cluster_deletes.push(cluster_ref_of(&item, "clusters")?);
+                    cluster_deletes.push(cluster_ref_of(store, ns, &item, "clusters")?);
                 } else {
-                    cluster_decls.push(cluster_decl_of(&item, "clusters")?);
+                    cluster_decls.push(cluster_decl_of(store, ns, &item, "clusters")?);
                 }
             }
 
@@ -1391,10 +1432,26 @@ pub mod pyo3_impl {
             node_deletes.push(node_of(&item, "delete_nodes")?);
         }
         for item in list_of(dict, "delete_clusters")? {
-            cluster_deletes.push(cluster_ref_of(&item, "delete_clusters")?);
+            cluster_deletes.push(cluster_ref_of(store, ns, &item, "delete_clusters")?);
         }
         for item in list_of(dict, "remove")? {
-            removes.push(cluster_ref_of(&item, "remove")?);
+            // `{kind, id}` detaches this batch's EDGES; `{kind, id, nodes: […]}}`
+            // also retracts declarations, which is the only way a node leaves a
+            // cluster without being deleted (ADR-0068).
+            let cluster = cluster_ref_of(store, ns, &item, "remove")?;
+            let nodes: Vec<NodeRef> = match item.cast::<pyo3::types::PyDict>() {
+                Ok(entry) => match entry.get_item("nodes")? {
+                    Some(v) if !v.is_none() => {
+                        let what = "remove.nodes";
+                        v.try_iter()?
+                            .map(|node| node_of(&node?, what))
+                            .collect::<PyResult<Vec<NodeRef>>>()?
+                    }
+                    _ => Vec::new(),
+                },
+                Err(_) => Vec::new(),
+            };
+            removes.push((cluster, nodes));
         }
 
         // The declarations are the fragment's seed (`DynFragment::new` is the
@@ -1414,8 +1471,11 @@ pub mod pyo3_impl {
         for cluster in cluster_deletes {
             fragment.delete(cluster);
         }
-        for cluster in removes {
+        for (cluster, nodes) in removes {
             fragment.remove(cluster);
+            if !nodes.is_empty() {
+                fragment.remove_nodes(cluster, nodes);
+            }
         }
         install_conflict_hooks(&mut fragment, dict)?;
         Ok(fragment)
@@ -1844,6 +1904,72 @@ pub mod pyo3_impl {
                 .clusters_of(key)
         }
 
+        /// The declared member NODES of a cluster, in key order (ADR-0068).
+        pub fn nodes_dyn(&self, kind: Kind, cluster: u64) -> Result<Vec<NodeRef>, String> {
+            self.inner
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .nodes(kind, cluster)
+        }
+
+        /// Is `node` a DECLARED member of `(kind, cluster)`? One point read — and
+        /// the declared half only: a node an edge names is a member of the
+        /// clusters that edge belongs to, which is `clusters_of`.
+        pub fn node_member_of_dyn(
+            &self,
+            kind: Kind,
+            cluster: u64,
+            node: &NodeRef,
+        ) -> Result<bool, String> {
+            self.inner
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .node_member_of(kind, cluster, node)
+        }
+
+        /// The node count the cluster row states (0 when it has no row).
+        pub fn node_count_dyn(&self, kind: Kind, id: u64) -> Result<u64, String> {
+            self.inner
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .node_count(kind, id)
+        }
+
+        /// Every cluster that DECLARES `node` a member: one scan of the node →
+        /// cluster face. Incident edges are a different question — ask
+        /// `clusters_of` per edge for those.
+        pub fn node_clusters_of_dyn(&self, node: &NodeRef) -> Result<Vec<ClusterRef>, String> {
+            self.inner
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .node_clusters_of(node)
+        }
+
+        /// Intern a kind label (0x0A/0x0B) and hand back its id — a write of the
+        /// collection's own vocabulary, which is why nothing declared it up front.
+        pub fn kind_id_dyn(&self, label: &str) -> Result<Kind, String> {
+            self.inner
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .kind_id(label)
+        }
+
+        /// The label a kind was interned under; `None` for an unminted number.
+        pub fn kind_label_dyn(&self, kind: Kind) -> Result<Option<String>, String> {
+            self.inner
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .kind_label(kind)
+        }
+
+        /// Every interned kind, id-ordered.
+        pub fn kinds_dyn(&self) -> Result<Vec<(u16, String)>, String> {
+            self.inner
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .kinds()
+        }
+
         /// One edge, decoded: endpoints, predicate by NAME, attributes.
         pub fn edge_dyn(&self, key: &EdgeKey) -> Result<Option<DynEdge>, String> {
             self.inner
@@ -1913,10 +2039,11 @@ pub mod pyo3_impl {
         /// ```text
         /// {
         ///   "edges":     [{src, dst, predicate, attrs?}, …],
-        ///   "clusters":  [{kind, payload?, parent?, id?}, …],
+        ///   "clusters":  [{kind, payload?, parent?, id?, nodes?}, …],
         ///   "reduce_edge":    {name: value},   # folded onto every edge payload
         ///   "reduce_cluster": {name: value},   # folded onto every declared payload
-        ///   "remove":    [{kind, id}, …],      # detach this batch's edges
+        ///   "remove":    [{kind, id, nodes?}, …],  # detach this batch's edges,
+        ///                                        # and retract node declarations
         /// }
         /// ```
         ///
@@ -2047,7 +2174,7 @@ pub mod pyo3_impl {
             cluster: u64,
             head: &Bound<'_, PyAny>,
         ) -> PyResult<bool> {
-            let kind = kind_of(kind, "member_of")?;
+            let kind = kind_arg(&self.store, self.ns, kind, "member_of")?;
             let Some(key) = self.key_of(head, "member_of")? else {
                 return Ok(false);
             };
@@ -2059,7 +2186,7 @@ pub mod pyo3_impl {
         /// the authority face. One HEAD per member — `{src, dst, predicate}`,
         /// the shape `member_of` / `clusters_of` / `edge` take back.
         fn members(&self, kind: &Bound<'_, PyAny>, cluster: u64) -> PyResult<Vec<Py<PyAny>>> {
-            let kind = kind_of(kind, "members")?;
+            let kind = kind_arg(&self.store, self.ns, kind, "members")?;
             let keys = self
                 .members_dyn(kind, cluster)
                 .map_err(PyValueError::new_err)?;
@@ -2070,18 +2197,87 @@ pub mod pyo3_impl {
             })
         }
 
+        /// The declared member NODES of one cluster, in key order: one prefix
+        /// scan of the authority face plus one registry batch. One dict per
+        /// member — `{"ns": int, "key": bytes}`, the shape `delete_nodes` reads.
+        fn nodes(&self, kind: &Bound<'_, PyAny>, cluster: u64) -> PyResult<Vec<Py<PyAny>>> {
+            let kind = kind_arg(&self.store, self.ns, kind, "nodes")?;
+            let nodes = self
+                .nodes_dyn(kind, cluster)
+                .map_err(PyValueError::new_err)?;
+            Python::attach(|py| nodes.iter().map(|node| node_to_py(py, node)).collect())
+        }
+
+        /// Is `node` a DECLARED member of cluster `(kind, cluster)`? A node an
+        /// edge touches is a member of the clusters that EDGE belongs to —
+        /// `clusters_of(head)` — which is the other half of the union.
+        fn node_member_of(
+            &self,
+            kind: &Bound<'_, PyAny>,
+            cluster: u64,
+            node: &Bound<'_, PyAny>,
+        ) -> PyResult<bool> {
+            let kind = kind_arg(&self.store, self.ns, kind, "node_member_of")?;
+            let node = node_of(node, "node_member_of")?;
+            self.node_member_of_dyn(kind, cluster, &node)
+                .map_err(PyValueError::new_err)
+        }
+
+        /// The node count the cluster row states (0 when it has no row).
+        fn node_count(&self, kind: &Bound<'_, PyAny>, id: u64) -> PyResult<u64> {
+            let kind = kind_arg(&self.store, self.ns, kind, "node_count")?;
+            self.node_count_dyn(kind, id)
+                .map_err(PyValueError::new_err)
+        }
+
+        /// Every cluster that DECLARES `node` a member:
+        /// `[{"kind": int, "id": int}]`, one scan of the derived mirror.
+        fn node_clusters_of(&self, node: &Bound<'_, PyAny>) -> PyResult<Vec<Py<PyAny>>> {
+            let node = node_of(node, "node_clusters_of")?;
+            let clusters = self
+                .node_clusters_of_dyn(&node)
+                .map_err(PyValueError::new_err)?;
+            Python::attach(|py| {
+                clusters
+                    .iter()
+                    .map(|c| cluster_ref_to_py(py, c))
+                    .collect()
+            })
+        }
+
+        /// Intern a kind label and hand back its id: the vocabulary is the
+        /// caller's, and this is the door that writes it (faces 0x0A/0x0B). Every
+        /// verb below takes either this id or the label itself.
+        fn kind_id(&self, label: &str) -> PyResult<u16> {
+            self.kind_id_dyn(label)
+                .map(|kind| kind.0)
+                .map_err(PyValueError::new_err)
+        }
+
+        /// The label a kind was interned under; `None` for a number nobody minted.
+        fn kind_label(&self, kind: &Bound<'_, PyAny>) -> PyResult<Option<String>> {
+            let kind = kind_arg(&self.store, self.ns, kind, "kind_label")?;
+            self.kind_label_dyn(kind).map_err(PyValueError::new_err)
+        }
+
+        /// Every kind this collection has interned, id-ordered: `[(id, label), …]`.
+        fn kinds(&self) -> PyResult<Vec<(u16, String)>> {
+            self.kinds_dyn().map_err(PyValueError::new_err)
+        }
+
         /// The children of one cluster: one scan of the child index.
         fn children(&self, kind: &Bound<'_, PyAny>, parent: u64) -> PyResult<Vec<u64>> {
-            let kind = kind_of(kind, "children")?;
+            let kind = kind_arg(&self.store, self.ns, kind, "children")?;
             self.children_dyn(kind, parent)
                 .map_err(PyValueError::new_err)
         }
 
-        /// One cluster row: `{kind, id, parent, member_count, payload}`, or
-        /// `None` when no row holds it. `parent` 0 means "no parent";
-        /// `member_count` is the number the row states.
+        /// One cluster row: `{kind, id, parent, member_count, node_count,
+        /// payload}`, or `None` when no row holds it. `parent` 0 means "no
+        /// parent"; the two counts are the numbers the row states, one per
+        /// member kind (ADR-0068).
         fn lookup(&self, kind: &Bound<'_, PyAny>, id: u64) -> PyResult<Option<Py<PyAny>>> {
-            let kind = kind_of(kind, "lookup")?;
+            let kind = kind_arg(&self.store, self.ns, kind, "lookup")?;
             let Some(row) = self.lookup_dyn(kind, id).map_err(PyValueError::new_err)? else {
                 return Ok(None);
             };
@@ -2091,6 +2287,7 @@ pub mod pyo3_impl {
                 dict.set_item("id", id)?;
                 dict.set_item("parent", row.parent)?;
                 dict.set_item("member_count", row.member_count())?;
+                dict.set_item("node_count", row.node_count())?;
                 dict.set_item("payload", map_to_dict(py, &row.payload)?)?;
                 Ok(Some(dict.into_any().unbind()))
             })
@@ -2098,13 +2295,13 @@ pub mod pyo3_impl {
 
         /// The parent of one cluster — one point read; `0` = no parent.
         fn parent(&self, kind: &Bound<'_, PyAny>, id: u64) -> PyResult<u64> {
-            let kind = kind_of(kind, "parent")?;
+            let kind = kind_arg(&self.store, self.ns, kind, "parent")?;
             self.parent_dyn(kind, id).map_err(PyValueError::new_err)
         }
 
         /// Every cluster of one kind, in id order.
         fn clusters(&self, kind: &Bound<'_, PyAny>) -> PyResult<Vec<u64>> {
-            let kind = kind_of(kind, "clusters")?;
+            let kind = kind_arg(&self.store, self.ns, kind, "clusters")?;
             self.clusters_dyn(kind).map_err(PyValueError::new_err)
         }
 
@@ -2121,7 +2318,7 @@ pub mod pyo3_impl {
 
         /// The member count the cluster row states (0 when it has no row).
         fn member_count(&self, kind: &Bound<'_, PyAny>, id: u64) -> PyResult<u64> {
-            let kind = kind_of(kind, "member_count")?;
+            let kind = kind_arg(&self.store, self.ns, kind, "member_count")?;
             self.member_count_dyn(kind, id)
                 .map_err(PyValueError::new_err)
         }
@@ -2129,10 +2326,10 @@ pub mod pyo3_impl {
         /// Every cluster the edge named by `head` belongs to:
         /// `[{"kind": int, "id": int}]`.
         ///
-        /// The reverse of `members`, one scan of the derived mirror. There is no
-        /// node form: on this form a node is an endpoint and nothing else, and
-        /// membership is a property of EDGES — a node is answered by asking
-        /// about its edges (`clusters_of(step["head"])` inside a walk).
+        /// The reverse of `members`, one scan of the derived mirror. This is the
+        /// EDGE half only: for the declared half of the same question ask
+        /// `node_clusters_of` (ADR-0068 — the two are two facts, so they are two
+        /// verbs).
         fn clusters_of(&self, head: &Bound<'_, PyAny>) -> PyResult<Vec<Py<PyAny>>> {
             let Some(key) = self.key_of(head, "clusters_of")? else {
                 return Ok(Vec::new());

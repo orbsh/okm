@@ -1250,4 +1250,135 @@ mod python_face {
             assert_eq!(rows.len().unwrap(), 1, "one key in, one row out");
         });
     }
+
+    /// A cluster of ENTITIES through the binding: the declaration's `nodes`
+    /// key, the four read verbs, and the `node_count` the row states
+    /// (ADR-0068). No edge is written anywhere in this test.
+    #[test]
+    fn a_node_cluster_is_declared_and_read_through_python() {
+        Python::initialize();
+        Python::attach(|py| {
+            let g = Py::new(py, graph()).unwrap().into_bound(py);
+
+            let fragment = PyDict::new(py);
+            let cluster = PyDict::new(py);
+            cluster.set_item("kind", "community").unwrap();
+            let nodes = PyList::empty(py);
+            // Entities no edge touches: the declaration is the only reason they
+            // are in the graph at all.
+            nodes.append(node_dict(py, 0x10, 9)).unwrap();
+            nodes.append(node_dict(py, 0x10, 10)).unwrap();
+            cluster.set_item("nodes", nodes).unwrap();
+            fragment
+                .set_item("clusters", PyList::new(py, [cluster]).unwrap())
+                .unwrap();
+            let report = as_dict(g.call_method1("incorporate", (fragment,)).unwrap());
+            let hypers: Vec<u64> = report
+                .get_item("hyper_ids")
+                .unwrap()
+                .unwrap()
+                .extract()
+                .unwrap();
+            let id = hypers[0];
+
+            // ---- the member list: one dict per entity, the node shape ----
+            let members = g
+                .call_method1("nodes", ("community", id))
+                .unwrap()
+                .cast_into::<PyList>()
+                .unwrap();
+            assert_eq!(members.len(), 2);
+            let first = as_dict(members.get_item(0).unwrap());
+            assert_eq!(
+                first.get_item("ns").unwrap().unwrap().extract::<u16>().unwrap(),
+                0x10
+            );
+            assert_eq!(
+                first
+                    .get_item("key")
+                    .unwrap()
+                    .unwrap()
+                    .extract::<Vec<u8>>()
+                    .unwrap(),
+                9u64.to_be_bytes()
+            );
+
+            // ---- the point test, both answers ----
+            assert!(
+                g.call_method1("node_member_of", ("community", id, node_dict(py, 0x10, 9)))
+                    .unwrap()
+                    .extract::<bool>()
+                    .unwrap()
+            );
+            assert!(
+                !g.call_method1("node_member_of", ("community", id, node_dict(py, 0x10, 99)))
+                    .unwrap()
+                    .extract::<bool>()
+                    .unwrap()
+            );
+
+            // ---- the count the row states, and the per-entity mirror ----
+            assert_eq!(
+                g.call_method1("node_count", ("community", id))
+                    .unwrap()
+                    .extract::<u64>()
+                    .unwrap(),
+                2
+            );
+            let mine = g
+                .call_method1("node_clusters_of", (node_dict(py, 0x10, 9),))
+                .unwrap()
+                .cast_into::<PyList>()
+                .unwrap();
+            assert_eq!(mine.len(), 1);
+            assert_eq!(
+                as_dict(mine.get_item(0).unwrap())
+                    .get_item("id")
+                    .unwrap()
+                    .unwrap()
+                    .extract::<u64>()
+                    .unwrap(),
+                id
+            );
+            let row = g.call_method1("lookup", ("community", id)).unwrap();
+            assert_eq!(
+                row.cast::<PyDict>()
+                    .unwrap()
+                    .get_item("node_count")
+                    .unwrap()
+                    .unwrap()
+                    .extract::<u64>()
+                    .unwrap(),
+                2,
+                "the row states both counts"
+            );
+
+            // ---- retracting the declaration leaves the entity alone ----
+            let removal = PyDict::new(py);
+            let entry = PyDict::new(py);
+            entry.set_item("kind", "community").unwrap();
+            entry.set_item("id", id).unwrap();
+            let gone = PyList::empty(py);
+            gone.append(node_dict(py, 0x10, 9)).unwrap();
+            entry.set_item("nodes", gone).unwrap();
+            removal
+                .set_item("remove", PyList::new(py, [entry]).unwrap())
+                .unwrap();
+            g.call_method1("incorporate", (removal,)).unwrap();
+
+            let left = g
+                .call_method1("nodes", ("community", id))
+                .unwrap()
+                .cast_into::<PyList>()
+                .unwrap();
+            assert_eq!(left.len(), 1, "the declared row went, the other stayed");
+            assert_eq!(
+                g.call_method1("node_count", ("community", id))
+                    .unwrap()
+                    .extract::<u64>()
+                    .unwrap(),
+                1
+            );
+        });
+    }
 }
