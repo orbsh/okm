@@ -34,7 +34,9 @@
 //! 0x0F  edge → cluster index       [src_h][pred][dst_h][kind][hyper_id] → empty
 //! 0x10  handle → node              [handle] → [node_ns 2B][pkey]
 //! 0x11  node → handle              [node_ns 2B][pkey] → [handle]
-//! 0x12–0x1D  unassigned            the band's only reserve, one contiguous block
+//! 0x12  node member                [kind][hyper_id][handle] → empty
+//! 0x13  node → cluster index       [handle][kind][hyper_id] → empty, derived
+//! 0x14–0x1D  unassigned            the band's only reserve, one contiguous block
 //! 0x1E  Extension                  [subkind]… each subkind owns its contract
 //! 0x1F  table meta                 → name → bytes map
 //! ```
@@ -125,6 +127,11 @@ pub const HANDLE_NODE_SLOT: Slot = 0x10;
 /// The handle registry's reverse face, derived from `0x10`.
 pub const NODE_HANDLE_SLOT: Slot = 0x11;
 
+/// One row per member NODE — the authority for a cluster of entities.
+pub const NODE_MEMBER_SLOT: Slot = 0x12;
+/// The derived NODE → CLUSTER index `[handle][kind][hyper_id]`.
+pub const NODE_CLUSTER_SLOT: Slot = 0x13;
+
 /// The Extension face: each subkind owns its own contract (ADR-0030).
 pub const EXTENSION_SLOT: Slot = 0x1E;
 /// The table's META entry — name → bytes (ADR-0043).
@@ -172,6 +179,8 @@ mod tests {
             EDGE_CLUSTER_SLOT,
             HANDLE_NODE_SLOT,
             NODE_HANDLE_SLOT,
+            NODE_MEMBER_SLOT,
+            NODE_CLUSTER_SLOT,
             EXTENSION_SLOT,
             META_SLOT,
         ];

@@ -164,29 +164,23 @@ walk 成为热路径时，把边 collection 的热谓词提升为声明的 `#[ok
 
 ## 按社区召回：采样节点，给它们的社区排序
 
-这是一份真实设计，写下来是因为它的形状不显然：图里存着社区发现的结果，查询要回答"这一页结果落在哪些社区里"。整件事靠两个图动词——节点形态的 `clusters_of`，以及 `members`——其余都是策略。
+这是一份真实设计，写下来是因为它的形状不显然：图里存着社区发现的结果，查询要回答"这一页结果落在哪些社区里"。整件事靠三个图动词——节点形态的 `clusters_of`（一次节点 → 簇面的扫描）、`nodes`，以及 `members`——其余都是策略。
 
-**写入侧：一次运行的结果是一组簇。** 每个社区是一个簇，成员就是那次运行归到一组的边，kind 为 `Kind::COMMUNITY`。簇的载荷装的是**这次运行**的元数据——算法名、参数、产出的时间戳——因为簇行的载荷本来就是 `Dict`，模型里没有别的东西要为它改动：
+**写入侧：一次运行的结果是一组挂在顶点上的簇。** 每个社区是一个簇，成员就是那次运行归到一组的**节点**，kind 为 `Kind::COMMUNITY`。顶点划分才是运行产出的东西，所以写下来的就是划分；一条边都碰不到的顶点也是合法成员，因为节点作为端点**或**簇成员存在。对断言做的运行是另一侧——一次事件的证据、一条流的步骤——同样的簇，成员是碎片里的边、完全不写 `.nodes(..)`；两者都要的运行就把两者都放进一个簇。簇的载荷装的是**这次运行**的元数据——算法名、参数、产出的时间戳——因为簇行的载荷本来就是 `Dict`，模型里没有别的东西要为它改动：
 
 ```rust
-let mut fragment = Fragment::<Employment>::new(
-    community.edges.iter().map(|key| Decl::edge(EdgeHead {
-        src: key.src.clone(),
-        dst: key.dst.clone(),
-        predicate: predicate_name.clone(),     // 这次运行只归一组关系
-    })),
-);
+let mut fragment = Fragment::<Employment>::new([]);   // 边早就存在；这次运行不写任何断言
 let mut meta = Dict::new();
 meta.insert("algorithm".into(), Variant::Str("lpa".into()));
 meta.insert("resolution".into(), Variant::F64(0.6));
 meta.insert("produced".into(), Variant::U64(run_started));
-fragment.cluster(Cluster::new(Kind::COMMUNITY, meta));
+fragment.cluster(Cluster::new(Kind::COMMUNITY, meta).nodes(community.nodes.clone()));
 let report = graph.incorporate(fragment)?;   // report.hyper_ids = 这次运行的簇号
 ```
 
-因为重算是写一个**新的**簇号、而不是覆盖旧的，多次运行可以共存——换个算法、换个参数、上周的答案——并且可比：`Hyperedges::clusters(Kind::COMMUNITY)` 枚举它们，`lookup` 取回载荷，按 `payload["algorithm"]` 过滤就选中某次运行。比较本身是按成员边做连接，而那正是图本来就在说的元组身份。
+因为重算是写一个**新的**簇号、而不是覆盖旧的，多次运行可以共存——换个算法、换个参数、上周的答案——并且可比：`Hyperedges::clusters(Kind::COMMUNITY)` 枚举它们，`lookup` 取回载荷，按 `payload["algorithm"]` 过滤就选中某次运行。比较本身是在成员面上做集合比较，而两张面说的是图本来就在说的同一套句柄行。
 
-**查询侧：召回 100 个节点，然后数。** 应用从向量面召回一页——100 个 `NodeRef`，按相关度排序。它们的社区来自各自的关联边，每条边一次 `0x0D` run，所以代价是这一页涉及的边数，与图的规模无关：
+**查询侧：召回 100 个节点，然后数。** 应用从向量面召回一页——100 个 `NodeRef`，按相关度排序。它们的社区来自每个节点一次 `clusters_of`：一次节点 → 簇面的扫描，加上——对于成员是边的那些簇——每条关联边一次 run。所以代价是这一页加上它涉及的边，与图的规模无关；而只要运行写的是顶点，枢纽就不再付它的度。
 
 ```rust
 let hits: Vec<NodeRef> = vector_recall(&query, 100);
@@ -194,7 +188,7 @@ let hits: Vec<NodeRef> = vector_recall(&query, 100);
 let mut tally: HashMap<ClusterRef, usize> = HashMap::new();
 let mut seen: HashSet<ClusterRef> = HashSet::new();
 for node in &hits {
-    // 流只折叠**相邻**的重复；一个节点若有两条边同属一个社区，它会报两次，
+    // 流只折叠**相邻**的重复：一个簇若被这个节点的两条边同时归入，它会报两次，
     // 所以每个节点只数一次。
     seen.clear();
     seen.extend(graph.clusters_of(node));
@@ -211,19 +205,19 @@ let top: Vec<ClusterRef> = ranked.iter().take(3).map(|(_, c)| *c).collect();
 
 在这个故事里，100 个节点中 30 个落在社区 A、20 个落在 B、10 个落在 C，剩下 40 个两三个一组散着。前三是答案；散着的那些是噪声，而排序正是把它们丢掉的那一步。
 
-**展开成整个社区。** 如果结果要的是社区本身、而不是被采样的节点，每个入选簇就是一次 `0x0B` 前缀扫描，它的成员行经登记册还原成元组——每次调用一次登记册扫描，覆盖这次调用的整个成员集：
+**展开成整个社区。** 如果结果要的是社区本身、而不是被采样的节点，每个入选簇就是一次成员面的前缀扫描——`nodes` 答顶点，`members` 答边——整个答案共用一次登记册批量解析：
 
 ```rust
 let hyperedges = Hyperedges::of::<Employment>(&store);
-let communities: Vec<Vec<EdgeKey>> = top
+let communities: Vec<Vec<NodeRef>> = top
     .iter()
-    .map(|cluster| hyperedges.members(*cluster))
+    .map(|cluster| hyperedges.nodes(*cluster))
     .collect::<Result<_, _>>()?;
 ```
 
 之后由应用去格式化——`## 社区 A — 100 个召回节点中的 30 个` 这样的 markdown 记忆块，后面跟上展开的成员——因为那是呈现，而 okm 不做呈现。
 
-**什么是策略、什么是机制。** 取几个簇、平局怎么破、要不要展开成成员、一页是 100 还是 20：全是应用的决定，没有一个需要新面。okm 只提供让这件事便宜的那两个动词——节点形态的 `clusters_of`（一次 walk 加每条关联边一次成员查询，即线性于这一页的边数）与 `members`（一次前缀扫加一次登记册扫）。另一种形状——遍历每个簇、数有多少召回节点落在其中——为了回答关于 100 个节点的问题，要去读整张 `0x0A` 和 `0x0B`。
+**什么是策略、什么是机制。** 取几个簇、平局怎么破、要不要展开成成员、一页是 100 还是 20：全是应用的决定，没有一个需要新面。okm 只提供让这件事便宜的那三个动词——节点形态的 `clusters_of`（一次节点镜像的扫描，若有边簇参与则每条关联边再加一次成员查询）、`nodes`（一次前缀扫加一次登记册扫）与 `members`（同样，答边）。另一种形状——遍历每个簇、数有多少召回节点落在其中——为了回答关于 100 个节点的问题，要去读两张成员面和簇行。
 
 **单成员的社区能存，空簇也能存。** 簇是一个作用域，而作用域本身就是信息：检测出只有一条边的组是真实答案，空簇则是「这个主题敏感，别问」「这里曾经有东西，现在没了」的表达方式。成员变化永远不会删掉簇行——簇在声明时创建、只在显式删除时删除（`.delete(..)`），所以一个把成员全部丢光的社区会作为空作用域留下，计数诚实地写着零。所以上面故事里的"散着"是呈现问题，不是存储的限制：一个在某个主题下什么都没找到的检测器，照样能记下"我找过"。
 

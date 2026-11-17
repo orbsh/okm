@@ -168,29 +168,23 @@ When a walk becomes a hot path, promote the edge collection's hot predicate into
 
 ## Community recall: sample nodes, rank their communities
 
-A real design, written down because the shape is not obvious: the graph stores a community-detection result, and a query recalls "which communities does this page of results belong to". Two graph verbs carry it — `clusters_of` on the NODE form, and `members` — and everything else is policy.
+A real design, written down because the shape is not obvious: the graph stores a community-detection result, and a query recalls "which communities does this page of results belong to". Three graph verbs carry it — `clusters_of` on the NODE form (one scan of the node → cluster face), `nodes`, and `members` — and everything else is policy.
 
-**Write side: a run's result is a set of clusters.** Each community is one cluster whose members are the edges the run grouped, with kind `Kind::COMMUNITY`. The cluster's payload is the RUN's metadata — algorithm name, parameters, and when it was produced — because a cluster row's payload is a `Dict` and nothing else in the model has to change to carry it:
+**Write side: a run's result is a set of clusters over vertices.** Each community is one cluster whose members are the nodes the run grouped, with kind `Kind::COMMUNITY`. The partition is what the run produced, so the partition is what is written; a vertex no edge touches is a legal member, because a node exists as an endpoint **or** as a cluster member. A run over assertions instead — an event's evidence, a flow's steps — declares the same cluster with the fragment's edges as members and no `.nodes(..)` at all; a run that wants both puts both in one cluster. The cluster's payload is the RUN's metadata — algorithm name, parameters, and when it was produced — because a cluster row's payload is a `Dict` and nothing else in the model has to change to carry it:
 
 ```rust
-let mut fragment = Fragment::<Employment>::new(
-    community.edges.iter().map(|key| Decl::edge(EdgeHead {
-        src: key.src.clone(),
-        dst: key.dst.clone(),
-        predicate: predicate_name.clone(),     // the run groups ONE relation
-    })),
-);
+let mut fragment = Fragment::<Employment>::new([]);   // the edges already exist; this run writes no assertions
 let mut meta = Dict::new();
 meta.insert("algorithm".into(), Variant::Str("lpa".into()));
 meta.insert("resolution".into(), Variant::F64(0.6));
 meta.insert("produced".into(), Variant::U64(run_started));
-fragment.cluster(Cluster::new(Kind::COMMUNITY, meta));
+fragment.cluster(Cluster::new(Kind::COMMUNITY, meta).nodes(community.nodes.clone()));
 let report = graph.incorporate(fragment)?;   // report.hyper_ids = this run's ids
 ```
 
-Because a recompute writes a NEW cluster id rather than overwriting one, several runs coexist — a different algorithm, a different parameter, last week's answer — and they are comparable: `Hyperedges::clusters(Kind::COMMUNITY)` enumerates them, `lookup` hands back the payload, and filtering on `payload["algorithm"]` selects the run. The comparison itself is a join on member edges, which is the same tuple identity the graph already speaks.
+Because a recompute writes a NEW cluster id rather than overwriting one, several runs coexist — a different algorithm, a different parameter, last week's answer — and they are comparable: `Hyperedges::clusters(Kind::COMMUNITY)` enumerates them, `lookup` hands back the payload, and filtering on `payload["algorithm"]` selects the run. The comparison itself is a set comparison over the member faces, which speak the same handle rows the graph already speaks.
 
-**Query side: 100 recalled nodes, then count.** The application recalls a page from a vector face — 100 node refs, best first. Their communities come from their incident edges, one `0x0D` run per edge, so the cost is the page's edges and nothing about the graph's size:
+**Query side: 100 recalled nodes, then count.** The application recalls a page from a vector face — 100 node refs, best first. Their communities come from one `clusters_of` call per node: one scan of the node → cluster face, plus, for any cluster whose members are edges, one run per incident edge. So the cost is the page plus its edges, and nothing about the graph's size — and a hub no longer costs its degree when the run wrote vertices.
 
 ```rust
 let hits: Vec<NodeRef> = vector_recall(&query, 100);
@@ -198,8 +192,8 @@ let hits: Vec<NodeRef> = vector_recall(&query, 100);
 let mut tally: HashMap<ClusterRef, usize> = HashMap::new();
 let mut seen: HashSet<ClusterRef> = HashSet::new();
 for node in &hits {
-    // The stream collapses ADJACENT repeats; a node with two edges in one
-    // community reports it twice, so count each node once.
+    // The stream collapses ADJACENT repeats only: a cluster that two of this
+    // node's edges belong to reports twice, so count each node once.
     seen.clear();
     seen.extend(graph.clusters_of(node));
     for cluster in &seen {
@@ -215,19 +209,19 @@ let top: Vec<ClusterRef> = ranked.iter().take(3).map(|(_, c)| *c).collect();
 
 In the story this run lands as 30 of the 100 in community A, 20 in B, 10 in C, and the remaining 40 scattered two and three at a time. The top three are the answer; the scatter is noise that the ranking is exactly what discards.
 
-**Expanding to whole communities.** If the result wants the communities rather than the sampled nodes, each top cluster is one `0x0B` prefix scan, and its member rows come back as tuples through the registry — one registry scan per call, for the whole member set of that call:
+**Expanding to whole communities.** If the result wants the communities rather than the sampled nodes, each top cluster is one prefix scan of its member face — `nodes` answers the vertices, `members` the edges — with one registry batch for the whole answer:
 
 ```rust
 let hyperedges = Hyperedges::of::<Employment>(&store);
-let communities: Vec<Vec<EdgeKey>> = top
+let communities: Vec<Vec<NodeRef>> = top
     .iter()
-    .map(|cluster| hyperedges.members(*cluster))
+    .map(|cluster| hyperedges.nodes(*cluster))
     .collect::<Result<_, _>>()?;
 ```
 
 The application then formats it — a markdown memory block such as `## Community A — 30 of 100 recalled nodes` followed by the expanded members — because that is presentation, and okm does not do presentation.
 
-**What is policy and what is mechanism.** How many clusters to take, how to break a tie, whether to expand to members at all, whether the page size is 100 or 20: all of it is the application's decision, and none of it needs a new face. okm provides exactly the two verbs that make it cheap — `clusters_of` on the node form (one walk plus one membership run per incident edge, i.e. linear in the page's edges) and `members` (one prefix scan plus one registry scan). The alternative shape, walking every cluster and counting how many recalled nodes fall in each, would read the whole `0x0A` and `0x0B` faces to answer a question about 100 nodes.
+**What is policy and what is mechanism.** How many clusters to take, how to break a tie, whether to expand to members at all, whether the page size is 100 or 20: all of it is the application's decision, and none of it needs a new face. okm provides exactly the three verbs that make it cheap — `clusters_of` on the node form (one scan of the node mirror, plus one membership run per incident edge when edge clusters are in play), `nodes` (one prefix scan plus one registry batch) and `members` (the same, for edges). The alternative shape, walking every cluster and counting how many recalled nodes fall in each, would read both member faces and the cluster rows to answer a question about 100 nodes.
 
 **A singleton community is storable, and so is an empty one.** A cluster is a scope, and a scope is information by itself: one edge detected as a group is a real answer, and an empty scope is how "this subject is sensitive, do not ask" or "something used to be here and is gone now" gets said. A membership change never deletes the row — a cluster is created when declared and deleted only when explicitly deleted (`.delete(..)`), so a community that loses every member stays behind as an empty scope with an honest count of zero. The scatter in the story is therefore presentation, not a limit of the store: a detector that finds nothing in a subject can still record that it looked.
 

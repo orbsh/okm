@@ -71,7 +71,7 @@ pub struct AuditIncident {
 
 | 提案说 | 代码说 |
 |---|---|
-| 超图占用面 `0x0A` | `0x0A` 现在是**簇行**（ADR-0066），`0x0B`–`0x0D` 是它的成员与两张派生面；图的遍历面停在 `0x09`（`EDGE_PREDICATE_IN_SLOT`，`okm-core/src/model/graph.rs:81`）。`okm-vector` 的 per-shard 快照已并进 Extension（`0x1E` 的 0x01 子类）。在用的固定面：`0x00`–`0x0D` 是核心（`0x0A` 是簇行，ADR-0066），`0x0E`/`0x0F` 是句柄登记册，`0x1E` 是 Extension（向量快照已并入它的 0x01 子类），`0x1F` 是表元数据（ADR-0043）——所以空带是 `0x10`–`0x1D`，十四个面 |
+| 超图占用面 `0x0A` | `0x0A`/`0x0B` 是簇的 kind 词表两个方向，`0x0C` 是**簇行**（ADR-0066），`0x0D` 边成员、`0x0E`/`0x0F` 两张派生子簇/边→簇面，`0x12`/`0x13` 点簇的成员面与镜像（ADR-0068）；图的遍历面停在 `0x09`（`EDGE_PREDICATE_IN_SLOT`）。`okm-vector` 的 per-shard 快照已并进 Extension（`0x1E` 的 0x01 子类）。在用的固定面：`0x00`–`0x13` 是核心与图/簇/句柄三组面，`0x1E` 是 Extension，`0x1F` 是表元数据（ADR-0043）——所以空带是 `0x14`–`0x1D`，十个面 |
 | 面槽 2 字节 | 固定面是 **1 字节**；只有计数族（`0x2nnn`/`0x3nnn`）是 2 字节——ADR-0030 第 45-46 与 85-97 行，由 `write_slot` 实现（`okm-core/src/model/index.rs:81-91`） |
 | `NodeRef` = `[ns 2B][len u16][pkey]` | `[ns 2B][len **varint**][pkey]`，`len < 64` 时一字节（`okm-core/src/model/graph.rs:104-111`） |
 | edge id 是 4B/8B | `u64`（8 字节大端）到处一致：`link`、`edge_ids`、面 |

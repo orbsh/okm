@@ -95,8 +95,9 @@ Every key shares one header discipline:
 - **slot**: the first byte decides its own width. High nibble 0 → one
   byte, a fixed face (primary 0x00, dynamic segment 0x01, the two
   vocabulary directions 0x02/0x03, the predicate vocabulary 0x04/0x05, the
-  graph's four faces 0x06–0x09, the cluster band 0x0A–0x0D,
-  the handle registry 0x0E/0x0F, Extension 0x1E (the vector snapshot
+  graph's four faces 0x06–0x09, the cluster faces 0x0A–0x0F,
+  the handle registry 0x10/0x11, the node-cluster faces 0x12/0x13,
+  Extension 0x1E (the vector snapshot
   is its 0x01 subkind), table meta 0x1F).
   Anything else → two bytes: a family number in the high nibble plus a
   12-bit counter (declared indexes 0x4nnn, reduces 0x5nnn, lead faces
