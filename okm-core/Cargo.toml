@@ -207,6 +207,15 @@ required-features = ["schema-serde"]
 [[test]]
 name = "handover_hook_test"
 
+# Capture at the store boundary (ADR-0056 §2). The registration half of the suite
+# asserts the sidecar a declaration writes, and that sidecar is JSON — hence the
+# feature. Without it the collection still captures, but the claim this file makes
+# about assembly cannot be checked, so the target is declared rather than silently
+# red.
+[[test]]
+name = "capture_store_test"
+required-features = ["schema-serde"]
+
 
 [lints]
 workspace = true
