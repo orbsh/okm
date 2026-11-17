@@ -105,6 +105,16 @@ pub enum Error {
          hand the writes to `Graph::incorporate`"
     )]
     RetractWithWrites { declarations: usize },
+    /// A `replace` deleted a node but left half-edges of it unstated: an edge
+    /// incident to a retracted entity must be REPOINTED or explicitly deleted in
+    /// the same fragment. The refusal is the point — completing the cut is the
+    /// caller's claim, and a replacement that silently drops connections is the
+    /// failure this verb exists to make impossible.
+    #[error(
+        "{unaccounted} half-edge(s) cut by a deleted entity are neither repointed nor deleted; \
+         state every one of them in this fragment"
+    )]
+    ReplaceIncomplete { unaccounted: usize },
     /// An edge endpoint whose namespace is not one of the graph's declared
     /// member tables (ADR-0067).
     ///

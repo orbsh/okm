@@ -2211,9 +2211,15 @@ impl<G: GraphEncode + Default> Fragment<G> {
                 key.dst.ns_id(),
                 key.dst.pkey.clone(),
             )) {
+                // `row_of` answers whenever both handles are on file, and handles
+                // outlive their assertions — the 0x06 row is what says an edge is
+                // there, the same distinction the ordinary declare path makes.
+                let live = graph.get_edge(&key)?.is_some();
                 let row = match graph.row_of(&key)? {
                     Some(row) => {
-                        graph.unlink_into(batch, &row)?;
+                        if live {
+                            graph.unlink_into(batch, &row)?;
+                        }
                         graph.assert_into(batch, head, &payload, &mut cache)?;
                         row
                     }
@@ -2808,6 +2814,63 @@ impl<S: VirtualStorage, G: GraphEncode + Default> Graph<S, G> {
         Ok(report)
     }
 
+    /// Every half-edge a retired entity would cut has to be STATED in the
+    /// fragment — repointed or explicitly deleted.
+    ///
+    /// The cascade in [`Graph::retract`] removes a node's edges without being
+    /// told to, and that is right for a deletion: the assertions are gone anyway.
+    /// A REPLACEMENT is a different claim — "this shape becomes that one" — and a
+    /// connection nobody decided about is exactly the data loss a replacement is
+    /// supposed to make impossible. So the cascade is not allowed to be the
+    /// answer here: the caller names each cut, and a fragment that forgets one is
+    /// refused rather than completed by guessing.
+    ///
+    /// The cost is one scan per deleted node's two traversal faces, bounded by
+    /// its degree.
+    fn check_cut_is_stated(&mut self, fragment: &Fragment<G>) -> Result<()> {
+        if fragment.node_deletes.is_empty() {
+            return Ok(());
+        }
+        let mut stated: BTreeSet<crate::model::graph::EdgeIdentity> = BTreeSet::new();
+        for head in fragment
+            .edge_deletes
+            .iter()
+            .chain(fragment.repoints.iter().map(|(from, _)| from))
+        {
+            let Some(key) = self.key_of(head)? else {
+                continue;
+            };
+            stated.insert((
+                key.src.ns_id(),
+                key.src.pkey.clone(),
+                key.predicate,
+                key.dst.ns_id(),
+                key.dst.pkey.clone(),
+            ));
+        }
+        let mut unaccounted = 0usize;
+        for node in &fragment.node_deletes {
+            let mut incident = self.out_edges(node)?;
+            incident.extend(self.in_edges(node)?);
+            for key in incident {
+                let id = (
+                    key.src.ns_id(),
+                    key.src.pkey.clone(),
+                    key.predicate,
+                    key.dst.ns_id(),
+                    key.dst.pkey.clone(),
+                );
+                if !stated.contains(&id) {
+                    unaccounted += 1;
+                }
+            }
+        }
+        if unaccounted > 0 {
+            return Err(Error::ReplaceIncomplete { unaccounted });
+        }
+        Ok(())
+    }
+
     /// Replace a subgraph: ONE fragment may retract and declare, and the batch
     /// lands as a single state change.
     ///
@@ -2835,6 +2898,7 @@ impl<S: VirtualStorage, G: GraphEncode + Default> Graph<S, G> {
     /// Refusals are the caller's to ignore, exactly as in [`Graph::retract`]: a
     /// head no row holds is nothing to do.
     pub fn replace(&mut self, fragment: Fragment<G>) -> Result<ReplaceReport> {
+        self.check_cut_is_stated(&fragment)?;
         let mut batch = Batch::default();
         let (doomed, nodes, plan) = self.retract_plan(&fragment)?;
         let mut edges = 0;

@@ -2244,9 +2244,13 @@ fn a_replacement_counts_its_two_halves_against_one_base() {
         // Merge person 2 into person 1: its edges are re-pointed (1 -9), its own
         // row is retracted, and the set is re-declared as {1, 3, 9} in the SAME
         // fragment — the cluster is touched by both halves.
-        let mut replacement = Fragment::<Employment>::new([edge(person(1), org(9))]);
+        let mut replacement = Fragment::<Employment>::new([]);
         replacement
             .on_edge_conflict(|_stored, _declared| Employment { weight: 3 })
+            // Every half-edge person 2 leaves behind is STATED: 2-9 moves to
+            // person 1, and 1-2 would become a self-loop, so it goes.
+            .repoint(head(person(2), org(9)), head(person(1), org(9)))
+            .delete_edge(head(person(1), person(2)))
             .delete_node(person(2))
             .cluster(Cluster::nodes(
                 SCOPE,
@@ -2318,6 +2322,7 @@ fn a_repoint_carries_the_payload_it_replaces() {
         let mut replacement = Fragment::<Employment>::new([]);
         replacement
             .repoint(head(person(1), org(9)), head(person(2), org(9)))
+            .delete_edge(head(person(1), person(3)))
             .delete_node(person(1));
         let report = g
             .replace(replacement)
@@ -2346,5 +2351,44 @@ fn a_repoint_carries_the_payload_it_replaces() {
             g.get_edge(&gone).expect("read").is_none(),
             "{engine}: and the head it replaced is gone"
         );
+    }
+}
+
+/// A replacement that leaves a half-edge unstated is REFUSED, and the refusal
+/// leaves nothing behind: the cascade is not allowed to answer "what happens to
+/// this connection" on the caller's behalf.
+#[test]
+fn a_replacement_that_forgets_a_half_edge_is_refused() {
+    for (engine, store) in TestStore::matrix() {
+        let mut g = graph(&store);
+        let mut facts = Fragment::<Employment>::new([
+            edge(person(1), org(9)),
+            edge(person(1), person(3)),
+        ]);
+        facts.on_edge_conflict(|_stored, _declared| Employment { weight: 2 });
+        g.incorporate(facts)
+            .unwrap_or_else(|e| panic!("{engine}: facts: {e}"));
+
+        // person 1 has two incident edges; only one is accounted for.
+        let mut replacement = Fragment::<Employment>::new([]);
+        replacement
+            .repoint(head(person(1), org(9)), head(person(2), org(9)))
+            .delete_node(person(1));
+        match g.replace(replacement) {
+            Err(Error::ReplaceIncomplete { unaccounted }) => {
+                assert_eq!(unaccounted, 1, "{engine}: exactly the unstated one")
+            }
+            other => panic!("{engine}: expected a refusal, got {other:?}"),
+        }
+
+        // And nothing landed: both edges are still there, both endpoints too.
+        let mut g = graph(&store);
+        for head in [head(person(1), org(9)), head(person(1), person(3))] {
+            let key = g.key_of(&head).expect("lookup").expect("interned");
+            assert!(
+                g.get_edge(&key).expect("read").is_some(),
+                "{engine}: a refused replacement writes nothing"
+            );
+        }
     }
 }
