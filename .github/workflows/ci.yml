@@ -10,6 +10,14 @@
 # months while every local run was green. Each workspace is therefore checked by name
 # here, and the release posture (no optional engines) is checked beside `--all-features`
 # because `--all-features` alone had hidden a suite that could not compile by default.
+#
+# Formatting has the mirror-image trap, which is why it is its own matrix: `cargo fmt
+# --all` run from inside a binding directory resolves the ENCLOSING workspace root and
+# formats the fourteen root crates — measured, it even formats a crate that is neither a
+# member nor a path dependency of the binding. So a binding job that says `--all` is
+# re-checking the root workspace under another name, and a binding crate outside the
+# build matrix (`okm-python`, `okm-entry`) is checked by nobody. One job per workspace,
+# scoped with `cargo fmt -- --check`, and root drift is reported once by `workspace`.
 
 name: ci
 
@@ -62,7 +70,7 @@ jobs:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
         with:
-          components: clippy, rustfmt
+          components: clippy
       - uses: Swatinem/rust-cache@v2
         with:
           workspaces: ${{ matrix.dir }}
@@ -71,12 +79,37 @@ jobs:
       - uses: actions/setup-python@v5
         with:
           python-version: "3.14"
-      - name: formatting
-        run: cargo fmt --all -- --check
       - name: clippy
         run: cargo clippy --all-targets -- -D warnings
       - name: tests
         run: cargo test
+
+  # okm-python and okm-entry have no build job here: the first needs the interpreter
+  # linked (`host-tests`) or a wheel, which the jobs below give it; the second has no
+  # tests of its own. Neither was formatted by anything until this matrix existed, and
+  # both had drifted. `cargo fmt -- --check` is deliberately NOT `--all` — see the
+  # header: `--all` would reach up and re-check the root workspace.
+  binding-formatting:
+    name: binding formatting - ${{ matrix.dir }}
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        dir:
+          - bindings/okm-entry
+          - bindings/okm-python
+          - bindings/okm-series-python
+          - bindings/okm-steel
+    defaults:
+      run:
+        working-directory: ${{ matrix.dir }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt
+      - name: formatting
+        run: cargo fmt -- --check
 
   python-wheel:
     name: python wheel round trip
