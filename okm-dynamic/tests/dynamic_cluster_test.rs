@@ -1754,7 +1754,7 @@ fn a_walk_names_a_selection_and_its_boundary_dynamic() {
 
         // Zero hops: the seed alone, every edge of it on the boundary.
         let near = g
-            .subgraph(&person(1), 0, &[])
+            .subgraph(okm_dynamic::Selection::of([person(1)]), 0, &[])
             .unwrap_or_else(|e| panic!("{engine}: walk: {e}"));
         assert_eq!(near.members, vec![person(1)], "{engine}: the seed alone");
         assert!(near.interior.is_empty(), "{engine}: nothing inside yet");
@@ -1766,7 +1766,7 @@ fn a_walk_names_a_selection_and_its_boundary_dynamic() {
 
         // One hop: neighbours join, their edges become the boundary.
         let one = g
-            .subgraph(&person(1), 1, &[])
+            .subgraph(okm_dynamic::Selection::of([person(1)]), 1, &[])
             .unwrap_or_else(|e| panic!("{engine}: walk: {e}"));
         assert_eq!(one.members.len(), 3, "{engine}: 1, 2 and the org");
         assert_eq!(one.interior.len(), 3, "{engine}: every edge among them");
@@ -1780,7 +1780,7 @@ fn a_walk_names_a_selection_and_its_boundary_dynamic() {
 
         // The predicate limits the walk, so it limits what the answer can report.
         let filtered = g
-            .subgraph(&person(1), 1, &["knows"])
+            .subgraph(okm_dynamic::Selection::of([person(1)]), 1, &["knows"])
             .unwrap_or_else(|e| panic!("{engine}: walk: {e}"));
         assert_eq!(filtered.members.len(), 2, "{engine}: only the knows neighbour");
         assert_eq!(filtered.interior.len(), 1, "{engine}: one edge inside");

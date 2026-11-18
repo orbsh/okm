@@ -1657,8 +1657,12 @@ impl<S: VirtualStorage> Graph<S> {
         Ok((doomed, nodes, plan))
     }
 
-    /// Find a subgraph: breadth-first from one entity, `hops` deep, and answer it
+    /// Find a subgraph: breadth-first from a SELECTION, `hops` deep, and answer it
     /// as a [`Cut`].
+    ///
+    /// The seeds are a selection, not one entity: a walk that starts from a set is
+    /// the general case (a neighbourhood pass starts from everything it touched),
+    /// and one entity is the degenerate one — `Selection::of([node])`.
     ///
     /// The dynamic form's counterpart of core's `subgraph`, and the step that
     /// NAMES a selection when nothing has written one. `hops` counts the rings
@@ -1676,16 +1680,23 @@ impl<S: VirtualStorage> Graph<S> {
     /// costs nothing extra.
     pub fn subgraph(
         &mut self,
-        seed: &NodeRef,
+        seeds: Selection,
         hops: u8,
         predicates: &[&str],
     ) -> Result<Cut, String> {
-        let mut members: Vec<NodeRef> = vec![seed.clone()];
-        let mut inside: BTreeSet<([u8; 2], Vec<u8>)> =
-            BTreeSet::from([(seed.ns, seed.pkey.clone())]);
+        let mut members = match seeds {
+            Selection::Cluster(set) => self.node_members(set.kind, set.id)?,
+            Selection::Members(list) => list,
+        };
+        members.sort_by(|left, right| (left.ns, &left.pkey).cmp(&(right.ns, &right.pkey)));
+        members.dedup();
+        let mut inside: BTreeSet<([u8; 2], Vec<u8>)> = members
+            .iter()
+            .map(|node| (node.ns, node.pkey.clone()))
+            .collect();
         let mut seen: BTreeSet<EdgeIdentity> = BTreeSet::new();
         let mut edges: Vec<EdgeKey> = Vec::new();
-        let mut frontier: Vec<NodeRef> = vec![seed.clone()];
+        let mut frontier: Vec<NodeRef> = members.clone();
         for depth in 0..=hops {
             let last = depth == hops;
             let mut next: Vec<NodeRef> = Vec::new();
@@ -1771,55 +1782,16 @@ impl<S: VirtualStorage> Graph<S> {
     /// An interior edge is seen twice (once from each end), so it is deduped by
     /// its tuple; a half-edge is seen once, from the member's side, and its
     /// `member` is the end a rewrite re-attaches — the direction never has to be
-    /// asked for.
-    pub fn cut(&self, selection: Selection) -> Result<Cut, String> {
-        let mut members = match selection {
-            Selection::Cluster(set) => self.node_members(set.kind, set.id)?,
-            Selection::Members(list) => list,
-        };
-        members.sort_by(|left, right| (left.ns, &left.pkey).cmp(&(right.ns, &right.pkey)));
-        members.dedup();
-        let inside: BTreeSet<([u8; 2], Vec<u8>)> = members
-            .iter()
-            .map(|node| (node.ns, node.pkey.clone()))
-            .collect();
-        let mut seen: BTreeSet<EdgeIdentity> = BTreeSet::new();
-        let mut interior = Vec::new();
-        let mut boundary = Vec::new();
-        for member in &members {
-            let outs = self.out_edges(member)?;
-            let ins = self.in_edges(member)?;
-            for (key, leaves) in outs
-                .into_iter()
-                .map(|key| (key, true))
-                .chain(ins.into_iter().map(|key| (key, false)))
-            {
-                let far = if leaves { key.dst.clone() } else { key.src.clone() };
-                if inside.contains(&(far.ns, far.pkey.clone())) {
-                    let row = (
-                        key.src.ns_id(),
-                        key.src.pkey.clone(),
-                        key.predicate,
-                        key.dst.ns_id(),
-                        key.dst.pkey.clone(),
-                    );
-                    if seen.insert(row) {
-                        interior.push(key);
-                    }
-                    continue;
-                }
-                boundary.push(HalfEdge {
-                    key,
-                    member: member.clone(),
-                    far,
-                });
-            }
-        }
-        Ok(Cut {
-            members,
-            interior,
-            boundary,
-        })
+    /// Cut a selection: one half-edge per edge that crosses the boundary, plus the
+    /// edges that die inside it.
+    ///
+    /// This is [`subgraph`](Self::subgraph) with no rings: the answer for a
+    /// selection you already hold, without asking the graph to grow it. One
+    /// implementation, so the two can never disagree about what is inside or what
+    /// crosses. (`&mut` because a walk may filter by predicate, and the filtered
+    /// faces are read through the same handle.)
+    pub fn cut(&mut self, selection: Selection) -> Result<Cut, String> {
+        self.subgraph(selection, 0, &[])
     }
 
     /// Persist a selection as a node set: the one step that turns a computed

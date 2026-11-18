@@ -2412,7 +2412,7 @@ fn a_walk_names_a_selection_and_its_boundary() {
 
         // Zero hops: the seed alone, every edge of it on the boundary.
         let near = g
-            .subgraph(&person(1), 0, &[])
+            .subgraph(Selection::of([person(1)]), 0, &[])
             .unwrap_or_else(|e| panic!("{engine}: walk: {e}"));
         assert_eq!(near.members, vec![person(1)], "{engine}: the seed alone");
         assert!(near.interior.is_empty(), "{engine}: nothing is inside yet");
@@ -2421,7 +2421,7 @@ fn a_walk_names_a_selection_and_its_boundary() {
         // One hop: the ring joins the selection, and ITS edges are the boundary —
         // including the one out to person(3), who is not in it.
         let one = g
-            .subgraph(&person(1), 1, &[])
+            .subgraph(Selection::of([person(1)]), 1, &[])
             .unwrap_or_else(|e| panic!("{engine}: walk: {e}"));
         assert_eq!(one.members.len(), 3, "{engine}: 1, 2 and the org");
         assert_eq!(one.interior.len(), 3, "{engine}: every edge among them");
@@ -2429,10 +2429,30 @@ fn a_walk_names_a_selection_and_its_boundary() {
         assert_eq!(one.boundary[0].member, org(9), "{engine}: the inside end");
         assert_eq!(one.boundary[0].far, person(3), "{engine}: the end to re-attach");
 
+        // The seeds are a SET: two starting points answer the union of their rings,
+        // and the edge between them is interior, not a crossing.
+        let pair = g
+            .subgraph(Selection::of([person(3), person(1)]), 1, &[])
+            .unwrap_or_else(|e| panic!("{engine}: walk: {e}"));
+        assert_eq!(
+            pair.members.len(),
+            4,
+            "{engine}: both seeds, the org they share and 1's other neighbour"
+        );
+        assert_eq!(
+            pair.interior.len(),
+            4,
+            "{engine}: the edge out to 3 became interior by taking 3 as a seed"
+        );
+        assert!(
+            pair.boundary.is_empty(),
+            "{engine}: and nothing crosses out of the union"
+        );
+
         // The predicate limits the WALK, and therefore what the answer sees: an
         // edge the walk does not take is an edge the boundary cannot report.
         let filtered = g
-            .subgraph(&person(1), 1, &["knows"])
+            .subgraph(Selection::of([person(1)]), 1, &["knows"])
             .unwrap_or_else(|e| panic!("{engine}: walk: {e}"));
         assert_eq!(
             filtered.members,

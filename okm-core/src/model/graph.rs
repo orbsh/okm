@@ -1309,8 +1309,12 @@ impl<S: VirtualStorage, E: GraphEncode> Graph<S, E> {
         self.edges_from_rows(rows)
     }
 
-    /// Find a subgraph: breadth-first from one entity, `hops` deep, and answer it
+    /// Find a subgraph: breadth-first from a SELECTION, `hops` deep, and answer it
     /// as a [`Cut`].
+    ///
+    /// The seeds are a selection, not one entity: a walk that starts from a set is
+    /// the general case (a neighbourhood pass starts from everything it touched),
+    /// and one entity is the degenerate one — `Selection::of([node])`.
     ///
     /// This is the step that NAMES a selection when nothing has written one. A
     /// cluster is a partition someone already decided; this walks the faces and
@@ -1335,15 +1339,17 @@ impl<S: VirtualStorage, E: GraphEncode> Graph<S, E> {
     /// always answer an empty boundary, which is why it is stated this way.
     pub fn subgraph(
         &mut self,
-        seed: &NodeRef,
+        seeds: Selection,
         hops: u8,
         predicates: &[&str],
     ) -> crate::error::Result<Cut> {
         // The frontier, and the set that decides membership: the same pair of
         // shapes a cluster read produces, built by walking instead of reading.
-        let mut members: Vec<NodeRef> = vec![seed.clone()];
-        let mut inside: BTreeSet<([u8; 2], Vec<u8>)> =
-            BTreeSet::from([(seed.ns, seed.pkey.clone())]);
+        let mut members = self.resolve_selection(seeds)?;
+        let mut inside: BTreeSet<([u8; 2], Vec<u8>)> = members
+            .iter()
+            .map(|node| (node.ns, node.pkey.clone()))
+            .collect();
         // Every edge the walk touched, deduped by identity: a row is seen once per
         // incident end, and both ends of an interior edge get visited.
         let mut seen: BTreeSet<EdgeIdentity> = BTreeSet::new();
@@ -1353,7 +1359,7 @@ impl<S: VirtualStorage, E: GraphEncode> Graph<S, E> {
         // ends are NOT added. Scanning to `hops` and adding what you find would
         // answer an empty boundary every time — a k-hop neighbourhood's own
         // boundary is empty by construction.
-        let mut frontier: Vec<NodeRef> = vec![seed.clone()];
+        let mut frontier: Vec<NodeRef> = members.clone();
         for depth in 0..=hops {
             let last = depth == hops;
             let mut next: Vec<NodeRef> = Vec::new();
@@ -1472,71 +1478,12 @@ impl<S: VirtualStorage, E: GraphEncode> Graph<S, E> {
     /// end named. The direction is therefore never in question: `member` is the
     /// end a rewrite re-attaches, `far` is the one it re-attaches to.
     ///
-    /// What a replacement is built from: `boundary` is what has to be
-    /// re-attached and `interior` is what dies with the selection (kept because a
-    /// rewrite replaces it too, and re-reading would be a second pass). Reading
-    /// it costs one scan per member's two traversal faces (0x06/0x07) — the
-    /// degree of the selection, not the size of the graph.
-    ///
-    /// An interior edge is seen twice (once from each end), so it is deduped by
-    /// its head; a half-edge is seen once, from the member's side.
+    /// This is [`subgraph`](Self::subgraph) with no rings: the answer for a
+    /// selection you already hold, without asking the graph to grow it. One
+    /// implementation, so the two can never disagree about what is inside or what
+    /// crosses.
     pub fn cut(&mut self, selection: Selection) -> crate::error::Result<Cut> {
-        let members = self.resolve_selection(selection)?;
-        let inside: std::collections::BTreeSet<([u8; 2], Vec<u8>)> = members
-            .iter()
-            .map(|node| (node.ns, node.pkey.clone()))
-            .collect();
-        let mut seen: std::collections::BTreeSet<EdgeIdentity> = std::collections::BTreeSet::new();
-        let mut interior = Vec::new();
-        let mut boundary = Vec::new();
-        for member in &members {
-            let outs = self.out_edges(member)?;
-            let ins = self.in_edges(member)?;
-            for (key, leaves) in outs
-                .into_iter()
-                .map(|key| (key, true))
-                .chain(ins.into_iter().map(|key| (key, false)))
-            {
-                let far = if leaves { key.dst.clone() } else { key.src.clone() };
-                let Some(predicate) = self.predicate_vocab_name(key.predicate)? else {
-                    return Err(crate::error::Error::Corrupt {
-                        what: "a boundary half-edge names a predicate the vocabulary does not hold"
-                            .into(),
-                    });
-                };
-                if inside.contains(&(far.ns, far.pkey.clone())) {
-                    let row = (
-                        key.src.ns_id(),
-                        key.src.pkey.clone(),
-                        key.predicate,
-                        key.dst.ns_id(),
-                        key.dst.pkey.clone(),
-                    );
-                    if seen.insert(row) {
-                        interior.push(EdgeHead {
-                            src: key.src,
-                            dst: key.dst,
-                            predicate,
-                        });
-                    }
-                    continue;
-                }
-                boundary.push(HalfEdge {
-                    edge: EdgeHead {
-                        src: key.src,
-                        dst: key.dst,
-                        predicate,
-                    },
-                    member: member.clone(),
-                    far,
-                });
-            }
-        }
-        Ok(Cut {
-            members,
-            interior,
-            boundary,
-        })
+        self.subgraph(selection, 0, &[])
     }
 
     /// Predicate-qualified traversal (0x08/0x09): all edges of one predicate
