@@ -1710,7 +1710,7 @@ fn a_cut_answers_the_boundary_of_a_selection() {
         let scope = report.node_sets[0];
 
         let sub = g
-            .cut(scope)
+            .cut(scope.into())
             .unwrap_or_else(|e| panic!("{engine}: subgraph: {e}"));
         assert_eq!(sub.members.len(), 2, "{engine}: both members");
         assert_eq!(sub.interior.len(), 1, "{engine}: the knows edge is inside");
@@ -1787,6 +1787,35 @@ fn a_walk_names_a_selection_and_its_boundary_dynamic() {
         assert!(
             filtered.boundary.is_empty(),
             "{engine}: and nothing crosses out of two"
+        );
+    }
+}
+
+/// A computed selection can be persisted on the dynamic form too, and the stored
+/// set cuts like any other.
+#[test]
+fn a_selection_can_be_persisted_dynamic() {
+    for (engine, store) in TestStore::matrix() {
+        let mut g = graph(&store);
+        let set = g
+            .materialize(
+                okm_dynamic::Selection::of([person(1), person(2), person(2)]),
+                "scope",
+                Dict::new(),
+            )
+            .unwrap_or_else(|e| panic!("{engine}: materialize: {e}"));
+
+        let cut = g
+            .cut(set.into())
+            .unwrap_or_else(|e| panic!("{engine}: cut: {e}"));
+        assert_eq!(
+            cut.members.len(),
+            2,
+            "{engine}: two member rows — the duplicate was dropped"
+        );
+        assert!(
+            cut.interior.is_empty() && cut.boundary.is_empty(),
+            "{engine}: and no edge touches them"
         );
     }
 }

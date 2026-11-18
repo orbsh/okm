@@ -17,7 +17,7 @@
 
 use okm_async::TestStore;
 use okm_core::engine::storage::prefix_end;
-use okm_core::{Cluster, ClusterRef, Decl, Document, DocumentEncode, EdgeHead, EdgeKey, EdgeSet, NodeSet, Error, Fragment, Graph, GraphEncode, HandleKey, Hyperedges, KeyEncode, Kind, NodeRef, Seekable, VirtualStorage, edge_cluster_key};
+use okm_core::{Cluster, ClusterRef, Decl, Document, DocumentEncode, EdgeHead, EdgeKey, EdgeSet, NodeSet, Error, Fragment, Graph, GraphEncode, HandleKey, Hyperedges, KeyEncode, Kind, NodeRef, Seekable, Selection, VirtualStorage, edge_cluster_key};
 use okm_query::intersect_seek;
 use okm_value::{Dict, Variant};
 
@@ -2442,6 +2442,41 @@ fn a_walk_names_a_selection_and_its_boundary() {
         assert!(
             filtered.interior.is_empty() && filtered.boundary.is_empty(),
             "{engine}: and no edge was seen either"
+        );
+    }
+}
+
+/// A selection that came from a walk (or from application logic) can be PERSISTED
+/// as a node set — the one step that turns a computed selection into a partition,
+/// so a caller never hand-builds the cluster declaration to keep one.
+#[test]
+fn a_selection_can_be_persisted_as_a_node_set() {
+    for (engine, store) in TestStore::matrix() {
+        let mut g = graph(&store);
+        // These two entities have no edge at all: a node set can still hold them
+        // (ADR-0068), which is exactly why a computed selection needs this verb.
+        let set = g
+            .materialize(
+                Selection::of([person(1), person(2), person(2)]),
+                SCOPE,
+                Dict::new(),
+            )
+            .unwrap_or_else(|e| panic!("{engine}: materialize: {e}"));
+
+        // The read-back goes through the STORED set (`Selection::Cluster` reads the
+        // member face), so a member row that did not land would answer short here.
+        // And the stored set cuts like any other selection.
+        let cut = g
+            .cut(set.into())
+            .unwrap_or_else(|e| panic!("{engine}: cut: {e}"));
+        assert_eq!(
+            cut.members.len(),
+            2,
+            "{engine}: two member rows — the duplicate was dropped"
+        );
+        assert!(
+            cut.interior.is_empty() && cut.boundary.is_empty(),
+            "{engine}: and no edge touches them"
         );
     }
 }

@@ -2871,6 +2871,36 @@ impl<S: VirtualStorage, G: GraphEncode + Default> Graph<S, G> {
         Ok(())
     }
 
+    /// Persist a selection as a cluster: the members become rows of a node set,
+    /// and the answer is the set's identity.
+    ///
+    /// `subgraph` and `cut` produce selections that exist only in memory — right
+    /// for a read, wrong for one that will be asked about again. This is the one
+    /// step that turns a computed selection into a stored partition, so an
+    /// application never hand-builds the cluster declaration to keep one.
+    ///
+    /// It is a WRITE: one batch, members stated as they are. A member the graph
+    /// never saw has no handle, so it contributes no row — the set records what
+    /// exists, not what was asked for.
+    pub fn materialize(
+        &mut self,
+        selection: super::graph::Selection,
+        kind: &str,
+        payload: Dict,
+    ) -> Result<super::hyper::NodeSet> {
+        let members = self.resolve_selection(selection)?;
+        let mut fragment: Fragment<G> = Fragment::new([]);
+        fragment.cluster(Cluster::nodes(kind, payload, members));
+        let report = self.incorporate(fragment)?;
+        report
+            .node_sets
+            .first()
+            .cloned()
+            .ok_or(crate::error::Error::Corrupt {
+                what: "a materialized selection allocated no node set".into(),
+            })
+    }
+
     /// Replace a subgraph: ONE fragment may retract and declare, and the batch
     /// lands as a single state change.
     ///

@@ -1441,6 +1441,29 @@ impl<S: VirtualStorage, E: GraphEncode> Graph<S, E> {
         })
     }
 
+    /// A selection's members, resolved, sorted and deduped — one answer for every
+    /// verb that takes a selection, so `cut` and `materialize` cannot disagree about
+    /// who is in it.
+    ///
+    /// A member the graph never saw has no handle, so it has no face and
+    /// contributes nothing; that is not an error (an id may name an entity that was
+    /// never written).
+    pub(crate) fn resolve_selection(
+        &mut self,
+        selection: Selection,
+    ) -> crate::error::Result<Vec<NodeRef>> {
+        let mut members = match selection {
+            Selection::Cluster(set) => {
+                let handles = super::hyper::node_member_handles(&self.store, &self.ns, set.into())?;
+                self.handles().nodes(&handles)?
+            }
+            Selection::Members(list) => list,
+        };
+        members.sort_by(|left, right| (left.ns, &left.pkey).cmp(&(right.ns, &right.pkey)));
+        members.dedup();
+        Ok(members)
+    }
+
     /// Cut a selection: one half-edge per edge that crosses the boundary, plus
     /// the edges that die inside it.
     ///
@@ -1458,20 +1481,7 @@ impl<S: VirtualStorage, E: GraphEncode> Graph<S, E> {
     /// An interior edge is seen twice (once from each end), so it is deduped by
     /// its head; a half-edge is seen once, from the member's side.
     pub fn cut(&mut self, selection: Selection) -> crate::error::Result<Cut> {
-        let members = match selection {
-            Selection::Cluster(set) => {
-                let handles =
-                    super::hyper::node_member_handles(&self.store, &self.ns, set.into())?;
-                self.handles().nodes(&handles)?
-            }
-            // A member the graph never saw has no handle, so it has no face and
-            // contributes nothing; it is not an error (an id may name an entity
-            // that was never written).
-            Selection::Members(list) => list,
-        };
-        let mut members = members;
-        members.sort_by(|left, right| (left.ns, &left.pkey).cmp(&(right.ns, &right.pkey)));
-        members.dedup();
+        let members = self.resolve_selection(selection)?;
         let inside: std::collections::BTreeSet<([u8; 2], Vec<u8>)> = members
             .iter()
             .map(|node| (node.ns, node.pkey.clone()))

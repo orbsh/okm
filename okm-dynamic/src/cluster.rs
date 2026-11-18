@@ -72,6 +72,7 @@ use okm_core::storage::{Batch, BatchStore, VirtualStorage, prefix_end, scan_suff
 use okm_value::{Dict, Variant, decode_named};
 
 use crate::graph::{DynEdge, Graph};
+pub use okm_core::model::graph::Selection;
 
 /// An edge's tuple as bytes: `(src ns, src pkey, predicate id, dst ns, dst pkey)`.
 /// The tuple IS the identity (ADR-0067), so this is what "the same edge" means to
@@ -1771,8 +1772,13 @@ impl<S: VirtualStorage> Graph<S> {
     /// its tuple; a half-edge is seen once, from the member's side, and its
     /// `member` is the end a rewrite re-attaches — the direction never has to be
     /// asked for.
-    pub fn cut(&self, set: NodeSet) -> Result<Cut, String> {
-        let members = self.node_members(set.kind, set.id)?;
+    pub fn cut(&self, selection: Selection) -> Result<Cut, String> {
+        let mut members = match selection {
+            Selection::Cluster(set) => self.node_members(set.kind, set.id)?,
+            Selection::Members(list) => list,
+        };
+        members.sort_by(|left, right| (left.ns, &left.pkey).cmp(&(right.ns, &right.pkey)));
+        members.dedup();
         let inside: BTreeSet<([u8; 2], Vec<u8>)> = members
             .iter()
             .map(|node| (node.ns, node.pkey.clone()))
@@ -1814,6 +1820,34 @@ impl<S: VirtualStorage> Graph<S> {
             interior,
             boundary,
         })
+    }
+
+    /// Persist a selection as a node set: the one step that turns a computed
+    /// selection (a walk, an index read, application logic) into a stored
+    /// partition, so a caller never hand-builds the cluster declaration to keep one.
+    ///
+    /// It is a WRITE, one batch. A member the graph never saw still has no handle,
+    /// so it contributes no row — the set records what exists.
+    pub fn materialize(
+        &mut self,
+        selection: Selection,
+        kind: &str,
+        payload: Dict,
+    ) -> Result<NodeSet, String> {
+        let mut members = match selection {
+            Selection::Cluster(set) => self.node_members(set.kind, set.id)?,
+            Selection::Members(list) => list,
+        };
+        members.sort_by(|left, right| (left.ns, &left.pkey).cmp(&(right.ns, &right.pkey)));
+        members.dedup();
+        let mut fragment = DynFragment::new([]);
+        fragment.cluster(Cluster::nodes(kind, payload, members));
+        let report = self.incorporate(fragment)?;
+        report
+            .node_sets
+            .first()
+            .cloned()
+            .ok_or_else(|| "a materialized selection allocated no node set".to_string())
     }
 
     /// Replace a shape: ONE fragment may retract and declare, and the batch lands

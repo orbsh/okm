@@ -73,7 +73,7 @@ pub use okm_value::{CodecError, Dict, Variant as Value};
 pub use cluster::{
     Cluster, ClusterConflict, ClusterRef, ClusterRow, Cut, Decl, DerivedReport, DynFragment,
     EdgeConflict, HalfEdge, Kind, MEMBER_COUNT, NODE_COUNT, ReplaceReport, RetractReport,
-    WriteReport, intern_kind, interned_kinds, interned_label,
+    Selection, WriteReport, intern_kind, interned_kinds, interned_label,
 };
 pub use collection::DynamicCollection;
 pub use encode::{encode_fields, encode_key, encode_payload};
