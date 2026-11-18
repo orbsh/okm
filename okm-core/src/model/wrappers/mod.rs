@@ -8,12 +8,12 @@
 //! document-group regime, not here.
 
 mod bytes;
-mod secret;
 pub mod offset;
 mod optional;
 mod quant;
 mod ref_mod;
 mod refs;
+mod secret;
 pub mod uuid;
 pub mod varint;
 pub use uuid::{Uuid4, Uuid7};
@@ -21,11 +21,11 @@ pub mod vector;
 pub mod wire;
 
 pub use bytes::Bytes;
-pub use secret::Secret;
 pub use offset::{Offset, offset_decode, offset_encode};
 pub use optional::{Option, OptionalEnc, WireWidth};
 pub use quant::{Quant, dequantize, quantize, wire_to_be_bytes};
 pub use ref_mod::Ref;
 pub use refs::Refs;
+pub use secret::Secret;
 pub use varint::{VarInt, VarIntEnc};
 pub use vector::{Vector, VectorElem};

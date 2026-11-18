@@ -36,13 +36,13 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 use okm_async::TestStore;
 use okm_core::engine::storage::{ExternalScan, ScanIter};
 use okm_core::error::Result as CoreResult;
+use okm_core::model::hyper::intern_kind;
 use okm_core::schema::CollectionSchema;
 use okm_core::{
     DocumentEncode, EdgeKey, EdgeStep, GraphEncode, HandleKey, KeyEncode, NodeRef, Seekable,
     VirtualStorage, write_slot,
 };
-use okm_core::model::hyper::intern_kind;
-use okm_dynamic::{Cluster, Decl, DynEdge, DynFragment, Graph, Kind, EdgeSet, NodeSet};
+use okm_dynamic::{Cluster, Decl, DynEdge, DynFragment, EdgeSet, Graph, Kind, NodeSet};
 use okm_query::intersect_seek;
 use okm_value::{Dict, Variant};
 
@@ -214,13 +214,20 @@ fn every_cluster_face_round_trips_at_the_adr_layout() {
             )),
             Decl::edge(edge(person(2), org(9), "works_at")),
         ]);
-        fragment.cluster(Cluster::edges("community", attrs(&[("label", Variant::Str("acme".into()))])));
+        fragment.cluster(Cluster::edges(
+            "community",
+            attrs(&[("label", Variant::Str("acme".into()))]),
+        ));
         let report = g
             .incorporate(fragment)
             .unwrap_or_else(|e| panic!("{engine}: commit: {e}"));
 
         assert_eq!(report.edges.len(), 2, "{engine}: one edge per edge decl");
-        assert_eq!(report.edge_sets.len() + report.node_sets.len(), 1, "{engine}: one id per cluster");
+        assert_eq!(
+            report.edge_sets.len() + report.node_sets.len(),
+            1,
+            "{engine}: one id per cluster"
+        );
         let id = report.edge_sets[0].id;
         assert_eq!(id, 1, "{engine}: ids start at 1 — 0 is \"no parent\"");
 
@@ -232,11 +239,16 @@ fn every_cluster_face_round_trips_at_the_adr_layout() {
             .unwrap_or_else(|| panic!("{engine}: cluster row"));
         assert_eq!(&row[..8], &0u64.to_be_bytes(), "{engine}: root head");
         assert_eq!(
-            store.get(&cluster_face(kid(&store, COMMUNITY), id, &[0x00])).expect("read"),
+            store
+                .get(&cluster_face(kid(&store, COMMUNITY), id, &[0x00]))
+                .expect("read"),
             None,
             "{engine}: the cluster row is the only row of its face"
         );
-        let stored = g.lookup(kid(&store, COMMUNITY), id).expect("lookup").expect("row");
+        let stored = g
+            .lookup(kid(&store, COMMUNITY), id)
+            .expect("lookup")
+            .expect("row");
         assert_eq!(stored.parent, 0, "{engine}: no parent");
         assert_eq!(
             stored.payload.get("label"),
@@ -307,7 +319,8 @@ fn every_cluster_face_round_trips_at_the_adr_layout() {
         let child = g
             .incorporate(fragment)
             .unwrap_or_else(|e| panic!("{engine}: child: {e}"))
-            .edge_sets[0].id;
+            .edge_sets[0]
+            .id;
 
         assert_eq!(
             g.children(kid(&store, COMMUNITY), id).expect("children"),
@@ -345,7 +358,10 @@ fn a_double_add_is_one_row_and_leaves_the_attributes_standing() {
             )),
             Decl::edge(edge(person(2), org(2), "works_at")),
         ]);
-        fragment.cluster(Cluster::edges("community", attrs(&[("label", Variant::Str("a".to_string()))])));
+        fragment.cluster(Cluster::edges(
+            "community",
+            attrs(&[("label", Variant::Str("a".to_string()))]),
+        ));
         let first = g
             .incorporate(fragment)
             .unwrap_or_else(|e| panic!("{engine}: commit: {e}"));
@@ -654,7 +670,9 @@ fn member_of_answers_before_and_after_a_retract() {
             "{engine}: the cluster's remaining member rows went with it"
         );
         assert!(
-            g.lookup(kid(&store, COMMUNITY), id).expect("lookup").is_none(),
+            g.lookup(kid(&store, COMMUNITY), id)
+                .expect("lookup")
+                .is_none(),
             "{engine}: the cluster row is gone"
         );
     }
@@ -676,7 +694,10 @@ fn the_derived_faces_rebuild_to_the_write_paths_bytes() {
             Decl::edge(edge(person(2), org(2), "works_at")),
             Decl::edge(edge(person(3), org(3), "works_at")),
         ]);
-        fragment.cluster(Cluster::edges("community", attrs(&[("label", Variant::Str("a".to_string()))])));
+        fragment.cluster(Cluster::edges(
+            "community",
+            attrs(&[("label", Variant::Str("a".to_string()))]),
+        ));
         let first = g
             .incorporate(fragment)
             .unwrap_or_else(|e| panic!("{engine}: first: {e}"));
@@ -746,7 +767,8 @@ fn the_derived_faces_rebuild_to_the_write_paths_bytes() {
         );
         // Derived rows are an INDEX, not a second truth.
         assert_eq!(
-            g.edge_members(kid(&store, COMMUNITY), parent).expect("members"),
+            g.edge_members(kid(&store, COMMUNITY), parent)
+                .expect("members"),
             ids,
             "{engine}: the authority was never touched"
         );
@@ -1195,7 +1217,9 @@ fn the_two_verbs_refuse_each_others_declarations() {
             "{engine}: the row states the count it has"
         );
         assert_eq!(
-            g.edge_members(kid(&store, COMMUNITY), one).expect("members").len(),
+            g.edge_members(kid(&store, COMMUNITY), one)
+                .expect("members")
+                .len(),
             1,
             "{engine}: one member row, written in the same batch"
         );
@@ -1317,15 +1341,25 @@ fn a_cluster_created_with_no_members_at_all_is_a_scope() {
         // a statement — "something used to be here and is gone now" — so the row
         // it makes is legal and says zero.
         let mut fragment = DynFragment::new([]);
-        fragment.cluster(Cluster::edges("scope", attrs(&[("label", Variant::Str("gone".to_string()))])));
+        fragment.cluster(Cluster::edges(
+            "scope",
+            attrs(&[("label", Variant::Str("gone".to_string()))]),
+        ));
         let report = g
             .incorporate(fragment)
             .expect("an empty scope is a declared scope");
-        assert_eq!(report.edge_sets.len() + report.node_sets.len(), 1, "{engine}: one id allocated");
+        assert_eq!(
+            report.edge_sets.len() + report.node_sets.len(),
+            1,
+            "{engine}: one id allocated"
+        );
         assert!(report.edges.is_empty(), "{engine}: no edge declared");
         let scope = report.edge_sets[0].id;
 
-        let row = g.lookup(kid(&store, SCOPE), scope).expect("lookup").expect("row");
+        let row = g
+            .lookup(kid(&store, SCOPE), scope)
+            .expect("lookup")
+            .expect("row");
         assert_eq!(
             g.edge_count(kid(&store, SCOPE), scope).expect("count"),
             0,
@@ -1337,7 +1371,9 @@ fn a_cluster_created_with_no_members_at_all_is_a_scope() {
             "{engine}: the payload is the statement the scope makes"
         );
         assert!(
-            g.edge_members(kid(&store, SCOPE), scope).expect("members").is_empty(),
+            g.edge_members(kid(&store, SCOPE), scope)
+                .expect("members")
+                .is_empty(),
             "{engine}: an empty member list, not an error"
         );
         assert_eq!(
@@ -1415,7 +1451,8 @@ fn a_node_cluster_holds_an_entity_that_has_no_edge() {
             "{engine}: the declared entity is a member, resolved at the boundary"
         );
         assert!(
-            g.node_member_of(kid(&store, SCOPE), scope, &lonely).expect("point read"),
+            g.node_member_of(kid(&store, SCOPE), scope, &lonely)
+                .expect("point read"),
             "{engine}: the member face's exact key answers"
         );
         assert_eq!(
@@ -1463,7 +1500,8 @@ fn retracting_a_node_takes_its_own_memberships() {
             "{engine}: a node whose only trace is a membership still counts"
         );
         assert!(
-            !g.node_member_of(kid(&store, SCOPE), scope, &member).expect("point read"),
+            !g.node_member_of(kid(&store, SCOPE), scope, &member)
+                .expect("point read"),
             "{engine}: the membership went with the entity"
         );
         assert_eq!(
@@ -1495,8 +1533,10 @@ fn retracting_an_edge_leaves_every_node_cluster_alone() {
         let cluster = report.node_sets[0].id;
         assert_eq!(
             (
-                g.edge_count(kid(&store, COMMUNITY), cluster).expect("count"),
-                g.node_count(kid(&store, COMMUNITY), cluster).expect("count")
+                g.edge_count(kid(&store, COMMUNITY), cluster)
+                    .expect("count"),
+                g.node_count(kid(&store, COMMUNITY), cluster)
+                    .expect("count")
             ),
             (0, 1),
             "{engine}: an entity group holds the entity and no assertion"
@@ -1507,16 +1547,19 @@ fn retracting_an_edge_leaves_every_node_cluster_alone() {
         g.retract(retract).expect("retract");
 
         assert!(
-            g.node_member_of(kid(&store, COMMUNITY), cluster, &src).expect("point read"),
+            g.node_member_of(kid(&store, COMMUNITY), cluster, &src)
+                .expect("point read"),
             "{engine}: deleting an assertion does not remove an entity from a group"
         );
         assert_eq!(
-            g.edge_count(kid(&store, COMMUNITY), cluster).expect("count"),
+            g.edge_count(kid(&store, COMMUNITY), cluster)
+                .expect("count"),
             0,
             "{engine}: the edge member row left"
         );
         assert_eq!(
-            g.node_count(kid(&store, COMMUNITY), cluster).expect("count"),
+            g.node_count(kid(&store, COMMUNITY), cluster)
+                .expect("count"),
             1,
             "{engine}: the entity stayed"
         );
@@ -1527,9 +1570,11 @@ fn retracting_an_edge_leaves_every_node_cluster_alone() {
 fn the_node_index_rebuilds_from_the_node_member_rows_alone() {
     for (engine, store) in TestStore::matrix() {
         let mut fragment = DynFragment::new([]);
-        fragment.cluster(
-            Cluster::nodes("scope", attrs(&[]), [person(1), person(2), org(1)]),
-        );
+        fragment.cluster(Cluster::nodes(
+            "scope",
+            attrs(&[]),
+            [person(1), person(2), org(1)],
+        ));
         let mut g = graph(&store);
         g.incorporate(fragment).expect("commit");
         let written = face(&store, 0x13);
@@ -1563,12 +1608,21 @@ fn removing_a_declared_member_leaves_the_entity_alone() {
         removal.remove_nodes(NodeSet::new(kid(&store, SCOPE), scope), [a.clone()]);
         g.incorporate(removal).expect("removal");
 
-        assert_eq!(g.node_members(kid(&store, SCOPE), scope).expect("nodes"), vec![b.clone()], "{engine}");
+        assert_eq!(
+            g.node_members(kid(&store, SCOPE), scope).expect("nodes"),
+            vec![b.clone()],
+            "{engine}"
+        );
         assert!(
-            !g.node_member_of(kid(&store, SCOPE), scope, &a).expect("point read"),
+            !g.node_member_of(kid(&store, SCOPE), scope, &a)
+                .expect("point read"),
             "{engine}: the declared row went"
         );
-        assert_eq!(g.node_count(kid(&store, SCOPE), scope).expect("count"), 1, "{engine}");
+        assert_eq!(
+            g.node_count(kid(&store, SCOPE), scope).expect("count"),
+            1,
+            "{engine}"
+        );
         assert!(g.node_sets_of(&a).expect("mirror").is_empty(), "{engine}");
         assert_eq!(face(&store, 0x12).len(), 1, "{engine}: one member row left");
         assert_eq!(face(&store, 0x13).len(), 1, "{engine}: one mirror row left");
@@ -1596,15 +1650,25 @@ fn a_removed_declaration_leaves_the_assertion_alone() {
         g.incorporate(removal).expect("removal");
 
         assert!(
-            !g.node_member_of(kid(&store, SCOPE), scope, &src).expect("point read"),
+            !g.node_member_of(kid(&store, SCOPE), scope, &src)
+                .expect("point read"),
             "{engine}: the declared half is what the verb speaks for"
         );
-        assert!(g.node_members(kid(&store, SCOPE), scope).expect("nodes").is_empty(), "{engine}");
+        assert!(
+            g.node_members(kid(&store, SCOPE), scope)
+                .expect("nodes")
+                .is_empty(),
+            "{engine}"
+        );
         // No EDGE group ever held it: membership is declared per set, and this
         // verb speaks for the entity set alone.
         let via = g.edge_sets_of(&report.edges[0]).expect("edge sets");
         assert!(via.is_empty(), "{engine}: no edge set names the assertion");
-        assert_eq!(g.edge_count(kid(&store, SCOPE), scope).expect("count"), 0, "{engine}");
+        assert_eq!(
+            g.edge_count(kid(&store, SCOPE), scope).expect("count"),
+            0,
+            "{engine}"
+        );
     }
 }
 
@@ -1630,9 +1694,7 @@ fn a_repoint_carries_its_attributes_and_the_cut_is_checked() {
 
         // Merge person 1 into person 2: the works_at edge moves, the knows edge
         // has nowhere to go and is stated as deleted.
-        let knows = g
-            .key_of(&edge(person(1), person(3), "knows"))
-            .expect("key");
+        let knows = g.key_of(&edge(person(1), person(3), "knows")).expect("key");
         let mut replacement = DynFragment::new([]);
         replacement
             .repoint(
@@ -1645,11 +1707,13 @@ fn a_repoint_carries_its_attributes_and_the_cut_is_checked() {
             .replace(replacement)
             .unwrap_or_else(|e| panic!("{engine}: replace: {e}"));
         assert_eq!(report.nodes, 1, "{engine}: one entity retired");
-        assert_eq!(report.written.edges.len(), 1, "{engine}: one moved assertion");
+        assert_eq!(
+            report.written.edges.len(),
+            1,
+            "{engine}: one moved assertion"
+        );
 
-        let moved = g
-            .key_of(&edge(person(2), org(9), "works_at"))
-            .expect("key");
+        let moved = g.key_of(&edge(person(2), org(9), "works_at")).expect("key");
         let body = g
             .get_edge(&moved)
             .expect("read")
@@ -1660,9 +1724,7 @@ fn a_repoint_carries_its_attributes_and_the_cut_is_checked() {
             "{engine}: the attributes travelled with the assertion"
         );
 
-        let gone = g
-            .key_of(&edge(person(1), org(9), "works_at"))
-            .expect("key");
+        let gone = g.key_of(&edge(person(1), org(9), "works_at")).expect("key");
         assert!(
             g.get_edge(&gone).expect("read").is_none(),
             "{engine}: and the head it replaced is gone"
@@ -1699,11 +1761,7 @@ fn a_cut_answers_the_boundary_of_a_selection() {
             Decl::edge(edge(person(3), org(7), "works_at")),
         ]);
         facts.on_edge_conflict(|_stored, declared| declared.clone());
-        facts.cluster(Cluster::nodes(
-            "scope",
-            Dict::new(),
-            [person(1), person(2)],
-        ));
+        facts.cluster(Cluster::nodes("scope", Dict::new(), [person(1), person(2)]));
         let report = g
             .incorporate(facts)
             .unwrap_or_else(|e| panic!("{engine}: write: {e}"));
@@ -1714,7 +1772,11 @@ fn a_cut_answers_the_boundary_of_a_selection() {
             .unwrap_or_else(|e| panic!("{engine}: subgraph: {e}"));
         assert_eq!(sub.members.len(), 2, "{engine}: both members");
         assert_eq!(sub.interior.len(), 1, "{engine}: the knows edge is inside");
-        assert_eq!(sub.interior[0].src, person(1), "{engine}: and it is that one");
+        assert_eq!(
+            sub.interior[0].src,
+            person(1),
+            "{engine}: and it is that one"
+        );
         assert_eq!(
             sub.boundary.len(),
             2,
@@ -1782,7 +1844,11 @@ fn a_walk_names_a_selection_and_its_boundary_dynamic() {
         let filtered = g
             .subgraph(okm_dynamic::Selection::of([person(1)]), 1, &["knows"])
             .unwrap_or_else(|e| panic!("{engine}: walk: {e}"));
-        assert_eq!(filtered.members.len(), 2, "{engine}: only the knows neighbour");
+        assert_eq!(
+            filtered.members.len(),
+            2,
+            "{engine}: only the knows neighbour"
+        );
         assert_eq!(filtered.interior.len(), 1, "{engine}: one edge inside");
         assert!(
             filtered.boundary.is_empty(),

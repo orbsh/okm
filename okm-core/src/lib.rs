@@ -84,15 +84,14 @@ pub use model::document::{Collection, SeekScan};
 pub use model::field::{FieldDesc, FieldType};
 pub use model::graph::{
     Cut, Direction, EdgeBody, EdgeHead, EdgeKey, EdgeStep, EdgeStream, Graph, GraphEncode,
-    HalfEdge, Handle, HandleKey, HopHead, Members, NodeRef, NodeKinds, Selection,
+    HalfEdge, Handle, HandleKey, HopHead, Members, NodeKinds, NodeRef, Selection,
 };
 pub use model::handles::{FIRST_HANDLE, HANDLE_NODE_SLOT, Handles, NODE_HANDLE_SLOT};
 pub use model::hyper::{
     CHILD_INDEX_SLOT, CLUSTER_SLOT, Cluster, ClusterConflict, ClusterRef, ClusterRow,
-    ClusterStream, Decl, EdgeSet, NodeSet, DerivedReport, EDGE_CLUSTER_SLOT, EDGE_MEMBER_SLOT,
-    Fragment, Hyperedges, Kind, MEMBER_COUNT, ReplaceReport, RetractReport, WriteReport,
-    edge_cluster_key,
-    edge_clusters_prefix,
+    ClusterStream, Decl, DerivedReport, EDGE_CLUSTER_SLOT, EDGE_MEMBER_SLOT, EdgeSet, Fragment,
+    Hyperedges, Kind, MEMBER_COUNT, NodeSet, ReplaceReport, RetractReport, WriteReport,
+    edge_cluster_key, edge_clusters_prefix,
 };
 pub use model::index::{
     DecodeIndexFields, Document, IndexFuncResult, KvIndex, LEAD_SLOT_BASE, META_SLOT, PRIMARY_SLOT,

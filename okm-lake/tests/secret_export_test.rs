@@ -65,14 +65,20 @@ fn a_secret_column_is_ciphertext_and_a_redacted_one_is_null() {
     let token = batch.column(2);
     assert_eq!(token.len(), 3);
     for row in 0..3 {
-        assert!(!token.is_null(row), "a secret column carries its ciphertext");
+        assert!(
+            !token.is_null(row),
+            "a secret column carries its ciphertext"
+        );
     }
 
     // The plain `Bytes` column still lands: variable-length columns copy
     // verbatim, and this is the case that used to panic on export.
     let label = batch.column(1);
     assert_eq!(label.len(), 3);
-    assert!(!label.is_null(0), "a variable-length column exports its bytes");
+    assert!(
+        !label.is_null(0),
+        "a variable-length column exports its bytes"
+    );
 
     let seed = batch.column(3);
     assert_eq!(seed.len(), 3);

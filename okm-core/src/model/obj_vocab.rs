@@ -184,7 +184,10 @@ pub fn vocab_id<S: VirtualStorage + ?Sized>(
             .ensure(&mut Faces::<_, u8>::new(store, header, faces), label)?
             .be_bytes(),
         2 => Vocabulary::<u16>::new()
-            .ensure(&mut Faces::<_, FieldNameId>::new(store, header, faces), label)?
+            .ensure(
+                &mut Faces::<_, FieldNameId>::new(store, header, faces),
+                label,
+            )?
             .be_bytes(),
         4 => Vocabulary::<u32>::new()
             .ensure(&mut Faces::<_, u32>::new(store, header, faces), label)?

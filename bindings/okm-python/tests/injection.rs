@@ -18,7 +18,7 @@ use std::collections::BTreeMap;
 use std::sync::{Arc, Mutex};
 
 use okm::pyo3_impl::{Collection, Engine};
-use okm_dynamic::{Value, Dict};
+use okm_dynamic::{Dict, Value};
 
 /// A host-owned in-memory engine behind the byte-level face (the realm
 /// store's shape at this seam).

@@ -68,14 +68,12 @@ use crate::engine::storage::{
     Batch, BatchStore, ScanIter, VirtualStorage, prefix_end, scan_suffix_kv,
 };
 use crate::model::handles::Handles;
-use crate::model::layout::{
-    FieldNameId, HANDLE_WIDTH, PREDICATE_VOCAB_WIDTH, PredicateId,
-};
 pub use crate::model::handles::{
     FIRST_HANDLE, HANDLE_NODE_SLOT, Handle, NODE_HANDLE_SLOT, handle_key, node_handle_key,
 };
 use crate::model::index::{DYNAMIC_SLOT, Document, PRIMARY_SLOT, Slot, write_slot};
 use crate::model::key::KeyEncode;
+use crate::model::layout::{FieldNameId, HANDLE_WIDTH, PREDICATE_VOCAB_WIDTH, PredicateId};
 use crate::model::obj_vocab::{Faces, PREDICATE_VOCAB, Vocabulary};
 use okm_value::{Dict, decode_named};
 
@@ -378,7 +376,9 @@ impl HandleKey {
         Some(Self {
             src: Handle::parse(&bytes[..HANDLE_WIDTH])?,
             predicate: PredicateId::from_be_bytes(
-                bytes[HANDLE_WIDTH..HANDLE_WIDTH + PREDICATE_VOCAB_WIDTH].try_into().ok()?,
+                bytes[HANDLE_WIDTH..HANDLE_WIDTH + PREDICATE_VOCAB_WIDTH]
+                    .try_into()
+                    .ok()?,
             ),
             dst: Handle::parse(&bytes[10..])?,
         })
@@ -1035,8 +1035,11 @@ impl<S: VirtualStorage, E: GraphEncode> Graph<S, E> {
             None => return Ok(None),
         };
         let mut dict = Vocabulary::<u16>::new();
-        let mut door =
-            Faces::<_, FieldNameId>::new(&self.store, &self.ns, crate::model::obj_vocab::FIELD_VOCAB);
+        let mut door = Faces::<_, FieldNameId>::new(
+            &self.store,
+            &self.ns,
+            crate::model::obj_vocab::FIELD_VOCAB,
+        );
         let mut failed: Option<crate::error::Error> = None;
         let frames = decode_named(&raw, &mut |id| match dict.name_of(&mut door, id) {
             Ok(name) => name,
@@ -1119,8 +1122,11 @@ impl<S: VirtualStorage, E: GraphEncode> Graph<S, E> {
         }
         let body = {
             let mut dict = Vocabulary::<u16>::new();
-            let mut door =
-                Faces::<_, FieldNameId>::new(&self.store, &self.ns, crate::model::obj_vocab::FIELD_VOCAB);
+            let mut door = Faces::<_, FieldNameId>::new(
+                &self.store,
+                &self.ns,
+                crate::model::obj_vocab::FIELD_VOCAB,
+            );
             let mut resolver = |name: &str| dict.ensure(&mut door, name);
             okm_value::encode(fields, &mut resolver)?
         };
@@ -1596,8 +1602,10 @@ impl<S: VirtualStorage, E: GraphEncode> Graph<S, E> {
             if suffix.len() != 16 {
                 continue;
             }
-            let (Some(src), Some(dst)) = (Handle::parse(&suffix[..HANDLE_WIDTH]), Handle::parse(&suffix[HANDLE_WIDTH..]))
-            else {
+            let (Some(src), Some(dst)) = (
+                Handle::parse(&suffix[..HANDLE_WIDTH]),
+                Handle::parse(&suffix[HANDLE_WIDTH..]),
+            ) else {
                 continue;
             };
             rows.push(HandleKey::new(src, predicate_id, dst));

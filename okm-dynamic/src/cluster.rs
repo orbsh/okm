@@ -59,15 +59,17 @@ use okm_core::model::graph::{
     EdgeKey, Handle, HandleKey, NodeRef, in_prefix, out_prefix, parse_predicate_far,
 };
 use okm_core::model::handles::{HANDLE_WIDTH, Handles};
-use okm_core::model::index::U64_WIDTH;
 use okm_core::model::hyper::{
     CHILD_INDEX_SLOT, CLUSTER_SLOT, EDGE_CLUSTER_SLOT, EDGE_MEMBER_SLOT, NODE_CLUSTER_SLOT,
     NODE_MEMBER_SLOT, child_key, children_prefix, cluster_key, cluster_value, clusters_prefix,
     edge_cluster_key, edge_clusters_prefix, edge_member_key, members_prefix, node_cluster_key,
     node_clusters_prefix, node_member_key, node_members_prefix,
 };
+use okm_core::model::index::U64_WIDTH;
 use okm_core::model::layout::{CLUSTER_KIND_WIDTH, ClusterKindId};
-use okm_core::model::obj_vocab::{CLUSTER_KIND, FIELD_VOCAB, Faces, FieldNameId, Names, Vocabulary};
+use okm_core::model::obj_vocab::{
+    CLUSTER_KIND, FIELD_VOCAB, Faces, FieldNameId, Names, Vocabulary,
+};
 use okm_core::storage::{Batch, BatchStore, VirtualStorage, prefix_end, scan_suffix_kv};
 use okm_value::{Dict, Variant, decode_named};
 
@@ -110,7 +112,6 @@ impl Cut {
     }
 }
 
-
 /// What the delete half of a batch decides: the edge rows it dooms, the entities
 /// it retires, and the cluster plan those removals imply. Both verbs take one;
 /// `replace` hands its plan to the write half so a cluster is counted once.
@@ -126,10 +127,8 @@ type Removal = (
 /// allocated id, and `MEMBER_COUNT` the same reserved payload name the write
 /// path stamps last.
 pub use okm_core::model::hyper::{
-    Cluster, ClusterRef, ClusterRow, DerivedReport, EdgeSet, NodeSet, Kind, MEMBER_COUNT,
-    MemberEdges, NODE_COUNT,
-    ReplaceReport, RetractReport,
-    WriteReport,
+    Cluster, ClusterRef, ClusterRow, DerivedReport, EdgeSet, Kind, MEMBER_COUNT, MemberEdges,
+    NODE_COUNT, NodeSet, ReplaceReport, RetractReport, WriteReport,
 };
 
 // ---------------------------------------------------------------------------
@@ -149,7 +148,9 @@ fn be_vocab(bytes: &[u8]) -> Option<ClusterKindId> {
 }
 
 fn be_u64(bytes: &[u8]) -> Option<u64> {
-    <[u8; U64_WIDTH]>::try_from(bytes).ok().map(u64::from_be_bytes)
+    <[u8; U64_WIDTH]>::try_from(bytes)
+        .ok()
+        .map(u64::from_be_bytes)
 }
 
 /// Intern the caller's label as a cluster kind (0x0A/0x0B): first seen claims the
@@ -163,7 +164,9 @@ pub fn intern_kind<S: VirtualStorage + ?Sized>(
 ) -> Result<Kind, String> {
     let mut door = Faces::<_, ClusterKindId>::new(store, ns, CLUSTER_KIND);
     let mut vocab = Vocabulary::<ClusterKindId>::new();
-    Ok(Kind(vocab.ensure(&mut door, label).map_err(|e| e.to_string())?))
+    Ok(Kind(
+        vocab.ensure(&mut door, label).map_err(|e| e.to_string())?,
+    ))
 }
 
 /// The label a kind was interned under — `None` for a number nobody minted.
@@ -482,8 +485,10 @@ impl<S: VirtualStorage> Graph<S> {
             if suffix.len() != CLUSTER_KIND_WIDTH + U64_WIDTH {
                 continue;
             }
-            if let (Some(kind), Some(id)) = (be_vocab(&suffix[..CLUSTER_KIND_WIDTH]), be_u64(&suffix[CLUSTER_KIND_WIDTH..]))
-            {
+            if let (Some(kind), Some(id)) = (
+                be_vocab(&suffix[..CLUSTER_KIND_WIDTH]),
+                be_u64(&suffix[CLUSTER_KIND_WIDTH..]),
+            ) {
                 out.push(ClusterRef::new(Kind(kind), id));
             }
         }
@@ -574,7 +579,11 @@ impl<S: VirtualStorage> Graph<S> {
         };
         Ok(self
             .store_ref()
-            .get(&node_member_key(&ns, ClusterRef::new(kind, cluster), handle))
+            .get(&node_member_key(
+                &ns,
+                ClusterRef::new(kind, cluster),
+                handle,
+            ))
             .map_err(|e| e.to_string())?
             .is_some())
     }
@@ -753,7 +762,8 @@ impl<S: VirtualStorage> Graph<S> {
             let Some(kind) = be_vocab(&suffix[..CLUSTER_KIND_WIDTH]) else {
                 continue;
             };
-            let Some(id) = be_u64(&suffix[CLUSTER_KIND_WIDTH..CLUSTER_KIND_WIDTH + U64_WIDTH]) else {
+            let Some(id) = be_u64(&suffix[CLUSTER_KIND_WIDTH..CLUSTER_KIND_WIDTH + U64_WIDTH])
+            else {
                 continue;
             };
             let Some(row) = HandleKey::parse(&suffix[CLUSTER_KIND_WIDTH + U64_WIDTH..]) else {
@@ -1016,8 +1026,10 @@ impl DynFragment {
         set: NodeSet,
         nodes: impl IntoIterator<Item = NodeRef>,
     ) -> &mut Self {
-        self.ops
-            .push(ClusterOp::RemoveNodes(set.into(), nodes.into_iter().collect()));
+        self.ops.push(ClusterOp::RemoveNodes(
+            set.into(),
+            nodes.into_iter().collect(),
+        ));
         self
     }
 
@@ -1413,7 +1425,10 @@ impl DynFragment {
             // writes the same name cannot make the row disagree with its rows.
             if !delete_row {
                 payload.insert(MEMBER_COUNT.to_string(), Variant::U64(members.len() as u64));
-                payload.insert(NODE_COUNT.to_string(), Variant::U64(node_members.len() as u64));
+                payload.insert(
+                    NODE_COUNT.to_string(),
+                    Variant::U64(node_members.len() as u64),
+                );
             }
             let parent = if delete_row {
                 0

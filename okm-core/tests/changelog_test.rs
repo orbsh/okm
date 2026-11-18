@@ -519,7 +519,9 @@ fn every_slot_is_classified_and_only_the_truth_half_is_carried() {
     // snapshot (0x1E), the table meta row (0x1F) — and the reserve above the
     // handles (0x12–0x1D) is unassigned, so it is classified derived only
     // because the whole unclaimed band is.
-    let fixed_truth = [0x00u16, 0x01, 0x02, 0x03, 0x04, 0x05, 0x0A, 0x0B, 0x0C, 0x0D];
+    let fixed_truth = [
+        0x00u16, 0x01, 0x02, 0x03, 0x04, 0x05, 0x0A, 0x0B, 0x0C, 0x0D,
+    ];
     for slot in 0u16..=0x1F {
         let want = if fixed_truth.contains(&slot) {
             Side::Truth

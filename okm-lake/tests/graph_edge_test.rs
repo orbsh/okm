@@ -14,7 +14,7 @@ use okm_lake::bridge::EdgeTable;
 
 use okm_core::{
     Batch, Decl, DocumentEncode, EdgeHead, EdgeKey, Fragment, Graph, GraphEncode, KeyEncode,
-    NodeRef, NodeKinds, VirtualStorage,
+    NodeKinds, NodeRef, VirtualStorage,
 };
 use okm_value::Dict;
 
@@ -123,7 +123,10 @@ pub struct Employment {
 // `NodeKinds::NS_VALUES`, never to the enum's name.
 #[test]
 fn the_member_enum_is_named_after_the_graph() {
-    assert_eq!(<EmploymentNode as okm_core::NodeKinds>::NS_VALUES, &[10, 11]);
+    assert_eq!(
+        <EmploymentNode as okm_core::NodeKinds>::NS_VALUES,
+        &[10, 11]
+    );
     assert!(EmploymentNode::contains(10));
     assert!(!EmploymentNode::contains(99));
 }

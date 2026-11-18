@@ -146,7 +146,7 @@ use crate::engine::storage::{
 use crate::error::{Error, Result};
 use crate::model::graph::{
     Direction, EdgeHead, EdgeKey, EdgeStep, EdgeStream, Graph, GraphEncode, Handle, HandleCache,
-    HandleKey, Members, NodeRef, NodeKinds, in_prefix, out_prefix, parse_predicate_far,
+    HandleKey, Members, NodeKinds, NodeRef, in_prefix, out_prefix, parse_predicate_far,
 };
 use crate::model::handles::{HANDLE_WIDTH, Handles};
 use crate::model::index::{Document, PRIMARY_SLOT, Slot, write_slot};
@@ -172,7 +172,6 @@ pub const MEMBER_COUNT: &str = "members";
 /// is this scope" adds them, and a reader that wants one half does not have to
 /// guess which face the number came from.
 pub const NODE_COUNT: &str = "nodes";
-
 
 /// The cluster's kind: an interned id (0x0A/0x0B), two bytes in the key like a
 /// predicate's.
@@ -352,11 +351,7 @@ impl Cluster {
     /// permission boundary, a vertex partition. Node membership is DECLARED, so
     /// an entity no edge touches can be a member — and an edge this fragment
     /// happens to write cannot slip in.
-    pub fn nodes<I: IntoIterator<Item = NodeRef>>(
-        kind: &str,
-        payload: Dict,
-        nodes: I,
-    ) -> Self {
+    pub fn nodes<I: IntoIterator<Item = NodeRef>>(kind: &str, payload: Dict, nodes: I) -> Self {
         Self {
             kind: kind.to_string(),
             id: None,
@@ -618,7 +613,9 @@ fn be_vocab(bytes: &[u8]) -> Option<ClusterKindId> {
 }
 
 fn be_u64(bytes: &[u8]) -> Option<u64> {
-    <[u8; U64_WIDTH]>::try_from(bytes).ok().map(u64::from_be_bytes)
+    <[u8; U64_WIDTH]>::try_from(bytes)
+        .ok()
+        .map(u64::from_be_bytes)
 }
 
 fn hex(bytes: &[u8]) -> String {
@@ -758,7 +755,9 @@ fn read_cluster<S: VirtualStorage + ?Sized>(
         }
     }
     state.members = member_rows(store, ns, cluster)?.into_iter().collect();
-    state.nodes = node_member_handles(store, ns, cluster)?.into_iter().collect();
+    state.nodes = node_member_handles(store, ns, cluster)?
+        .into_iter()
+        .collect();
     Ok(state)
 }
 
@@ -923,8 +922,10 @@ impl<S: VirtualStorage> Hyperedges<S> {
             if suffix.len() != CLUSTER_KIND_WIDTH + U64_WIDTH {
                 continue;
             }
-            if let (Some(kind), Some(id)) = (be_vocab(&suffix[..CLUSTER_KIND_WIDTH]), be_u64(&suffix[CLUSTER_KIND_WIDTH..]))
-            {
+            if let (Some(kind), Some(id)) = (
+                be_vocab(&suffix[..CLUSTER_KIND_WIDTH]),
+                be_u64(&suffix[CLUSTER_KIND_WIDTH..]),
+            ) {
                 out.push(ClusterRef::new(Kind(kind), id));
             }
         }
@@ -1094,7 +1095,8 @@ impl<S: VirtualStorage> Hyperedges<S> {
             let Some(kind) = be_vocab(&suffix[..CLUSTER_KIND_WIDTH]) else {
                 continue;
             };
-            let Some(id) = be_u64(&suffix[CLUSTER_KIND_WIDTH..CLUSTER_KIND_WIDTH + U64_WIDTH]) else {
+            let Some(id) = be_u64(&suffix[CLUSTER_KIND_WIDTH..CLUSTER_KIND_WIDTH + U64_WIDTH])
+            else {
                 continue;
             };
             let cluster = ClusterRef::new(Kind(kind), id);
@@ -1128,7 +1130,8 @@ impl<S: VirtualStorage> Hyperedges<S> {
             let Some(kind) = be_vocab(&suffix[..CLUSTER_KIND_WIDTH]) else {
                 continue;
             };
-            let Some(id) = be_u64(&suffix[CLUSTER_KIND_WIDTH..CLUSTER_KIND_WIDTH + U64_WIDTH]) else {
+            let Some(id) = be_u64(&suffix[CLUSTER_KIND_WIDTH..CLUSTER_KIND_WIDTH + U64_WIDTH])
+            else {
                 continue;
             };
             let Some(handle) = Handle::parse(&suffix[CLUSTER_KIND_WIDTH + U64_WIDTH..]) else {
@@ -1953,8 +1956,10 @@ impl<G: GraphEncode + Default> Fragment<G> {
         set: NodeSet,
         nodes: I,
     ) -> &mut Self {
-        self.ops
-            .push(ClusterOp::RemoveNodes(set.into(), nodes.into_iter().collect()));
+        self.ops.push(ClusterOp::RemoveNodes(
+            set.into(),
+            nodes.into_iter().collect(),
+        ));
         self
     }
 
@@ -2415,14 +2420,21 @@ impl<G: GraphEncode + Default> Fragment<G> {
                         }
                         let target = plan.entry((into.kind.0, into.id)).or_default();
                         target.add.extend(state.members.iter().cloned());
-                        target
-                            .add_nodes
-                            .extend(state.nodes.iter().filter_map(|h| resolve_handle(graph.store(), &ns, *h)));
+                        target.add_nodes.extend(
+                            state
+                                .nodes
+                                .iter()
+                                .filter_map(|h| resolve_handle(graph.store(), &ns, *h)),
+                        );
                         let gone = plan.entry((source.kind.0, source.id)).or_default();
                         gone.delete_row = true;
                         gone.remove.extend(state.members.iter().cloned());
-                        gone.remove_nodes
-                            .extend(state.nodes.iter().filter_map(|h| resolve_handle(graph.store(), &ns, *h)));
+                        gone.remove_nodes.extend(
+                            state
+                                .nodes
+                                .iter()
+                                .filter_map(|h| resolve_handle(graph.store(), &ns, *h)),
+                        );
                     }
                 }
             }
@@ -2551,7 +2563,10 @@ impl<G: GraphEncode + Default> Fragment<G> {
 
             if !delete_row {
                 payload.insert(MEMBER_COUNT.to_string(), Variant::U64(members.len() as u64));
-                payload.insert(NODE_COUNT.to_string(), Variant::U64(node_members.len() as u64));
+                payload.insert(
+                    NODE_COUNT.to_string(),
+                    Variant::U64(node_members.len() as u64),
+                );
             }
             entry.parent = Some(entry.parent.unwrap_or(state.parent));
             deleted_members += del_members.len() + del_nodes.len();
@@ -2773,7 +2788,8 @@ impl<S: VirtualStorage, G: GraphEncode + Default> Graph<S, G> {
             let Some(kind) = be_vocab(&suffix[..CLUSTER_KIND_WIDTH]) else {
                 continue;
             };
-            let Some(id) = be_u64(&suffix[CLUSTER_KIND_WIDTH..CLUSTER_KIND_WIDTH + U64_WIDTH]) else {
+            let Some(id) = be_u64(&suffix[CLUSTER_KIND_WIDTH..CLUSTER_KIND_WIDTH + U64_WIDTH])
+            else {
                 continue;
             };
             let Some(row) = HandleKey::parse(&suffix[CLUSTER_KIND_WIDTH + U64_WIDTH..]) else {
@@ -2793,7 +2809,6 @@ impl<S: VirtualStorage, G: GraphEncode + Default> Graph<S, G> {
                 entry.declared = true;
             }
         }
-
 
         Ok((doomed, nodes, plan))
     }
@@ -2960,14 +2975,14 @@ impl<S: VirtualStorage, G: GraphEncode + Default> Graph<S, G> {
 
 #[cfg(test)]
 mod tests {
-use crate::model::handles::HANDLE_WIDTH;
-use crate::model::index::{CLUSTER_KIND_ID_SLOT, CLUSTER_KIND_NAME_SLOT};
+    use crate::model::handles::HANDLE_WIDTH;
+    use crate::model::index::{CLUSTER_KIND_ID_SLOT, CLUSTER_KIND_NAME_SLOT};
 
-// The CALLER's vocabulary, defined here because a test is a caller: `Kind` is one
-// interned id and okm assigns it no meaning. An application picks its own numbers
-// beside its schema (k10r: community and flow); the store never learns the words.
-const COMMUNITY: Kind = Kind(1);
-const EVENT: Kind = Kind(2);
+    // The CALLER's vocabulary, defined here because a test is a caller: `Kind` is one
+    // interned id and okm assigns it no meaning. An application picks its own numbers
+    // beside its schema (k10r: community and flow); the store never learns the words.
+    const COMMUNITY: Kind = Kind(1);
+    const EVENT: Kind = Kind(2);
     use super::*;
 
     #[test]
@@ -3013,11 +3028,12 @@ const EVENT: Kind = Kind(2);
             "the row is [src_h 8][pred 2][dst_h 8], big-endian, no lengths"
         );
         assert!(edge_member_key(&ns, cluster, &row).starts_with(&members_prefix(&ns, cluster)));
-        assert!(
-            !edge_member_key(&ns, cluster, &row).starts_with(&cluster_key(&ns, COMMUNITY, 7))
-        );
+        assert!(!edge_member_key(&ns, cluster, &row).starts_with(&cluster_key(&ns, COMMUNITY, 7)));
         // Every scan prefix is the whole key of its own row kind.
-        assert_eq!(clusters_prefix(&ns, COMMUNITY).len(), 3 + CLUSTER_KIND_WIDTH);
+        assert_eq!(
+            clusters_prefix(&ns, COMMUNITY).len(),
+            3 + CLUSTER_KIND_WIDTH
+        );
         assert_eq!(members_prefix(&ns, cluster).len(), head);
         assert_eq!(children_prefix(&ns, COMMUNITY, 1).len(), head);
     }

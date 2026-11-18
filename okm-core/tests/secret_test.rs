@@ -194,9 +194,7 @@ fn a_digest_is_indexable_and_the_token_never_reaches_the_keyspace() {
         "the entry key carries the digest"
     );
     assert!(
-        !entry
-            .windows(token.len())
-            .any(|w| w == token.as_slice()),
+        !entry.windows(token.len()).any(|w| w == token.as_slice()),
         "and never the token"
     );
     assert_eq!(col.get_row(&key).unwrap().unwrap().token_hash, digest);

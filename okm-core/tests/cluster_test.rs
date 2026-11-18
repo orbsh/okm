@@ -17,7 +17,11 @@
 
 use okm_async::TestStore;
 use okm_core::engine::storage::prefix_end;
-use okm_core::{Cluster, ClusterRef, Decl, Document, DocumentEncode, EdgeHead, EdgeKey, EdgeSet, NodeSet, Error, Fragment, Graph, GraphEncode, HandleKey, Hyperedges, KeyEncode, Kind, NodeRef, Seekable, Selection, VirtualStorage, edge_cluster_key};
+use okm_core::{
+    Cluster, ClusterRef, Decl, Document, DocumentEncode, EdgeHead, EdgeKey, EdgeSet, Error,
+    Fragment, Graph, GraphEncode, HandleKey, Hyperedges, KeyEncode, Kind, NodeRef, NodeSet,
+    Seekable, Selection, VirtualStorage, edge_cluster_key,
+};
 use okm_query::intersect_seek;
 use okm_value::{Dict, Variant};
 
@@ -81,7 +85,6 @@ fn kid(store: &TestStore, label: &str) -> Kind {
     mint.kind_id(label).expect("kind_id")
 }
 
-
 fn person(id: u64) -> NodeRef {
     NodeRef::new(Person::NS_PREFIX, &PersonId { id }.encode())
 }
@@ -138,7 +141,6 @@ fn graph(store: &TestStore) -> Graph<TestStore, Employment> {
 fn hyper(store: &TestStore) -> Hyperedges<TestStore> {
     Hyperedges::of::<Employment>(store.clone())
 }
-
 
 fn members(store: &TestStore, engine: &str, set: EdgeSet) -> Vec<EdgeKey> {
     hyper(store)
@@ -199,7 +201,11 @@ fn every_row_kind_round_trips_at_the_layout_the_adr_states() {
             2,
             "{engine}: one identity per edge decl"
         );
-        assert_eq!(report.edge_sets.len() + report.node_sets.len(), 1, "{engine}: one id per cluster");
+        assert_eq!(
+            report.edge_sets.len() + report.node_sets.len(),
+            1,
+            "{engine}: one id per cluster"
+        );
         let id = report.edge_sets[0].id;
         let cluster = EdgeSet::new(kid(&store, COMMUNITY), id);
 
@@ -218,7 +224,9 @@ fn every_row_kind_round_trips_at_the_layout_the_adr_states() {
             .unwrap_or_else(|| panic!("{engine}: cluster row"));
         assert_eq!(&row[..8], &0u64.to_be_bytes(), "{engine}: root head");
         assert_eq!(
-            store.get(&key(kid(&store, COMMUNITY), 0x0C, id, &[0x00])).expect("read"),
+            store
+                .get(&key(kid(&store, COMMUNITY), 0x0C, id, &[0x00]))
+                .expect("read"),
             None,
             "{engine}: the cluster row is the only row of its face"
         );
@@ -229,11 +237,7 @@ fn every_row_kind_round_trips_at_the_layout_the_adr_states() {
             Some(&Variant::Str("acme".to_string())),
             "{engine}: the payload round-trips through the field vocabulary"
         );
-        assert_eq!(
-            stored.edge_count(),
-            2,
-            "{engine}: member count in the row"
-        );
+        assert_eq!(stored.edge_count(), 2, "{engine}: member count in the row");
 
         // 0x0B — one empty-valued row per member edge, the edge's stored handle
         // row after the cluster prefix (ADR-0067): `[src_h 8][pred 2][dst_h 8]`,
@@ -247,7 +251,9 @@ fn every_row_kind_round_trips_at_the_layout_the_adr_states() {
                 "{engine}: a member row's tail is the fixed-width handle row"
             );
             assert_eq!(
-                store.get(&key(kid(&store, COMMUNITY), 0x0D, id, &spelled.wire())).expect("read"),
+                store
+                    .get(&key(kid(&store, COMMUNITY), 0x0D, id, &spelled.wire()))
+                    .expect("read"),
                 Some(Vec::new()),
                 "{engine}: a member row carries no value — the edge does"
             );
@@ -277,14 +283,16 @@ fn derived_face_rebuilds_to_exactly_what_the_write_path_wrote() {
         let parent = g
             .incorporate(fragment)
             .unwrap_or_else(|e| panic!("{engine}: parent: {e}"))
-            .edge_sets[0].id;
+            .edge_sets[0]
+            .id;
         let mut fragment =
             Fragment::<Employment>::new([edge(person(3), org(3)), edge(person(3), org(4))]);
         fragment.cluster(Cluster::edges(COMMUNITY, attrs("child")).under(parent));
         let child = g
             .incorporate(fragment)
             .unwrap_or_else(|e| panic!("{engine}: child: {e}"))
-            .edge_sets[0].id;
+            .edge_sets[0]
+            .id;
 
         let cluster = EdgeSet::new(kid(&store, COMMUNITY), child);
         let members_before = members(&store, engine, cluster);
@@ -469,7 +477,11 @@ fn a_cluster_created_with_no_members_at_all_is_a_scope() {
         let report = g
             .incorporate(fragment)
             .expect("an empty scope is a declared scope");
-        assert_eq!(report.edge_sets.len() + report.node_sets.len(), 1, "{engine}: one id allocated");
+        assert_eq!(
+            report.edge_sets.len() + report.node_sets.len(),
+            1,
+            "{engine}: one id allocated"
+        );
         assert!(report.edges.is_empty(), "{engine}: no edge declared");
         let scope = report.edge_sets[0];
 
@@ -481,11 +493,19 @@ fn a_cluster_created_with_no_members_at_all_is_a_scope() {
             "{engine}: the payload is the statement the scope makes"
         );
         assert!(
-            hyper(&store).edge_members(scope).expect("members").is_empty(),
+            hyper(&store)
+                .edge_members(scope)
+                .expect("members")
+                .is_empty(),
             "{engine}: an empty member list, not an error"
         );
         assert_eq!(
-            hyper(&store).edge_sets(SCOPE).expect("sets").iter().map(|s| s.id).collect::<Vec<_>>(),
+            hyper(&store)
+                .edge_sets(SCOPE)
+                .expect("sets")
+                .iter()
+                .map(|s| s.id)
+                .collect::<Vec<_>>(),
             vec![scope.id],
             "{engine}: and the kind scan still lists it"
         );
@@ -510,9 +530,7 @@ fn an_explicitly_declared_empty_cluster_survives_a_rebuild() {
         fragment.cluster(Cluster::edges(SCOPE, attrs("child")).under(parent));
         let child = g.incorporate(fragment).expect("child").edge_sets[0].id;
         assert_eq!(
-            hyper(&store)
-                .children(SCOPE, parent)
-                .expect("children"),
+            hyper(&store).children(SCOPE, parent).expect("children"),
             vec![child],
             "{engine}: the child index was written with the rows"
         );
@@ -529,9 +547,7 @@ fn an_explicitly_declared_empty_cluster_survives_a_rebuild() {
             assert_eq!(row.edge_count(), 0, "{engine}: {label} still says zero");
         }
         assert_eq!(
-            hyper(&store)
-                .children(SCOPE, parent)
-                .expect("children"),
+            hyper(&store).children(SCOPE, parent).expect("children"),
             vec![child],
             "{engine}: the derived child index rebuilt from the rows alone"
         );
@@ -976,7 +992,12 @@ fn a_kinds_cluster_scan_returns_clusters_and_nothing_else() {
         fragment.cluster(Cluster::edges(COMMUNITY, attrs("child")).under(parent));
         let child = g.incorporate(fragment).expect("child").edge_sets[0].id;
 
-        let listed = hyper(&store).edge_sets(COMMUNITY).expect("sets").iter().map(|s| s.id).collect::<Vec<_>>();
+        let listed = hyper(&store)
+            .edge_sets(COMMUNITY)
+            .expect("sets")
+            .iter()
+            .map(|s| s.id)
+            .collect::<Vec<_>>();
         assert_eq!(
             listed,
             vec![parent, child],
@@ -987,9 +1008,7 @@ fn a_kinds_cluster_scan_returns_clusters_and_nothing_else() {
         assert_eq!(face(&store, 0x0D).len(), 4, "{engine}: member rows exist");
         assert_eq!(face(&store, 0x0E).len(), 1, "{engine}: child rows exist");
         assert_eq!(
-            hyper(&store)
-                .children(COMMUNITY, parent)
-                .expect("children"),
+            hyper(&store).children(COMMUNITY, parent).expect("children"),
             vec![child],
             "{engine}: one scan of 0x0C"
         );
@@ -1007,7 +1026,11 @@ fn a_kinds_cluster_scan_returns_clusters_and_nothing_else() {
         fragment.cluster(Cluster::edges(COMMUNITY, attrs("other")));
         let other = g.incorporate(fragment).expect("other").edge_sets[0].id;
         let mut fragment = Fragment::<Employment>::new([]);
-        fragment.cluster(Cluster::edges(COMMUNITY, Dict::new()).at(child).under(other));
+        fragment.cluster(
+            Cluster::edges(COMMUNITY, Dict::new())
+                .at(child)
+                .under(other),
+        );
         g.incorporate(fragment).expect("reparent");
         assert!(
             hyper(&store)
@@ -1017,9 +1040,7 @@ fn a_kinds_cluster_scan_returns_clusters_and_nothing_else() {
             "{engine}: the old child row is gone"
         );
         assert_eq!(
-            hyper(&store)
-                .children(COMMUNITY, other)
-                .expect("children"),
+            hyper(&store).children(COMMUNITY, other).expect("children"),
             vec![child],
             "{engine}: the new child row is there"
         );
@@ -1637,7 +1658,8 @@ fn traversal_and_membership_intersect_on_the_derived_face() {
         // The intersection of the two derived streams: the node's incident edges
         // in the face's key space, against the cluster's members in the same one.
         let members_of_c = MemberClusters::of(&g, cluster.into(), report.edges.clone());
-        let shared: Vec<Vec<u8>> = intersect_seek(g.node_sets_of(&person(1)), members_of_c).collect();
+        let shared: Vec<Vec<u8>> =
+            intersect_seek(g.node_sets_of(&person(1)), members_of_c).collect();
         assert_eq!(shared.len(), 1, "{engine}: one of p1's edges is in C");
         assert_eq!(
             shared,
@@ -1665,12 +1687,8 @@ fn traversal_and_membership_intersect_on_the_derived_face() {
         let filtered: Vec<EdgeKey> = g
             .out(&person(1))
             .filter(|step| {
-                g.edge_member_of(
-                    COMMUNITY,
-                    id,
-                    &g.edge_key(step).expect("a step resolves"),
-                )
-                .unwrap_or(false)
+                g.edge_member_of(COMMUNITY, id, &g.edge_key(step).expect("a step resolves"))
+                    .unwrap_or(false)
             })
             .map(|step| g.edge_key(&step).expect("a step resolves"))
             .collect();
@@ -1681,7 +1699,10 @@ fn traversal_and_membership_intersect_on_the_derived_face() {
         );
 
         // And the node form of the cluster stream agrees with both.
-        let via_node: Vec<u64> = g.node_sets_of(&person(1)).map(|cluster| cluster.id).collect();
+        let via_node: Vec<u64> = g
+            .node_sets_of(&person(1))
+            .map(|cluster| cluster.id)
+            .collect();
         assert_eq!(via_node, vec![id], "{engine}: p1 is in exactly C");
         assert!(
             g.edge_sets_of(&plain.edges[1]).next().is_none(),
@@ -1726,8 +1747,7 @@ fn one_edge_belongs_to_a_community_and_a_flow_at_once() {
             "{engine}: a flow is not a subgraph"
         );
         assert_eq!(
-            flow_report.edge_sets[0].id,
-            bin.edge_sets[0].id,
+            flow_report.edge_sets[0].id, bin.edge_sets[0].id,
             "{engine}: the id spaces are independent, so equal ids are legal"
         );
 
@@ -1806,7 +1826,10 @@ fn a_kind_is_interned_once_and_read_back_by_number() {
         );
         assert_eq!(
             hyper.kinds().expect("list"),
-            vec![(community.id(), "community".to_string()), (flow.id(), "flow".to_string())],
+            vec![
+                (community.id(), "community".to_string()),
+                (flow.id(), "flow".to_string())
+            ],
             "{engine}: listing is one scan, id-ordered"
         );
 
@@ -1895,7 +1918,10 @@ fn retracting_a_node_takes_its_own_memberships() {
             "{engine}: the membership went with the entity"
         );
         assert_eq!(
-            hy.lookup(cluster).expect("lookup").expect("row").node_count(),
+            hy.lookup(cluster)
+                .expect("lookup")
+                .expect("row")
+                .node_count(),
             0,
             "{engine}: the count is the honest zero"
         );
@@ -1939,9 +1965,11 @@ fn retracting_an_edge_leaves_every_node_cluster_alone() {
 fn the_node_index_rebuilds_from_the_node_member_rows_alone() {
     for (engine, store) in TestStore::matrix() {
         let mut fragment = Fragment::<Employment>::new([]);
-        fragment.cluster(
-            Cluster::nodes(SCOPE, Dict::new(), [person(1), person(2), org(1)]),
-        );
+        fragment.cluster(Cluster::nodes(
+            SCOPE,
+            Dict::new(),
+            [person(1), person(2), org(1)],
+        ));
         graph(&store).incorporate(fragment).expect("commit");
         let written = face(&store, 0x13);
         assert_eq!(written.len(), 3, "{engine}: one mirror row per entity");
@@ -1979,13 +2007,20 @@ fn removing_a_declared_member_leaves_the_entity_alone() {
         graph(&store).incorporate(removal).expect("removal");
 
         let hy = hyper(&store);
-        assert_eq!(hy.node_members(cluster).expect("nodes"), vec![b.clone()], "{engine}");
+        assert_eq!(
+            hy.node_members(cluster).expect("nodes"),
+            vec![b.clone()],
+            "{engine}"
+        );
         assert!(
             !hy.node_member_of(cluster, &a).expect("point read"),
             "{engine}: the declared row went"
         );
         assert_eq!(
-            hy.lookup(cluster).expect("lookup").expect("row").node_count(),
+            hy.lookup(cluster)
+                .expect("lookup")
+                .expect("row")
+                .node_count(),
             1,
             "{engine}: the count follows the face"
         );
@@ -2014,13 +2049,19 @@ fn a_removed_declaration_leaves_the_assertion_alone() {
             !hy.node_member_of(cluster, &src).expect("point read"),
             "{engine}: the declaration is what the verb speaks for"
         );
-        assert!(hy.node_members(cluster).expect("nodes").is_empty(), "{engine}");
+        assert!(
+            hy.node_members(cluster).expect("nodes").is_empty(),
+            "{engine}"
+        );
         // No EDGE group ever held it either: the assertion belongs to the graph,
         // and group membership is something a caller declares per set.
         let via: Vec<u64> = g.node_sets_of(&src).map(|c| c.id).collect();
         assert!(via.is_empty(), "{engine}: no edge set names it");
         assert_eq!(
-            hy.lookup(cluster).expect("lookup").expect("row").edge_count(),
+            hy.lookup(cluster)
+                .expect("lookup")
+                .expect("row")
+                .edge_count(),
             0,
             "{engine}: an entity group holds no assertions"
         );
@@ -2043,7 +2084,8 @@ fn a_declaration_wins_over_a_removal_in_one_fragment() {
 
         let hy = hyper(&store);
         assert!(
-            hy.node_member_of(NodeSet::new(kid(&store, SCOPE), 1), &a).expect("point read"),
+            hy.node_member_of(NodeSet::new(kid(&store, SCOPE), 1), &a)
+                .expect("point read"),
             "{engine}: the declaration is the later claim and it wins"
         );
     }
@@ -2094,10 +2136,7 @@ fn incorporating_entity_sets_carries_the_declared_members() {
             "{engine}: and the mirror answers for them"
         );
         assert_eq!(
-            hy.lookup(into)
-                .expect("lookup")
-                .expect("row")
-                .node_count(),
+            hy.lookup(into).expect("lookup").expect("row").node_count(),
             3,
             "{engine}: the count is re-stamped from the face"
         );
@@ -2226,10 +2265,8 @@ fn a_cut_answers_the_boundary_of_a_selection() {
 fn a_replacement_counts_its_two_halves_against_one_base() {
     for (engine, store) in TestStore::matrix() {
         let mut g = graph(&store);
-        let mut facts = Fragment::<Employment>::new([
-            edge(person(1), person(2)),
-            edge(person(2), org(9)),
-        ]);
+        let mut facts =
+            Fragment::<Employment>::new([edge(person(1), person(2)), edge(person(2), org(9))]);
         facts.on_edge_conflict(|_stored, _declared| Employment { weight: 1 });
         g.incorporate(facts)
             .unwrap_or_else(|e| panic!("{engine}: facts: {e}"));
@@ -2252,11 +2289,9 @@ fn a_replacement_counts_its_two_halves_against_one_base() {
             .repoint(head(person(2), org(9)), head(person(1), org(9)))
             .delete_edge(head(person(1), person(2)))
             .delete_node(person(2))
-            .cluster(Cluster::nodes(
-                SCOPE,
-                Dict::new(),
-                [person(1), person(3), org(9)],
-            ).at(scope.id));
+            .cluster(
+                Cluster::nodes(SCOPE, Dict::new(), [person(1), person(3), org(9)]).at(scope.id),
+            );
         let report = g
             .replace(replacement)
             .unwrap_or_else(|e| panic!("{engine}: replace: {e}"));
@@ -2310,10 +2345,8 @@ fn a_replacement_counts_its_two_halves_against_one_base() {
 fn a_repoint_carries_the_payload_it_replaces() {
     for (engine, store) in TestStore::matrix() {
         let mut g = graph(&store);
-        let mut facts = Fragment::<Employment>::new([
-            edge(person(1), org(9)),
-            edge(person(1), person(3)),
-        ]);
+        let mut facts =
+            Fragment::<Employment>::new([edge(person(1), org(9)), edge(person(1), person(3))]);
         facts.on_edge_conflict(|_stored, _declared| Employment { weight: 11 });
         g.incorporate(facts)
             .unwrap_or_else(|e| panic!("{engine}: facts: {e}"));
@@ -2327,7 +2360,11 @@ fn a_repoint_carries_the_payload_it_replaces() {
         let report = g
             .replace(replacement)
             .unwrap_or_else(|e| panic!("{engine}: replace: {e}"));
-        assert_eq!(report.written.edges.len(), 1, "{engine}: one moved assertion");
+        assert_eq!(
+            report.written.edges.len(),
+            1,
+            "{engine}: one moved assertion"
+        );
 
         let moved = g
             .key_of(&head(person(2), org(9)))
@@ -2361,10 +2398,8 @@ fn a_repoint_carries_the_payload_it_replaces() {
 fn a_replacement_that_forgets_a_half_edge_is_refused() {
     for (engine, store) in TestStore::matrix() {
         let mut g = graph(&store);
-        let mut facts = Fragment::<Employment>::new([
-            edge(person(1), org(9)),
-            edge(person(1), person(3)),
-        ]);
+        let mut facts =
+            Fragment::<Employment>::new([edge(person(1), org(9)), edge(person(1), person(3))]);
         facts.on_edge_conflict(|_stored, _declared| Employment { weight: 2 });
         g.incorporate(facts)
             .unwrap_or_else(|e| panic!("{engine}: facts: {e}"));
@@ -2427,7 +2462,11 @@ fn a_walk_names_a_selection_and_its_boundary() {
         assert_eq!(one.interior.len(), 3, "{engine}: every edge among them");
         assert_eq!(one.boundary.len(), 1, "{engine}: and the one leaving 9");
         assert_eq!(one.boundary[0].member, org(9), "{engine}: the inside end");
-        assert_eq!(one.boundary[0].far, person(3), "{engine}: the end to re-attach");
+        assert_eq!(
+            one.boundary[0].far,
+            person(3),
+            "{engine}: the end to re-attach"
+        );
 
         // The seeds are a SET: two starting points answer the union of their rings,
         // and the edge between them is interior, not a crossing.
@@ -2519,7 +2558,11 @@ fn a_repoint_without_a_node_delete_does_not_duplicate() {
         let report = g
             .replace(split)
             .unwrap_or_else(|e| panic!("{engine}: replace: {e}"));
-        assert_eq!(report.written.edges.len(), 1, "{engine}: one moved assertion");
+        assert_eq!(
+            report.written.edges.len(),
+            1,
+            "{engine}: one moved assertion"
+        );
         assert_eq!(report.edges, 1, "{engine}: the move counts as one removal");
 
         let moved = g
@@ -2546,9 +2589,7 @@ fn a_repoint_without_a_node_delete_does_not_duplicate() {
             "{engine}: and the old head is gone, not duplicated"
         );
         assert!(
-            g.out_edges(&person(1))
-                .expect("faces")
-                .is_empty(),
+            g.out_edges(&person(1)).expect("faces").is_empty(),
             "{engine}: the old endpoint's face is empty too"
         );
     }

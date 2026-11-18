@@ -25,12 +25,12 @@ pub mod pyo3_impl {
     use okm_core::model::key::KeySet as SharedKeySet;
     use okm_core::storage::VirtualStorage;
     use okm_core::{Direction, EdgeKey, Handle, Members, NodeRef};
-    use okm_dynamic::{EdgeSet, NodeSet};
-use okm_dynamic::{
+    use okm_dynamic::Graph as DynGraph;
+    use okm_dynamic::{
         AccessMethod, AccessMethodKind, Cluster, ClusterRef, Decl, Dict, DynEdge, DynFragment,
         EdgeStep, Kind, ReduceLogic, RetractReport, Value, WriteReport,
     };
-    use okm_dynamic::Graph as DynGraph;
+    use okm_dynamic::{EdgeSet, NodeSet};
     use okm_query::HeldSets;
     use pyo3::exceptions::{PyTypeError, PyValueError};
     use pyo3::prelude::*;
@@ -38,10 +38,7 @@ use okm_dynamic::{
     use std::sync::{Arc, Mutex};
 
     /// Convert a Dict (decoded document) into a Python dict.
-    fn map_to_dict<'py>(
-        py: Python<'py>,
-        m: &Dict,
-    ) -> PyResult<Bound<'py, pyo3::types::PyDict>> {
+    fn map_to_dict<'py>(py: Python<'py>, m: &Dict) -> PyResult<Bound<'py, pyo3::types::PyDict>> {
         let d = pyo3::types::PyDict::new(py);
         for (k, v) in m {
             let value: pyo3::Py<PyAny> = match v {
@@ -135,21 +132,11 @@ use okm_dynamic::{
             })
         }
 
-        fn fold(
-            &self,
-            acc: &mut Vec<u8>,
-            key: &Dict,
-            document: &Dict,
-        ) -> Result<(), String> {
+        fn fold(&self, acc: &mut Vec<u8>, key: &Dict, document: &Dict) -> Result<(), String> {
             Python::attach(|py| self.apply(py, "fold", acc, key, document))
         }
 
-        fn unfold(
-            &self,
-            acc: &mut Vec<u8>,
-            key: &Dict,
-            document: &Dict,
-        ) -> Result<(), String> {
+        fn unfold(&self, acc: &mut Vec<u8>, key: &Dict, document: &Dict) -> Result<(), String> {
             Python::attach(|py| self.apply(py, "unfold", acc, key, document))
         }
     }
@@ -258,12 +245,7 @@ use okm_dynamic::{
         /// `replace = false` merges the names the map carries; `true` makes the
         /// map the whole document (a name it omits is gone). One verb either
         /// way — the payload type is what selects the path.
-        pub fn put_doc(
-            &self,
-            pkey: &[u8],
-            document: &Dict,
-            replace: bool,
-        ) -> Result<(), String> {
+        pub fn put_doc(&self, pkey: &[u8], document: &Dict, replace: bool) -> Result<(), String> {
             let inner = self
                 .inner
                 .lock()
@@ -1126,7 +1108,9 @@ use okm_dynamic::{
         )
         .map_err(|e| e.to_string())?
         .ok_or_else(|| {
-            format!("predicate {id} has no vocabulary name — the graph's vocabulary was lost under it")
+            format!(
+                "predicate {id} has no vocabulary name — the graph's vocabulary was lost under it"
+            )
         })
     }
 
@@ -1180,12 +1164,7 @@ use okm_dynamic::{
     /// vocabulary of its own, so a script that says `kind="community"` must have a
     /// door that turns the word into the number; this is it for every verb that
     /// takes a kind.
-    fn kind_arg(
-        store: &EngineBox,
-        ns: u16,
-        obj: &Bound<'_, PyAny>,
-        what: &str,
-    ) -> PyResult<Kind> {
+    fn kind_arg(store: &EngineBox, ns: u16, obj: &Bound<'_, PyAny>, what: &str) -> PyResult<Kind> {
         if let Ok(label) = obj.extract::<String>() {
             return okm_dynamic::intern_kind(store, &ns.to_be_bytes(), &label)
                 .map_err(PyValueError::new_err);
@@ -1344,9 +1323,9 @@ use okm_dynamic::{
         obj: &Bound<'_, PyAny>,
         what: &str,
     ) -> PyResult<ClusterRef> {
-        let dict = obj
-            .cast::<pyo3::types::PyDict>()
-            .map_err(|_| PyTypeError::new_err(format!("{what}: a cluster is a dict {{kind, id}}")))?;
+        let dict = obj.cast::<pyo3::types::PyDict>().map_err(|_| {
+            PyTypeError::new_err(format!("{what}: a cluster is a dict {{kind, id}}"))
+        })?;
         Ok(ClusterRef::new(
             kind_arg(store, ns, &need(dict, "kind", what)?, what)?,
             need(dict, "id", what)?.extract::<u64>()?,
@@ -1387,58 +1366,58 @@ use okm_dynamic::{
     }
 
     /// A fragment dict → `DynFragment`. Nothing here decides whether the mix is
-        /// legal: `incorporate` refuses a fragment carrying deletions and `retract`
-        /// refuses one carrying writes, with the same strings the Rust face raises.
-        ///
-        /// `store`/`ns` are here for ONE reason: an edge delete is a HEAD, and a
-        /// head names its predicate by name while the face keys carry the interned
-        /// id — so the id comes from the graph's own vocabulary. A head whose
-        /// predicate nobody interned names no row at all, so as a delete it is
-        /// nothing to do and drops out here (never a refusal).
-        fn fragment_of(
-            obj: &Bound<'_, PyAny>,
-            verb: ReadFor,
-            store: &EngineBox,
-            ns: u16,
-        ) -> PyResult<DynFragment> {
-            let dict = obj
-                .cast::<pyo3::types::PyDict>()
-                .map_err(|_| PyTypeError::new_err("a fragment must be a dict"))?;
-            let mut decls: Vec<Decl> = Vec::new();
-            let mut edge_deletes: Vec<EdgeKey> = Vec::new();
-            let mut node_deletes: Vec<NodeRef> = Vec::new();
-            let mut cluster_decls: Vec<Cluster> = Vec::new();
-            let mut cluster_deletes: Vec<ClusterRef> = Vec::new();
-            let mut removes: Vec<(ClusterRef, Vec<NodeRef>)> = Vec::new();
+    /// legal: `incorporate` refuses a fragment carrying deletions and `retract`
+    /// refuses one carrying writes, with the same strings the Rust face raises.
+    ///
+    /// `store`/`ns` are here for ONE reason: an edge delete is a HEAD, and a
+    /// head names its predicate by name while the face keys carry the interned
+    /// id — so the id comes from the graph's own vocabulary. A head whose
+    /// predicate nobody interned names no row at all, so as a delete it is
+    /// nothing to do and drops out here (never a refusal).
+    fn fragment_of(
+        obj: &Bound<'_, PyAny>,
+        verb: ReadFor,
+        store: &EngineBox,
+        ns: u16,
+    ) -> PyResult<DynFragment> {
+        let dict = obj
+            .cast::<pyo3::types::PyDict>()
+            .map_err(|_| PyTypeError::new_err("a fragment must be a dict"))?;
+        let mut decls: Vec<Decl> = Vec::new();
+        let mut edge_deletes: Vec<EdgeKey> = Vec::new();
+        let mut node_deletes: Vec<NodeRef> = Vec::new();
+        let mut cluster_decls: Vec<Cluster> = Vec::new();
+        let mut cluster_deletes: Vec<ClusterRef> = Vec::new();
+        let mut removes: Vec<(ClusterRef, Vec<NodeRef>)> = Vec::new();
 
-            for item in list_of(dict, "edges")? {
-                // A HEAD is a delete target, a dict with attributes (or the tuple)
-                // is a declaration — the same verb-dependent reading clusters get.
-                // Reading both here is what lets `incorporate` answer with "that is
-                // retract's verb" instead of a type complaint about the shape the
-                // caller fed the other verb.
-                if verb == ReadFor::Delete && head_is_target(&item) {
-                    if let Some(key) = head_key(store, ns, &item, "edges")? {
-                        edge_deletes.push(key);
-                    }
-                } else {
-                    decls.push(edge_decl_of(&item, "edges")?);
-                }
-            }
-
-            for item in list_of(dict, "clusters")? {
-                if verb == ReadFor::Delete && cluster_is_target(&item) {
-                    cluster_deletes.push(cluster_ref_of(store, ns, &item, "clusters")?);
-                } else {
-                    cluster_decls.push(cluster_decl_of(store, ns, &item, "clusters")?);
-                }
-            }
-
-            for item in list_of(dict, "delete_edges")? {
-                if let Some(key) = head_key(store, ns, &item, "delete_edges")? {
+        for item in list_of(dict, "edges")? {
+            // A HEAD is a delete target, a dict with attributes (or the tuple)
+            // is a declaration — the same verb-dependent reading clusters get.
+            // Reading both here is what lets `incorporate` answer with "that is
+            // retract's verb" instead of a type complaint about the shape the
+            // caller fed the other verb.
+            if verb == ReadFor::Delete && head_is_target(&item) {
+                if let Some(key) = head_key(store, ns, &item, "edges")? {
                     edge_deletes.push(key);
                 }
+            } else {
+                decls.push(edge_decl_of(&item, "edges")?);
             }
+        }
+
+        for item in list_of(dict, "clusters")? {
+            if verb == ReadFor::Delete && cluster_is_target(&item) {
+                cluster_deletes.push(cluster_ref_of(store, ns, &item, "clusters")?);
+            } else {
+                cluster_decls.push(cluster_decl_of(store, ns, &item, "clusters")?);
+            }
+        }
+
+        for item in list_of(dict, "delete_edges")? {
+            if let Some(key) = head_key(store, ns, &item, "delete_edges")? {
+                edge_deletes.push(key);
+            }
+        }
         for item in list_of(dict, "delete_nodes")? {
             node_deletes.push(node_of(&item, "delete_nodes")?);
         }
@@ -1606,7 +1585,11 @@ use okm_dynamic::{
 
     /// The BULK form: a sorted set of handles in ONE registry range scan — what a
     /// materialisation of several steps pays, instead of one read per step.
-    fn handles_nodes(store: &EngineBox, ns: u16, handles: &[Handle]) -> Result<Vec<NodeRef>, String> {
+    fn handles_nodes(
+        store: &EngineBox,
+        ns: u16,
+        handles: &[Handle],
+    ) -> Result<Vec<NodeRef>, String> {
         let mut sorted: Vec<Handle> = handles.to_vec();
         sorted.sort_unstable();
         sorted.dedup();
@@ -1891,7 +1874,12 @@ use okm_dynamic::{
         /// predicate id, which is what the faces carry; the head-shaped
         /// spelling lives in the `#[pymethods]` shell. [`Graph::key_of`] is the
         /// one translation, for a host that holds names.
-        pub fn edge_member_of_dyn(&self, kind: Kind, cluster: u64, key: &EdgeKey) -> Result<bool, String> {
+        pub fn edge_member_of_dyn(
+            &self,
+            kind: Kind,
+            cluster: u64,
+            key: &EdgeKey,
+        ) -> Result<bool, String> {
             self.inner
                 .lock()
                 .unwrap_or_else(std::sync::PoisonError::into_inner)
@@ -2279,8 +2267,7 @@ use okm_dynamic::{
         /// The node count the cluster row states (0 when it has no row).
         fn node_count(&self, kind: &Bound<'_, PyAny>, id: u64) -> PyResult<u64> {
             let kind = kind_arg(&self.store, self.ns, kind, "node_count")?;
-            self.node_count_dyn(kind, id)
-                .map_err(PyValueError::new_err)
+            self.node_count_dyn(kind, id).map_err(PyValueError::new_err)
         }
 
         /// Every cluster that DECLARES `node` a member:
@@ -2290,12 +2277,7 @@ use okm_dynamic::{
             let clusters = self
                 .node_sets_of_dyn(&node)
                 .map_err(PyValueError::new_err)?;
-            Python::attach(|py| {
-                clusters
-                    .iter()
-                    .map(|c| cluster_ref_to_py(py, c))
-                    .collect()
-            })
+            Python::attach(|py| clusters.iter().map(|c| cluster_ref_to_py(py, c)).collect())
         }
 
         /// Intern a kind label and hand back its id: the vocabulary is the
@@ -2361,19 +2343,13 @@ use okm_dynamic::{
         /// Every cluster of every kind: `[{"kind": int, "id": int}]`.
         fn all_clusters(&self) -> PyResult<Vec<Py<PyAny>>> {
             let clusters = self.all_clusters_dyn().map_err(PyValueError::new_err)?;
-            Python::attach(|py| {
-                clusters
-                    .iter()
-                    .map(|c| cluster_ref_to_py(py, c))
-                    .collect()
-            })
+            Python::attach(|py| clusters.iter().map(|c| cluster_ref_to_py(py, c)).collect())
         }
 
         /// The member count the cluster row states (0 when it has no row).
         fn edge_count(&self, kind: &Bound<'_, PyAny>, id: u64) -> PyResult<u64> {
             let kind = kind_arg(&self.store, self.ns, kind, "edge_count")?;
-            self.edge_count_dyn(kind, id)
-                .map_err(PyValueError::new_err)
+            self.edge_count_dyn(kind, id).map_err(PyValueError::new_err)
         }
 
         /// Every cluster the edge named by `head` belongs to:
@@ -2387,15 +2363,8 @@ use okm_dynamic::{
             let Some(key) = self.key_of(head, "edge_sets_of")? else {
                 return Ok(Vec::new());
             };
-            let clusters = self
-                .edge_sets_of_dyn(&key)
-                .map_err(PyValueError::new_err)?;
-            Python::attach(|py| {
-                clusters
-                    .iter()
-                    .map(|c| cluster_ref_to_py(py, c))
-                    .collect()
-            })
+            let clusters = self.edge_sets_of_dyn(&key).map_err(PyValueError::new_err)?;
+            Python::attach(|py| clusters.iter().map(|c| cluster_ref_to_py(py, c)).collect())
         }
     }
 
@@ -2501,12 +2470,7 @@ use okm_dynamic::{
         }
 
         fn prefix(&self) -> Vec<u8> {
-            okm_dynamic::edge_face_prefix(
-                self.ns.to_be_bytes(),
-                self.dir,
-                self.filter,
-                self.handle,
-            )
+            okm_dynamic::edge_face_prefix(self.ns.to_be_bytes(), self.dir, self.filter, self.handle)
         }
 
         /// Point the cursor at (possibly) another face and re-fill it. A filter
@@ -2989,9 +2953,9 @@ use okm_dynamic::{
                             Some(KeyRowValue::Document(document)) => {
                                 map_to_dict(py, document)?.into_any().unbind()
                             }
-                            Some(KeyRowValue::Entry(bytes)) => bytes.clone().into_pyobject(py)?
-                                .unbind()
-                                .into_any(),
+                            Some(KeyRowValue::Entry(bytes)) => {
+                                bytes.clone().into_pyobject(py)?.unbind().into_any()
+                            }
                             None => py.None(),
                         };
                         dict.set_item("value", value)?;

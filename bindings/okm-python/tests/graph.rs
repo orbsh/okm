@@ -289,13 +289,20 @@ fn a_write_is_visible_after_incorporate() {
         }),
         Decl::edge(edge(person(2), org(9), "works_at")),
     ]);
-    fragment.cluster(Cluster::edges("community", attrs(&[("label", Variant::Str("acme".into()))])));
+    fragment.cluster(Cluster::edges(
+        "community",
+        attrs(&[("label", Variant::Str("acme".into()))]),
+    ));
     let report = g
         .incorporate_dyn(fragment)
         .unwrap_or_else(|e| panic!("incorporate: {e}"));
 
     assert_eq!(report.edges.len(), 2, "one head per edge declaration");
-    assert_eq!(report.edge_sets.len() + report.node_sets.len(), 1, "one id per cluster declaration");
+    assert_eq!(
+        report.edge_sets.len() + report.node_sets.len(),
+        1,
+        "one id per cluster declaration"
+    );
     let cluster = report.edge_sets[0].id;
     assert_eq!(cluster, 1, "ids start at 1 — 0 is \"no parent\"");
 
@@ -329,26 +336,35 @@ fn a_write_is_visible_after_incorporate() {
         "the Dict payload round-trips through the field vocabulary"
     );
     assert_eq!(
-        g.edge_members_dyn(g.kind_id_dyn("community").expect("kind"), cluster).expect("members"),
+        g.edge_members_dyn(g.kind_id_dyn("community").expect("kind"), cluster)
+            .expect("members"),
         report.edges,
         "one scan of the authority face, and it answers the same tuples"
     );
     assert_eq!(
-        g.edge_count_dyn(g.kind_id_dyn("community").expect("kind"), cluster).expect("count"),
+        g.edge_count_dyn(g.kind_id_dyn("community").expect("kind"), cluster)
+            .expect("count"),
         2
     );
     assert_eq!(
-        g.clusters_dyn(g.kind_id_dyn("community").expect("kind")).expect("clusters"),
+        g.clusters_dyn(g.kind_id_dyn("community").expect("kind"))
+            .expect("clusters"),
         vec![cluster]
     );
     assert_eq!(
         g.all_clusters_dyn().expect("all"),
-        vec![ClusterRef::new(g.kind_id_dyn("community").expect("kind"), cluster)]
+        vec![ClusterRef::new(
+            g.kind_id_dyn("community").expect("kind"),
+            cluster
+        )]
     );
     // The reverse direction: which clusters does an edge belong to?
     assert_eq!(
         g.edge_sets_of_dyn(&report.edges[1]).expect("edge sets"),
-        vec![ClusterRef::new(g.kind_id_dyn("community").expect("kind"), cluster)]
+        vec![ClusterRef::new(
+            g.kind_id_dyn("community").expect("kind"),
+            cluster
+        )]
     );
     assert!(
         g.edge_sets_of_dyn(&key(&g, person(9), org(9), "works_at"))
@@ -382,7 +398,11 @@ fn a_write_is_visible_after_incorporate() {
         org(9),
         "an out hop's far end is the destination"
     );
-    assert_eq!(steps[0].src, person(1), "the near side is the edge's source");
+    assert_eq!(
+        steps[0].src,
+        person(1),
+        "the near side is the edge's source"
+    );
     assert_eq!(
         steps[0].predicate, report.edges[0].predicate,
         "the untyped face carries the predicate id beside the endpoints"
@@ -396,9 +416,17 @@ fn a_write_is_visible_after_incorporate() {
         .find(|view| view.edge() == report.edges[0])
         .expect("the same edge from the far side")
         .clone();
-    assert_eq!(mirrored.far, person(1), "the in hop's far end is the source");
     assert_eq!(
-        (mirrored.src.clone(), mirrored.dst.clone(), mirrored.predicate),
+        mirrored.far,
+        person(1),
+        "the in hop's far end is the source"
+    );
+    assert_eq!(
+        (
+            mirrored.src.clone(),
+            mirrored.dst.clone(),
+            mirrored.predicate
+        ),
         (
             steps[0].src.clone(),
             steps[0].dst.clone(),
@@ -492,7 +520,10 @@ fn deleting_a_node_takes_its_edges_and_deleting_an_edge_leaves_the_endpoints() {
             f.delete_edge(key(&g, person(9), org(9), "works_at"));
         }))
         .unwrap_or_else(|e| panic!("retract: {e}"));
-    assert_eq!((nothing.nodes, nothing.edges, nothing.memberships), (0, 0, 0));
+    assert_eq!(
+        (nothing.nodes, nothing.edges, nothing.memberships),
+        (0, 0, 0)
+    );
 }
 
 // ---------------------------------------------------------------------------
@@ -599,7 +630,10 @@ fn a_traversal_reads_only_the_entries_the_caller_asks_for() {
         "and reads no entry only to throw it away"
     );
     assert_eq!(unknown.direction_of(), Direction::Out);
-    assert!(unknown.error_text().is_none(), "an empty face is not a fault");
+    assert!(
+        unknown.error_text().is_none(),
+        "an empty face is not a fault"
+    );
 }
 
 // ---------------------------------------------------------------------------
@@ -638,7 +672,8 @@ fn member_of_answers_before_and_after_a_retract() {
         "a tuple no cluster holds"
     );
     assert!(
-        !g.edge_member_of_dyn(g.kind_id_dyn("event").expect("kind"), cluster, &keys[0]).expect("member_of"),
+        !g.edge_member_of_dyn(g.kind_id_dyn("event").expect("kind"), cluster, &keys[0])
+            .expect("member_of"),
         "membership is per KIND — the same tuple on another kind is another cluster"
     );
 
@@ -652,19 +687,23 @@ fn member_of_answers_before_and_after_a_retract() {
     assert_eq!(removed.edges, 1);
     assert_eq!(removed.memberships, 1, "one membership row swept");
     assert!(
-        !g.edge_member_of_dyn(g.kind_id_dyn("community").expect("kind"), cluster, &keys[1]).expect("member_of"),
+        !g.edge_member_of_dyn(g.kind_id_dyn("community").expect("kind"), cluster, &keys[1])
+            .expect("member_of"),
         "the retracted edge is no longer a member"
     );
     assert!(
-        g.edge_member_of_dyn(g.kind_id_dyn("community").expect("kind"), cluster, &keys[0]).expect("member_of"),
+        g.edge_member_of_dyn(g.kind_id_dyn("community").expect("kind"), cluster, &keys[0])
+            .expect("member_of"),
         "the others still are"
     );
     assert_eq!(
-        g.edge_members_dyn(g.kind_id_dyn("community").expect("kind"), cluster).expect("members"),
+        g.edge_members_dyn(g.kind_id_dyn("community").expect("kind"), cluster)
+            .expect("members"),
         vec![keys[0].clone(), keys[2].clone()]
     );
     assert_eq!(
-        g.edge_count_dyn(g.kind_id_dyn("community").expect("kind"), cluster).expect("count"),
+        g.edge_count_dyn(g.kind_id_dyn("community").expect("kind"), cluster)
+            .expect("count"),
         2,
         "the row's count was re-stamped"
     );
@@ -683,7 +722,8 @@ fn member_of_answers_before_and_after_a_retract() {
         .unwrap_or_else(|e| panic!("retract: {e}"));
     assert_eq!(removed.memberships, 1, "one membership row swept");
     assert!(
-        g.edge_member_of_dyn(g.kind_id_dyn("community").expect("kind"), cluster, &keys[0]).expect("member_of"),
+        g.edge_member_of_dyn(g.kind_id_dyn("community").expect("kind"), cluster, &keys[0])
+            .expect("member_of"),
         "the remaining edge is still a member of a one-member cluster"
     );
     assert!(
@@ -693,11 +733,13 @@ fn member_of_answers_before_and_after_a_retract() {
         "the scope outlives its members"
     );
     assert_eq!(
-        g.edge_members_dyn(g.kind_id_dyn("community").expect("kind"), cluster).expect("members"),
+        g.edge_members_dyn(g.kind_id_dyn("community").expect("kind"), cluster)
+            .expect("members"),
         vec![keys[0].clone()]
     );
     assert_eq!(
-        g.edge_count_dyn(g.kind_id_dyn("community").expect("kind"), cluster).expect("count"),
+        g.edge_count_dyn(g.kind_id_dyn("community").expect("kind"), cluster)
+            .expect("count"),
         1,
         "the row's count is honest"
     );
@@ -732,7 +774,9 @@ fn a_key_set_intersects_then_fetches_in_one_call() {
         .incorporate_dyn(fragment)
         .unwrap_or_else(|e| panic!("cluster: {e}"));
     let cluster = grouped.edge_sets[0].id;
-    let members = g.edge_members_dyn(g.kind_id_dyn("community").expect("kind"), cluster).expect("members");
+    let members = g
+        .edge_members_dyn(g.kind_id_dyn("community").expect("kind"), cluster)
+        .expect("members");
 
     // The walk's own face keys — the position okm-query's operators speak.
     let steps = walk(&g, &person(1));
@@ -861,7 +905,9 @@ fn a_collection_key_set_fetches_the_assembled_document() {
     );
     assert_eq!(
         Some(document.clone()),
-        collection.fetch_doc(&pkey).expect("the collection's own read"),
+        collection
+            .fetch_doc(&pkey)
+            .expect("the collection's own read"),
         "one read path: a key set's fetch and `Collection.fetch` answer the same document"
     );
 
@@ -972,10 +1018,7 @@ mod python_face {
                 "the report answers the predicate by NAME, so the head feeds back in"
             );
             assert!(
-                report
-                    .get_item("edge_ids")
-                    .unwrap()
-                    .is_none(),
+                report.get_item("edge_ids").unwrap().is_none(),
                 "there is no edge id to report any more"
             );
 
@@ -1017,9 +1060,7 @@ mod python_face {
             assert!(err.to_string().contains("dict of fields"), "{err}");
 
             // ---- the traversal: a real iterator, and `pulled` proves it ----
-            let walk = g
-                .call_method1("out", (node_dict(py, 0x10, 1),))
-                .unwrap();
+            let walk = g.call_method1("out", (node_dict(py, 0x10, 1),)).unwrap();
             let first = as_dict(walk.call_method0("__next__").unwrap());
             assert!(
                 first.get_item("edge_id").unwrap().is_none(),
@@ -1128,12 +1169,11 @@ mod python_face {
             );
 
             // ---- cluster reads take a HEAD and answer plain values ----
-            assert!(
-                g.call_method1("edge_member_of", ("community", 1u64, heads[1].clone()))
-                    .unwrap()
-                    .extract::<bool>()
-                    .unwrap()
-            );
+            assert!(g
+                .call_method1("edge_member_of", ("community", 1u64, heads[1].clone()))
+                .unwrap()
+                .extract::<bool>()
+                .unwrap());
             // The tuple spelling is accepted too — it is the same head.
             let tuple_head = (
                 node_dict(py, 0x10, 1),
@@ -1168,9 +1208,7 @@ mod python_face {
                 "works_at",
                 "a member is a head, not an id"
             );
-            let refs = g
-                .call_method1("edge_sets_of", (heads[0].clone(),))
-                .unwrap();
+            let refs = g.call_method1("edge_sets_of", (heads[0].clone(),)).unwrap();
             assert_eq!(refs.len().unwrap(), 1);
 
             // ---- a predicate nobody interned names no edge at all ----
@@ -1285,7 +1323,12 @@ mod python_face {
             assert_eq!(members.len(), 2);
             let first = as_dict(members.get_item(0).unwrap());
             assert_eq!(
-                first.get_item("ns").unwrap().unwrap().extract::<u16>().unwrap(),
+                first
+                    .get_item("ns")
+                    .unwrap()
+                    .unwrap()
+                    .extract::<u16>()
+                    .unwrap(),
                 0x10
             );
             assert_eq!(
@@ -1299,18 +1342,16 @@ mod python_face {
             );
 
             // ---- the point test, both answers ----
-            assert!(
-                g.call_method1("node_member_of", ("community", id, node_dict(py, 0x10, 9)))
-                    .unwrap()
-                    .extract::<bool>()
-                    .unwrap()
-            );
-            assert!(
-                !g.call_method1("node_member_of", ("community", id, node_dict(py, 0x10, 99)))
-                    .unwrap()
-                    .extract::<bool>()
-                    .unwrap()
-            );
+            assert!(g
+                .call_method1("node_member_of", ("community", id, node_dict(py, 0x10, 9)))
+                .unwrap()
+                .extract::<bool>()
+                .unwrap());
+            assert!(!g
+                .call_method1("node_member_of", ("community", id, node_dict(py, 0x10, 99)))
+                .unwrap()
+                .extract::<bool>()
+                .unwrap());
 
             // ---- the count the row states, and the per-entity mirror ----
             assert_eq!(

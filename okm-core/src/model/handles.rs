@@ -166,7 +166,9 @@ fn node_of(value: &[u8]) -> Option<NodeRef> {
 }
 
 fn be_u64(bytes: &[u8]) -> Option<u64> {
-    <[u8; HANDLE_WIDTH]>::try_from(bytes).ok().map(u64::from_be_bytes)
+    <[u8; HANDLE_WIDTH]>::try_from(bytes)
+        .ok()
+        .map(u64::from_be_bytes)
 }
 
 /// Engine + namespace = the handle registry of one graph.

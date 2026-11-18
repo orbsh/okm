@@ -696,8 +696,10 @@ impl<S: VirtualStorage> Graph<S> {
             if suffix.len() != 16 {
                 continue;
             }
-            let (Some(src), Some(dst)) = (Handle::parse(&suffix[..HANDLE_WIDTH]), Handle::parse(&suffix[HANDLE_WIDTH..]))
-            else {
+            let (Some(src), Some(dst)) = (
+                Handle::parse(&suffix[..HANDLE_WIDTH]),
+                Handle::parse(&suffix[HANDLE_WIDTH..]),
+            ) else {
                 continue;
             };
             rows.push(HandleKey::new(src, predicate_id, dst));
