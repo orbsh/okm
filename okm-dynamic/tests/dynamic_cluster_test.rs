@@ -1819,3 +1819,42 @@ fn a_selection_can_be_persisted_dynamic() {
         );
     }
 }
+
+/// A repoint with no node deletion MOVES the assertion on the dynamic form too:
+/// the source row has to reach the plan, or the move is a duplicate.
+#[test]
+fn a_repoint_without_a_node_delete_does_not_duplicate_dynamic() {
+    for (engine, store) in TestStore::matrix() {
+        let mut g = graph(&store);
+        let moved_edge = edge(person(1), org(9), "works_at");
+        let mut facts = DynFragment::new([Decl::edge(moved_edge.clone())]);
+        facts.on_edge_conflict(|_stored, declared| declared.clone());
+        g.incorporate(facts)
+            .unwrap_or_else(|e| panic!("{engine}: write: {e}"));
+
+        let to = edge(person(2), org(9), "works_at");
+        let mut split = DynFragment::new([]);
+        split.repoint(moved_edge, to.clone());
+        let report = g
+            .replace(split)
+            .unwrap_or_else(|e| panic!("{engine}: replace: {e}"));
+        assert_eq!(report.edges, 1, "{engine}: the move counts as one removal");
+
+        let from_key = g
+            .key_of(&edge(person(1), org(9), "works_at"))
+            .expect("lookup");
+        assert!(
+            g.get_edge(&from_key).expect("read").is_none(),
+            "{engine}: the old head is gone, not duplicated"
+        );
+        assert!(
+            g.out_edges(&person(1)).expect("faces").is_empty(),
+            "{engine}: and its face is empty"
+        );
+        assert_eq!(
+            g.out_edges(&person(2)).expect("faces").len(),
+            1,
+            "{engine}: the moved edge is on the new endpoint"
+        );
+    }
+}

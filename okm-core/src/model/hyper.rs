@@ -2741,7 +2741,16 @@ impl<S: VirtualStorage, G: GraphEncode + Default> Graph<S, G> {
                     .insert(node.clone());
             }
         }
-        for head in &fragment.edge_deletes {
+        // A repoint RETRACTS the head it replaces, so its source has to reach the
+        // plan too. Without this the moved assertion is duplicated instead of
+        // moved whenever no node deletion happens to cascade over it — the
+        // cascade hid the bug, because a merge deletes a node and a split does
+        // not.
+        for head in fragment
+            .edge_deletes
+            .iter()
+            .chain(fragment.repoints.iter().map(|(from, _)| from))
+        {
             // A predicate nobody interned names no row: absence is nothing to do.
             if let Some(key) = self.key_of(head)?
                 && let Some(row) = self.row_of(&key)?

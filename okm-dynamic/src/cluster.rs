@@ -1606,7 +1606,17 @@ impl<S: VirtualStorage> Graph<S> {
                     .insert(node.clone());
             }
         }
-        for edge in &fragment.edge_deletes {
+        // A repoint RETRACTS the head it replaces, so its source reaches the plan
+        // too: without this the moved assertion is duplicated instead of moved
+        // whenever no node deletion happens to cascade over it. The source is a
+        // declared edge here, so it is resolved to the key the faces are keyed by.
+        let mut replaced: Vec<EdgeKey> = Vec::new();
+        for (from, _) in &fragment.repoints {
+            // Interning the predicate is what the write would do anyway; a
+            // repoint whose source never landed simply names no row.
+            replaced.push(self.key_of(from)?);
+        }
+        for edge in fragment.edge_deletes.iter().chain(replaced.iter()) {
             // A tuple naming an endpoint the graph never saw names no row:
             // absence is nothing to do, not a refusal.
             if let Some(row) = row_of_key(self.store_ref(), &ns, edge)? {

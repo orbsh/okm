@@ -2500,3 +2500,56 @@ fn a_selection_can_be_persisted_as_a_node_set() {
         );
     }
 }
+
+/// A repoint with NO node deletion still MOVES the assertion. The node cascade
+/// used to hide this: a merge deletes a node, whose cascade purges every incident
+/// edge as a side effect, so the duplicate the plan missed was never visible. A
+/// split retires nothing, so the source row has to reach the plan on its own.
+#[test]
+fn a_repoint_without_a_node_delete_does_not_duplicate() {
+    for (engine, store) in TestStore::matrix() {
+        let mut g = graph(&store);
+        let mut facts = Fragment::<Employment>::new([edge(person(1), org(9))]);
+        facts.on_edge_conflict(|_stored, _declared| Employment { weight: 5 });
+        g.incorporate(facts)
+            .unwrap_or_else(|e| panic!("{engine}: facts: {e}"));
+
+        let mut split = Fragment::<Employment>::new([]);
+        split.repoint(head(person(1), org(9)), head(person(2), org(9)));
+        let report = g
+            .replace(split)
+            .unwrap_or_else(|e| panic!("{engine}: replace: {e}"));
+        assert_eq!(report.written.edges.len(), 1, "{engine}: one moved assertion");
+        assert_eq!(report.edges, 1, "{engine}: the move counts as one removal");
+
+        let moved = g
+            .key_of(&head(person(2), org(9)))
+            .expect("lookup")
+            .expect("interned");
+        assert_eq!(
+            Employment::decode_payload(
+                &g.get_edge(&moved)
+                    .expect("read")
+                    .expect("the moved edge is live")
+                    .payload
+            )
+            .weight,
+            5,
+            "{engine}: the payload travelled"
+        );
+        let gone = g
+            .key_of(&head(person(1), org(9)))
+            .expect("lookup")
+            .expect("interned");
+        assert!(
+            g.get_edge(&gone).expect("read").is_none(),
+            "{engine}: and the old head is gone, not duplicated"
+        );
+        assert!(
+            g.out_edges(&person(1))
+                .expect("faces")
+                .is_empty(),
+            "{engine}: the old endpoint's face is empty too"
+        );
+    }
+}
