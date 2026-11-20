@@ -2259,6 +2259,45 @@ impl<S> ChangelogStore<S> {
 }
 
 impl<S: VirtualStorage> VirtualStorage for ChangelogStore<S> {
+    /// Learn a table from the store's own meta row instead of from a registration call
+    /// (ADR-0074 §3): attach has just written it, so the row says whether this table is
+    /// captured (`capture = 0`), and — when it is — what a segment of it is stamped with.
+    ///
+    /// One point read per table per process. The row is the same one every other reader uses,
+    /// which is the point: nothing here has to be kept in step with the declaration, because
+    /// the declaration IS the row.
+    fn note_table(&self, header: &[u8]) {
+        if self.cfg.root().is_none() {
+            return;
+        }
+        if self.metas.borrow().contains_key(header) {
+            return;
+        }
+        let Some(meta) = crate::model::meta::read(&self.inner, header).ok().flatten() else {
+            // Not attached (or a store that cannot be read): nothing is claimed about it, so
+            // nothing is captured. Attach is what writes the row; a table that never attached
+            // never reaches this branch through `Collection::open`.
+            return;
+        };
+        if meta.get(crate::model::meta::CAPTURE) == Some(&b"0"[..]) {
+            return;
+        }
+        let Some(layout_version) = meta.layout_version() else {
+            return;
+        };
+        let meta_of_segment = SegmentMeta {
+            kind: KIND_DELTA,
+            layout_version,
+            name: meta.table_name().unwrap_or_default().to_string(),
+            fingerprint: meta
+                .faces()
+                .unwrap_or([0u8; crate::model::faces::FINGERPRINT_LEN]),
+        };
+        self.metas
+            .borrow_mut()
+            .insert(header.to_vec(), meta_of_segment);
+    }
+
     fn put(&self, key: Vec<u8>, value: Vec<u8>) -> Result<()> {
         // A point write is a one-op commit: captured like any other, so a host
         // that reaches the engine directly is not invisible either. The clone is

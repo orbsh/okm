@@ -16,6 +16,7 @@
 )]
 
 use okm_async::TestStore;
+use okm_core::changelog::{ChangelogConfig, ChangelogStore, table_dir};
 use okm_core::{Document, DocumentEncode, Error, KeyEncode, meta};
 
 #[derive(KeyEncode, Clone, PartialEq, Debug, Default)]
@@ -166,4 +167,61 @@ fn the_capture_opt_out_travels_as_data() {
         Ok(_) => panic!("a store that opted out must not be opened by a capturing declaration"),
         Err(other) => panic!("wrong refusal: {other}"),
     }
+}
+
+#[test]
+fn attaching_is_what_tells_the_log_to_capture() {
+    // ADR-0074 §3: no `Collection::captured`, no `register`. The table opens; the store reads
+    // the row attach just wrote; the writes that follow are captured.
+    let logs = tempfile::tempdir().unwrap();
+    let store = ChangelogStore::new(TestStore::default(), ChangelogConfig::new(logs.path()));
+    {
+        let app = okm_core::Collection::<_, AttachKey, AttachRow>::open(store).unwrap();
+        app.put(
+            &AttachKey { id: 1 },
+            &AttachRow {
+                level: 7,
+                label: "captured".to_string(),
+            },
+        )
+        .unwrap();
+    }
+    let dir = table_dir(logs.path(), &header::<AttachRow>());
+    let segments: Vec<_> = std::fs::read_dir(&dir)
+        .map(|d| {
+            d.filter_map(Result::ok)
+                .map(|e| e.file_name().to_string_lossy().to_string())
+                .filter(|n| n.ends_with(".segment"))
+                .collect()
+        })
+        .unwrap_or_default();
+    assert!(
+        !segments.is_empty(),
+        "opening a table is the whole instruction to capture it: {segments:?}"
+    );
+
+    // And the declaration that opted out is honoured without anyone saying so.
+    let quiet_logs = tempfile::tempdir().unwrap();
+    let quiet_store = ChangelogStore::new(
+        TestStore::default(),
+        ChangelogConfig::new(quiet_logs.path()),
+    );
+    {
+        let app = okm_core::Collection::<_, QuietKey, QuietRow>::open(quiet_store).unwrap();
+        app.put(
+            &QuietKey { id: 1 },
+            &QuietRow {
+                label: "not captured".to_string(),
+            },
+        )
+        .unwrap();
+    }
+    let quiet_dir = table_dir(quiet_logs.path(), &header::<QuietRow>());
+    let wrote = std::fs::read_dir(&quiet_dir)
+        .map(|d| {
+            d.filter_map(Result::ok)
+                .any(|e| e.file_name().to_string_lossy().ends_with(".segment"))
+        })
+        .unwrap_or(false);
+    assert!(!wrote, "an opted-out declaration captured something");
 }

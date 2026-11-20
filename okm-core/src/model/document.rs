@@ -161,6 +161,9 @@ impl<S: VirtualStorage, K: KeyEncode, R: Document<Key = K>> Collection<S, K, R> 
         if dirty {
             crate::model::meta::write(&self.store, &header, &meta)?;
         }
+        // The store has the row now; a wrapper that keeps history reads it instead of being
+        // told (ADR-0074 §3). This is the only call: once per table per process, here.
+        self.store.note_table(&header);
         Ok(())
     }
 

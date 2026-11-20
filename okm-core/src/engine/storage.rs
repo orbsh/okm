@@ -28,6 +28,16 @@ pub fn prefix_end(prefix: &[u8]) -> Option<Vec<u8>> {
 }
 
 pub trait VirtualStorage {
+    /// Announce that a table exists, so a wrapper that keeps history can learn about it
+    /// (ADR-0074 §3).
+    ///
+    /// Called once per table per process, from attach — never from a write. The default is a
+    /// no-op because an engine is a place to put bytes, not a place that keeps history; a
+    /// store that does keep one overrides this and reads the table's meta row, which attach
+    /// has just written. A header is all that travels: what the table IS stays in the store,
+    /// where every reader — typed, dynamic, or a build that has no declaration at all — finds
+    /// the same answer.
+    fn note_table(&self, _header: &[u8]) {}
     /// Point write. `Err` is the engine refusing the bytes — the mirror of
     /// `get`'s error, and the reason this answers `Result` instead of `()`:
     /// a write that cannot report a refused commit has no error channel at all,
