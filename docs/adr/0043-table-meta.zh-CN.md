@@ -2,6 +2,8 @@
 
 > **语言：** [English](0043-table-meta.md)（主） · [中文](0043-table-meta.zh-CN.md)
 
+**2026-11-20 修正（ADR-0074）：** attach 进构造函数——`Collection::open(store) -> Result<Self>` 负责种下并核对这一行，`Collection::new` 不再是表投入使用的方式。保留 infallible 的 `new` 的代价是一个可选的动词，而 §4 的动词在 `src` 里没有任何调用点。这一行同时携带声明本身（`schema`，二进制），以及 `#[ok_uncaptured]` 表的 `capture = 0`。
+
 **状态：** Accepted（2026-10-28）。随 `okm-core/src/model/meta.rs`、
 `Collection::{meta, ensure_layout, set_meta}`、`okm-core/tests/meta_test.rs` 一并落地。
 动态侧随后走同一套 helper 补齐（2026-10-30：`DynamicCollection::{meta, ensure_layout,
@@ -53,7 +55,7 @@ varint 编码。
 current }`、点名两个号，一个号都没记就报 `LayoutUnstamped { current }`），否则原样返回那一行（连同
 别处写的名字），因为重写指纹会抹掉
 `rebuild_faces` 要据此动作的 `Stale` 信号。调用点是挂载／boot，每张表一次。`Collection::new`
-保持零 I/O、仍返回 `Self`——这正是它做成动词、而不是构造期工作的原因。载荷的代次不记在这里——
+attach 是构造期的工作：它已经进了 `Collection::open`（2026-11-20 修正，ADR-0074）——一个没人调的可选动词不是规矩。载荷的代次不记在这里——
 它属于段头（ADR-0042，已修订）——但**库自己的**号记在这里，而这一行比的就是它：布局变更是一次
 割接，所以记着别的号的库在挂载处按号被拒绝，而不是在一份从未写过它的声明下被逐行解码。一个号都
 没记的行同样被拒绝：这里没有迁移，也没有更老的布局要容忍，本构建没有盖过戳的行就不是这个布局的

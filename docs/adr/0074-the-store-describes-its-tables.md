@@ -1,0 +1,38 @@
+# 0074 — The store describes its tables, and the log reads the description
+
+Status: decided 2026-11-20, not yet implemented.
+
+## Context
+
+ADR-0056 §2 gave capture one switch with two positions: the declaration (`Document::CAPTURED`, on by default, `#[ok_uncaptured]` turns it off) and the location (`Location::Off` for a deployment with no local durable directory). Both are adequate, and both are checked in one place — `register`.
+
+The implementation added a third position that nobody decided on: `Collection::captured(store)` registers a table, `Collection::new(store)` does not. A table is logged or not depending on which verb an assembly site happened to call, and the two verbs are indistinguishable at the type level — `ChangelogStore` is a `VirtualStorage`, so every constructor that takes a store takes it too. Worse, `register` answers `Ok(())` in three different situations: the type is `#[ok_uncaptured]`, the deployment has no local directory, and the table was actually registered. One value, three meanings, and no way for a caller to tell them apart.
+
+That was survivable while the log was an export surface: a table missing from it was a table missing from an export. ADR-0071 made the log the baseline's source, so a table missing from it is a table missing from a *restore* — silently, and only at the moment someone restores.
+
+The same shape appears twice more. ADR-0043 §4 kept `Collection::new` I/O-free because it returns `Self`, which is why attach is a verb (`ensure_layout`) — and nothing in `src` calls that verb; only tests do. okm-dynamic takes its `CollectionSchema` as a constructor argument and holds it in memory; the only persistent copy anywhere is the log's JSON sidecar, which exists only if `register` ran.
+
+What the store already holds is the missing half. `[partition][ns][0x1F]` is one row per table carrying `version`, `faces` and `table` (ADR-0043) — exactly what a segment header is stamped with (`SegmentMeta::of::<R>`: layout version, faces fingerprint, name). The row is a NAME → BYTES map whose meaning belongs to whoever wrote the name, so a declaration can ride in it without a layout decision.
+
+## The decision
+
+1. **One constructor, and it is fallible.** `Collection::open(store) -> Result<Self>` performs attach: point-read `[partition][ns][0x1F]`, seed it when absent, refuse a store of another generation (`LayoutMismatch`, `LayoutUnstamped`). `Collection::new` is no longer public; `ensure_layout` and `captured` disappear as verbs a caller has to remember. A table cannot be in use without having attached, so it cannot be silently absent from the log either.
+2. **The row carries the declaration, in the store's own encoding.** Beside `version`, `faces` and `table`, `schema` holds `CollectionSchema` as bytes — a hand-written encode/decode with a leading layout byte, the same discipline as `TableMeta` and the record codecs. `capture` is written by `#[ok_uncaptured]` declarations and by nothing else; absence means captured, so a store written before this decision reads as captured-by-default. JSON leaves the write path: the sidecar and any human-readable view become renderings of those bytes, produced on demand. "Binary" here means the crate's own codec family — `put_len`-prefixed strings and byte strings, big-endian fixed-width numbers, a leading format byte for the encoding itself (separate from the table's `layout_version`), and a decoder that panics on bytes this build could not have written (ADR-0040) instead of parsing forgivingly.
+3. **The log learns by observation.** The meta row is an ordinary write, so it crosses the commit boundary like any other: `touched()` sees a key under `[ns][0x1F]`, decodes the row and caches `ns → SegmentMeta` in memory. A log enabled after the row was written does one point read per unknown ns, once per process. Nothing is added to the per-commit path, and there is no registration call left to forget. The decision itself must not scale with the number of tables either — it is the one thing the log does on every write, and today it is a linear prefix scan over every registered header, once per key, followed by a second pass that re-filters the whole batch for each table it found. The shape that holds is: a deny set of `#[ok_uncaptured]` namespaces (usually empty, so the fast path is one emptiness check), keyed by the `[partition][ns]` word rather than by a byte prefix, and one partition of the batch into per-table slices instead of a scan plus a re-filter. Measured reference for the ceiling: capture costs +84 to +99 ns per write (5–8% over a durable fjall put), which is the frame encode and the memcpy into the segment buffer — the routing must stay invisible next to it.
+4. **The two definitions are checked, not assumed.** A declaration exists twice by necessity — as compiled consts in the binary and as bytes in the store — so attach compares them: the stored schema must equal the one this build derives from the declaration for that layout version, and a difference is refused (the sidecar rule, moved to where it runs every time). Faces drift stays what ADR-0048 made it, a repairable `Stale`; a declaration that changes shape requires a layout bump (ADR-0042).
+5. **okm-dynamic opens from the store.** `DynamicCollection::open(store, ns)` reads the declaration from the meta row and compiles it once into a plan — field positions, widths, index slots — so a record's access is an index into that plan rather than a name resolved per record. The plan is derived at open and lives in memory; the store holds the declaration, never the compiled form.
+
+## What follows from it
+
+- Every assembly site changes (`new` → `open`, and the call becomes fallible). That churn *is* the enforcement: the compiler is what makes "attached" unavoidable.
+- A store gains roughly one to two kilobytes per table and becomes self-describing. Export, the lake, okm-dynamic and the log then read one copy of the declaration instead of four conventions.
+- The sidecar file stops being a second source of truth and becomes a convenience.
+- ADR-0043 §4 is amended: attach moved into the constructor. Keeping an infallible `new` was paid for with an optional verb, and the optional verb was not called.
+
+## Rejected
+
+- **The assembly switch.** It is this ADR's reason to exist.
+- **A defaulted method on `VirtualStorage`** (`register_table`): `dyn VirtualStorage` appears in five places, so a generic method costs object safety, and a non-generic one makes the engine trait carry a log-shaped type — the dependency direction reverses, and the engine layer starts knowing what a segment is.
+- **Lazy attach on first write.** A once-only cost moved onto the hot path, to preserve a constructor that was infallible only by convention.
+- **JSON in the row.** Bytes on the wire and a rendering at the edge is the crate's rule everywhere else; a store's own description is not the place to break it.
+- **A link-time registry of declarations** (a `linkme`-style distributed slice): it would work for a typed consumer, but it makes a store's contents depend on which types were linked into the binary, and it does not help a dynamic consumer that has no image of the declaration at all.

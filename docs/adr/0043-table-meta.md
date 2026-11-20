@@ -2,6 +2,12 @@
 
 > **Languages:** [English](0043-table-meta.md) (primary) · [中文](0043-table-meta.zh-CN.md)
 
+**Amended 2026-11-20 (ADR-0074):** attach moved into the constructor —
+`Collection::open(store) -> Result<Self>` seeds and checks this row, and `Collection::new`
+is no longer the way a table comes into use. Keeping `new` infallible was paid for with an
+optional verb, and §4's verb was not called anywhere in `src`. The row also carries the
+declaration itself (`schema`, binary) and, for `#[ok_uncaptured]` tables, `capture = 0`.
+
 **Status:** Accepted (2026-10-28). Landed with `okm-core/src/model/meta.rs`,
 `Collection::{meta, ensure_layout, set_meta}`, and `okm-core/tests/meta_test.rs`.
 The dynamic side followed through the same helpers (2026-10-30:
@@ -68,8 +74,8 @@ derived faces; present row → refuse a row that is not of this generation
 `LayoutUnstamped { current }` when it names none), and otherwise answer the row
 untouched (other names included), because rewriting the fingerprint would erase the
 `Stale` signal `rebuild_faces` acts on. It is called at attach/boot, once per table.
-`Collection::new` stays I/O-free and keeps returning `Self` — which is exactly why this
-is a verb and not constructor work. A payload generation is not recorded here — it is the
+Attach is constructor work: it moved into `Collection::open` (amended 2026-11-20,
+ADR-0074) as soon as it became clear that an optional verb nobody calls is not a rule. A payload generation is not recorded here — it is the
 segment header's (ADR-0042, amended) — but the STORE's number is, and that is the one this
 row compares: a layout change is a cutover, so a store that records another number is
 refused by number at attach instead of being decoded row by row under a declaration that
