@@ -378,7 +378,7 @@ fn the_batch_writer_verb_captures_save_into() {
 fn status_reports_a_log_that_never_took_a_write() {
     let dir = tempfile::tempdir().expect("tempdir");
     let store = ChangelogStore::new(TestStore::slatedb_mem(), ChangelogConfig::new(dir.path()));
-    store.register::<LogKey, LogRow>().expect("register");
+    let _: Collection<_, LogKey, LogRow> = Collection::open(&store).expect("attach");
     assert!(
         store.status::<LogRow>().is_none(),
         "no writer is open before the first write"
@@ -461,8 +461,8 @@ fn a_cross_table_batch_captures_each_tables_own_share() {
         // would be a second writer on one segment number.
         let store =
             ChangelogStore::new(TestStore::slatedb_mem(), ChangelogConfig::new(root.path()));
-        store.register::<LogKey, LogRow>().expect("register a");
-        store.register::<LogKey, OtherRow>().expect("register b");
+        let _: Collection<_, LogKey, LogRow> = Collection::open(&store).expect("attach");
+        let _: Collection<_, LogKey, OtherRow> = Collection::open(&store).expect("attach");
         let a: Collection<_, LogKey, LogRow> = Collection::open(&store).unwrap();
         let b: Collection<_, LogKey, OtherRow> = Collection::open(&store).unwrap();
 

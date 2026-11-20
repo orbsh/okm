@@ -383,6 +383,12 @@ pub trait SharedVirtualStorage: VirtualStorage {
 /// ([`crate::changelog::ChangelogStore`]) serve every collection in a process —
 /// two decorators over one directory would be two writers on one segment number.
 impl<S: VirtualStorage + ?Sized> VirtualStorage for &S {
+    fn note_table(&self, header: &[u8]) {
+        // A wrapper that forgets this one is a silent hole: attach speaks to `&store`, and the
+        // log behind it would never learn the table.
+        (**self).note_table(header)
+    }
+
     fn put(&self, key: Vec<u8>, value: Vec<u8>) -> crate::error::Result<()> {
         (**self).put(key, value)
     }
@@ -462,6 +468,10 @@ impl<'a, S: VirtualStorage> BatchStore<'a, S> {
 }
 
 impl<S: VirtualStorage> VirtualStorage for BatchStore<'_, S> {
+    fn note_table(&self, header: &[u8]) {
+        self.store.note_table(header)
+    }
+
     fn put(&self, key: Vec<u8>, value: Vec<u8>) -> crate::error::Result<()> {
         // Buffering an op cannot fail; the commit is where the engine answers.
         self.batch.borrow_mut().put(key, value);

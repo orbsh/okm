@@ -60,7 +60,7 @@ fn the_successor_asks_applies_and_then_claims() {
 
     // --- A: the holder. It claims, then serves. ---
     let mut holder_store = store(log.path());
-    holder_store.register::<RowKey, Row>().unwrap();
+    let _: Collection<_, RowKey, Row> = Collection::open(&holder_store).expect("attach");
     assert_eq!(
         holder_store
             .take_over("A", "/data/a", None, timeout)
@@ -87,7 +87,7 @@ fn the_successor_asks_applies_and_then_claims() {
 
     // --- B finishes: apply the log, then claim. ---
     let mut successor_store = store(log.path());
-    successor_store.register::<RowKey, Row>().unwrap();
+    let _: Collection<_, RowKey, Row> = Collection::open(&successor_store).expect("attach");
     let roles = successor_store
         .take_over("B", "/data/b", None, timeout)
         .unwrap();
@@ -115,7 +115,7 @@ fn the_successor_asks_applies_and_then_claims() {
 fn a_second_instance_over_the_same_store_is_refused() {
     let log = tempfile::tempdir().unwrap();
     let mut first = store(log.path());
-    first.register::<RowKey, Row>().unwrap();
+    let _: Collection<_, RowKey, Row> = Collection::open(&first).expect("attach");
     assert_eq!(
         first
             .take_over("A", "/data/a", None, Duration::from_secs(1))
@@ -125,7 +125,7 @@ fn a_second_instance_over_the_same_store_is_refused() {
     );
 
     let mut intruder = store(log.path());
-    intruder.register::<RowKey, Row>().unwrap();
+    let _: Collection<_, RowKey, Row> = Collection::open(&intruder).expect("attach");
     let err = intruder
         .take_over("B", "/data/a", None, Duration::from_secs(1))
         .unwrap_err();
@@ -143,7 +143,7 @@ fn capture_off_opens_nothing_and_writes_nothing() {
             ..ChangelogConfig::new(log.path())
         },
     );
-    off.register::<RowKey, Row>().unwrap();
+    let _: Collection<_, RowKey, Row> = Collection::open(&off).expect("attach");
     let app = Collection::<_, RowKey, Row>::open(off).unwrap();
     write(&app, 1, "one");
 

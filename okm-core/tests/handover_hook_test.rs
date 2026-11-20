@@ -74,7 +74,7 @@ fn a_log_waiting_for_its_successor(
     let dir = table_dir(log, &header);
 
     let mut a = store(log, None);
-    a.register::<RowKey, Row>().unwrap();
+    let _: Collection<_, RowKey, Row> = Collection::open(&a).expect("attach");
     a.take_over("A", "/data/a", None, Duration::from_secs(5))
         .unwrap();
     let a = Collection::<_, RowKey, Row>::open(a).unwrap();
@@ -84,7 +84,7 @@ fn a_log_waiting_for_its_successor(
     a.store().drain_and_hand_over("A", "/data/a").unwrap();
 
     let b = store(log, hook);
-    b.register::<RowKey, Row>().unwrap();
+    let _: Collection<_, RowKey, Row> = Collection::open(&b).expect("attach");
     (header, b)
 }
 
@@ -125,7 +125,7 @@ fn a_fresh_log_announces_nothing() {
     let log = tempfile::tempdir().unwrap();
     let told = log.path().join("told.txt");
     let mut first = store(log.path(), Some(recorder(&told)));
-    first.register::<RowKey, Row>().unwrap();
+    let _: Collection<_, RowKey, Row> = Collection::open(&first).expect("attach");
     let roles = first
         .take_over("A", "/data/a", None, Duration::from_secs(5))
         .unwrap();

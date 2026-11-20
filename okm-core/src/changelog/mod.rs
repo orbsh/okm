@@ -171,7 +171,7 @@ pub const LAKE_SUFFIX: &str = ".lake-baseline";
 const BASELINE_CHUNK: usize = 1024;
 
 /// The container format this writer emits, and the first byte of a segment.
-pub const FORMAT: u8 = 2;
+pub const FORMAT: u8 = 3;
 /// How many bytes the footer occupies at the end of a sealed file.
 const FOOTER_LEN: usize = 28;
 /// A segment of committed writes (ADR-0045).
@@ -1636,6 +1636,16 @@ pub struct ChangelogStore<S> {
     cfg: ChangelogConfig,
     /// header → the declaration it was registered with.
     metas: RefCell<BTreeMap<Vec<u8>, SegmentMeta>>,
+    /// `[ns: u16 BE]` → header, for the tables a key can name in two bytes (ADR-0074 §3).
+    ///
+    /// A declaration's key starts with its ns, so a commit finds its table with ONE lookup
+    /// instead of a `starts_with` scan over every registered header — the cost of routing must
+    /// not grow with the number of tables in the store.
+    ns_index: RefCell<std::collections::HashMap<u16, Vec<u8>>>,
+    /// Headers a key cannot name in two bytes — a document whose declaration carries no
+    /// `[ns 2B]` header at all (tests do this). Empty in a real store, and a scan over nothing
+    /// costs nothing; the entries that ARE here are matched by prefix, as every key was before.
+    odd_headers: RefCell<Vec<Vec<u8>>>,
     /// header → its writer, opened by the first commit that touches the table.
     tables: RefCell<BTreeMap<Vec<u8>, RefCell<Changelog>>>,
     /// The cutover switch (ADR-0056 §6), handed to every writer this store opens —
@@ -1657,6 +1667,8 @@ impl<S> ChangelogStore<S> {
             inner,
             cfg,
             metas: RefCell::new(BTreeMap::new()),
+            ns_index: RefCell::new(std::collections::HashMap::new()),
+            odd_headers: RefCell::new(Vec::new()),
             tables: RefCell::new(BTreeMap::new()),
             gate: None,
             holder: RefCell::new(None),
@@ -1881,35 +1893,6 @@ impl<S> ChangelogStore<S> {
         self.inner
     }
 
-    /// Register a declaration with the switch: write the sidecar (the half of the
-    /// schema the log cannot carry) and remember what a segment is stamped with.
-    ///
-    /// Idempotent per table; two collections over one store register two headers.
-    /// A table declared `#[ok_uncaptured]` is accepted and ignored: no sidecar, no
-    /// meta, so no writer is ever opened for it and nothing reaches the log.
-    pub fn register<K: crate::model::key::KeyEncode, R: crate::model::index::Document<Key = K>>(
-        &self,
-    ) -> Result<()> {
-        if !R::CAPTURED {
-            return Ok(());
-        }
-        let header = R::NS_PREFIX.to_vec();
-        let Some(root) = self.cfg.root() else {
-            return Ok(());
-        };
-        let dir = table_dir(root, &header);
-        std::fs::create_dir_all(&dir).map_err(|e| io_err(&dir, e))?;
-        // No generation check here, on purpose: the changelog path never changes
-        // (ADR-0056 §5/§6), so a directory whose newest segment was written by an older
-        // generation is the ordinary state after an upgrade, and this build appends to it
-        // under its own number. What a generation identifies is the bytes of ONE segment
-        // (its header says which), never the directory.
-        self.metas
-            .borrow_mut()
-            .insert(header, SegmentMeta::of::<K, R>(KIND_DELTA));
-        Ok(())
-    }
-
     /// Write this table's baseline if it has none (ADR-0056 §3); `true` when one
     /// was written.
     ///
@@ -1935,7 +1918,6 @@ impl<S> ChangelogStore<S> {
             return Ok(false);
         }
         let header = R::NS_PREFIX.to_vec();
-        self.register::<K, R>()?;
         let Some(root) = self.cfg.root() else {
             return Ok(false);
         };
@@ -2115,11 +2097,25 @@ impl<S> ChangelogStore<S> {
 
     /// The headers this commit writes into: registered, and actually present.
     fn touched(&self, ops: &[(Vec<u8>, Option<Vec<u8>>)]) -> Vec<Vec<u8>> {
-        let metas = self.metas.borrow();
+        let index = self.ns_index.borrow();
+        let odd = self.odd_headers.borrow();
         let mut out: BTreeSet<Vec<u8>> = BTreeSet::new();
         for (key, _) in ops {
-            if let Some(header) = metas.keys().find(|h| key.starts_with(h)) {
-                out.insert(header.clone());
+            // The ns is the key's first two bytes, so the table is one lookup away. Only a
+            // declaration with no `[ns 2B]` header needs the prefix scan.
+            let named = key
+                .get(..2)
+                .and_then(|w| index.get(&u16::from_be_bytes([w[0], w[1]])));
+            match named {
+                Some(header) => {
+                    out.insert(header.clone());
+                }
+                None if !odd.is_empty() => {
+                    if let Some(header) = odd.iter().find(|h| key.starts_with(h)) {
+                        out.insert(header.clone());
+                    }
+                }
+                None => {}
             }
         }
         out.into_iter().collect()
@@ -2258,9 +2254,24 @@ impl<S: VirtualStorage> VirtualStorage for ChangelogStore<S> {
                 .unwrap_or_default()
                 .to_vec(),
         };
+        // A captured table has a directory from the moment the log knows it: the owner file,
+        // the hook's report and the first append all assume it exists, and priming it here is
+        // what `register` used to be for. Best effort — a directory that cannot be made is
+        // reported by the first write, which has a `Result` to report it in.
+        if let Some(root) = self.cfg.root() {
+            let _ = std::fs::create_dir_all(table_dir(root, header));
+        }
         self.metas
             .borrow_mut()
             .insert(header.to_vec(), meta_of_segment);
+        match header {
+            [hi, lo] => {
+                self.ns_index
+                    .borrow_mut()
+                    .insert(u16::from_be_bytes([*hi, *lo]), header.to_vec());
+            }
+            _ => self.odd_headers.borrow_mut().push(header.to_vec()),
+        }
     }
 
     fn put(&self, key: Vec<u8>, value: Vec<u8>) -> Result<()> {

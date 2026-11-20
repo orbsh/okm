@@ -61,7 +61,7 @@ fn a_compaction_prunes_what_the_baseline_covers_and_replay_still_works() {
     let dir = table_dir(log.path(), &header);
 
     let writer = store(log.path());
-    writer.register::<RowKey, Row>().unwrap();
+    let _: Collection<_, RowKey, Row> = Collection::open(&writer).expect("attach");
     let app = Collection::<_, RowKey, Row>::open(writer).unwrap();
     for id in 0..12 {
         app.put(
@@ -151,7 +151,7 @@ fn keep_leaves_a_window_of_history_under_the_baseline() {
     let dir = table_dir(log.path(), &header);
 
     let writer = store(log.path());
-    writer.register::<RowKey, Row>().unwrap();
+    let _: Collection<_, RowKey, Row> = Collection::open(&writer).expect("attach");
     let app = Collection::<_, RowKey, Row>::open(writer).unwrap();
     for id in 0..10 {
         app.put(&RowKey { id }, &Row { title: "x".into() }).unwrap();
@@ -189,7 +189,7 @@ fn capture_off_has_nothing_to_compact() {
             ..ChangelogConfig::new(log.path())
         },
     );
-    off.register::<RowKey, Row>().unwrap();
+    let _: Collection<_, RowKey, Row> = Collection::open(&off).expect("attach");
     assert!(off.compact(0).unwrap().is_empty());
 }
 
@@ -243,7 +243,7 @@ fn the_policy_compacts_at_a_rotation_without_being_asked() {
             ..ChangelogConfig::new(log.path())
         },
     );
-    writer.register::<RowKey, Row>().unwrap();
+    let _: Collection<_, RowKey, Row> = Collection::open(&writer).expect("attach");
     let app = Collection::<_, RowKey, Row>::open(writer).unwrap();
 
     for id in 0..8 {
@@ -298,7 +298,7 @@ fn a_policy_of_none_never_compacts_on_its_own() {
             ..ChangelogConfig::new(log.path())
         },
     );
-    writer_store.register::<RowKey, Row>().unwrap();
+    let _: Collection<_, RowKey, Row> = Collection::open(&writer_store).expect("attach");
     let app = Collection::<_, RowKey, Row>::open(writer_store).unwrap();
     for id in 0..8 {
         app.put(&RowKey { id }, &Row { title: "x".into() }).unwrap();
