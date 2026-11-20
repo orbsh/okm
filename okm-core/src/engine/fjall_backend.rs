@@ -50,6 +50,12 @@ impl VirtualStorage for FjallStore {
             .insert(key, value)
             .map_err(|e| crate::error::Error::Engine(e.to_string()))
     }
+    fn put_bytes(&self, key: &[u8], value: &[u8]) -> crate::error::Result<()> {
+        self.ks
+            .insert(key, value)
+            .map_err(|e| crate::error::Error::Engine(e.to_string()))
+    }
+
     fn get(&self, key: &[u8]) -> crate::error::Result<Option<Vec<u8>>> {
         self.ks
             .get(key)

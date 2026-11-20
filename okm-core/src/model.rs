@@ -20,6 +20,7 @@
 )]
 
 pub mod document;
+pub mod entries;
 pub mod faces;
 pub mod field;
 pub mod graph;
@@ -36,6 +37,7 @@ pub mod presets;
 pub mod reduce;
 pub mod reverse;
 pub mod schema;
+pub mod table_plan;
 pub mod vocab;
 pub mod wrappers;
 pub mod write;

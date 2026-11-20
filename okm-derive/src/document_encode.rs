@@ -553,16 +553,17 @@ fn emit_index_structs(schema: &DocumentSchema) -> syn::Result<TS2> {
                 )
             })?;
             quote! {
-                fn entry_pairs(
+                fn entry_pairs_into(
                     ns_prefix: &[u8],
                     key: &Self::Key,
                     document: &Self::Document,
-                ) -> Vec<(Vec<u8>, Vec<u8>)> {
+                    out: &mut ::okm_core::model::entries::Entries,
+                ) {
                     // Partial index (where(path)): a rejected document
                     // contributes no entries at all. Checked once per
                     // document, before any fan-out.
                     if !Self::admits(document) {
-                        return Vec::new();
+                        return;
                     }
                     // One (key, value) pair per produced value, and the
                     // contract is `IntoIterator` (ADR-0055): a single value
@@ -573,26 +574,22 @@ fn emit_index_structs(schema: &DocumentSchema) -> syn::Result<TS2> {
                     // exclusive, so a function index has no covered segment
                     // (Covered = ()). Key = [ns 2B][slot][value][key prefix].
                     let __okm_vals = ::okm_core::result_segments(#fpath(document));
-                    let mut __okm_out =
-                        Vec::with_capacity(::std::iter::Iterator::size_hint(&__okm_vals).0);
-                    let __okm_value = Self::entry_value(key, document);
+                    let mut __okm_value = Vec::new();
+                    Self::entry_value_into(key, document, &mut __okm_value);
                     for __okm_seg in __okm_vals {
-                        let mut __okm_k = Vec::with_capacity(
-                            ns_prefix.len()
-                                + ::okm_core::slot_len(Self::SLOT)
-                                + __okm_seg.len()
-                                + Self::key_prefix_width(),
+                        // Straight into the write's buffer: one value per
+                        // produced segment, no Vec per entry (it would be an
+                        // allocation serving a copy).
+                        out.push(
+                            |buf| {
+                                buf.extend_from_slice(ns_prefix);
+                                ::okm_core::write_slot(buf, Self::SLOT);
+                                buf.extend_from_slice(&__okm_seg);
+                                Self::write_key_prefix(key, buf);
+                            },
+                            |buf| buf.extend_from_slice(&__okm_value),
                         );
-                        __okm_k.extend_from_slice(ns_prefix);
-                        ::okm_core::write_slot(&mut __okm_k, Self::SLOT);
-                        __okm_k.extend_from_slice(&__okm_seg);
-                        // Straight into the entry: the key-prefix tail is the
-                        // same bytes for every produced value, and a Vec per
-                        // entry would be an allocation serving a copy.
-                        Self::write_key_prefix(key, &mut __okm_k);
-                        __okm_out.push((__okm_k, __okm_value.clone()));
                     }
-                    __okm_out
                 }
             }
         };
@@ -1037,7 +1034,7 @@ fn emit_index_entries(schema: &DocumentSchema) -> syn::Result<TS2> {
         .map(|idx| {
             let struct_ident = format_ident!("__OkmIndex_{}_{}", row_name, idx.ident);
             quote! {
-                out.extend(<#struct_ident as ::okm_core::KvIndex>::entry_pairs(ns, key, document));
+                <#struct_ident as ::okm_core::KvIndex>::entry_pairs_into(ns, key, document, out);
             }
         });
     // Lead faces derive from the KEY alone (ADR-0054): the payload-free path is
@@ -1145,12 +1142,18 @@ fn emit_index_entries(schema: &DocumentSchema) -> syn::Result<TS2> {
             out
         }
 
-        fn index_entries(key: &Self::Key, document: &Self, ns: &[u8]) -> Vec<(Vec<u8>, Vec<u8>)> {
+        fn index_entries_into(
+            key: &Self::Key,
+            document: &Self,
+            ns: &[u8],
+            out: &mut ::okm_core::model::entries::Entries,
+        ) {
             // One source of truth for the key-only half: a lead face is written
             // here and there through the same call.
-            let mut out = Self::key_entries(key, ns);
+            for (k, v) in Self::key_entries(key, ns) {
+                out.extend_pair(&k, &v);
+            }
             #(#entry_calls)*
-            out
         }
         #dep_const
         #decls_const
@@ -1527,6 +1530,24 @@ pub(crate) fn emit_row_impl(schema: &DocumentSchema) -> syn::Result<TS2> {
     };
     let ns = schema.ns;
     let (ns_hi, ns_lo) = ((ns >> 8) as u8, (ns & 0xff) as u8);
+    // `#[ok_shared_ns]` declares no marker (two declarations may share the ns), so the static
+    // has no module-level name to take — it gets one of its own inside the const, which is
+    // still one per type and still not a generic scope.
+    let plan_const = if schema.shared_ns {
+        quote! {
+            const PLAN: &'static ::std::sync::OnceLock<::okm_core::model::table_plan::TablePlan> = {
+                static PLAN: ::std::sync::OnceLock<::okm_core::model::table_plan::TablePlan> =
+                    ::std::sync::OnceLock::new();
+                &PLAN
+            };
+        }
+    } else {
+        let entry = quote::format_ident!("__OKM_NS_{}_ENTRY", ns);
+        quote! {
+            const PLAN: &'static ::std::sync::OnceLock<::okm_core::model::table_plan::TablePlan> =
+                &#entry;
+        }
+    };
     let ns_const = quote! {
         const NS_PREFIX: &'static [u8] = &[#ns_hi, #ns_lo];
         const NS: u16 = #ns;
@@ -1545,13 +1566,18 @@ pub(crate) fn emit_row_impl(schema: &DocumentSchema) -> syn::Result<TS2> {
     // compiler's: duplicate names are an error in one module, whatever the
     // visibility, and visibility cannot widen it -- two modules never share a
     // name space.
-    let ns_claim = if schema.shared_ns {
+    // The table's entry in its ns: one const per namespace, holding the compiled plan. Its
+    // presence is the compile-time half of "one ns is one table" — a second declaration in
+    // the same module reuses the name and the compiler refuses it. The name says what the
+    // item is, not what breaks when it collides; the refusal is the compiler's to word.
+    let ns_entry = if schema.shared_ns {
         quote! {}
     } else {
-        let claim = quote::format_ident!("__OKM_NS_{}_IS_UNIQUE", ns);
+        let entry = quote::format_ident!("__OKM_NS_{}_ENTRY", ns);
         quote! {
             #[allow(dead_code)]
-            const #claim: () = ();
+            static #entry: ::std::sync::OnceLock<::okm_core::model::table_plan::TablePlan> =
+                ::std::sync::OnceLock::new();
         }
     };
     // #[ok_partition(N)] → PARTITION_ID: Option<u8>. None = no partition
@@ -2298,7 +2324,7 @@ pub(crate) fn emit_row_impl(schema: &DocumentSchema) -> syn::Result<TS2> {
     };
 
     Ok(quote! {
-        #ns_claim
+        #ns_entry
         #vocabs_decl
         #index_structs
         #lead_structs
@@ -2314,6 +2340,7 @@ pub(crate) fn emit_row_impl(schema: &DocumentSchema) -> syn::Result<TS2> {
             type Key = #key_ty;
             #part_const
             #ns_const
+            #plan_const
             #name_const
             #captured_const
             #redacted_const

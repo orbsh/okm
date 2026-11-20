@@ -205,6 +205,15 @@ pub struct SegmentMeta {
     pub schema: Vec<u8>,
 }
 
+/// A table the log knows: the segment metadata it reads when opening a writer, beside the
+/// plan its declaration compiled to (ADR-0074 §3). One record, because both arrive from the
+/// same attach — a table with a meta and no plan is a state no reader should have to handle.
+#[derive(Clone)]
+struct Known {
+    meta: SegmentMeta,
+    plan: &'static crate::model::table_plan::TablePlan,
+}
+
 impl SegmentMeta {
     /// The same table's meta for another `kind` — a baseline beside the deltas that
     /// declared it.
@@ -420,9 +429,10 @@ pub struct Changelog {
     header: Vec<u8>,
     /// What this table's segments say about themselves (ADR-0056 §7).
     meta: SegmentMeta,
-    /// The declaration's slot numbers, so the capture rule reads them instead of
-    /// re-typing the constants (ADR-0056 §2).
-    slots: SlotMap,
+    /// The compiled declaration (ADR-0074 §3): what a key of this table starts with, and
+    /// which slots this log carries. Compiled once by whoever knew the declaration, so this
+    /// writer never derives the answer from bytes.
+    plan: crate::model::table_plan::TablePlan,
     cfg: ChangelogConfig,
     /// `None` while sealed: the rename happens with the handle closed, and a
     /// failed flush leaves this `Some` so the next attempt retries.
@@ -455,7 +465,12 @@ impl Changelog {
     /// torn, and a writer cannot tell where the last good frame ends without
     /// reading it (which the drainer does). Starting a fresh segment number is
     /// what keeps a crash from corrupting a stream that already has readers.
-    pub fn open(cfg: ChangelogConfig, header: &[u8], meta: SegmentMeta) -> Result<Self> {
+    pub fn open(
+        cfg: ChangelogConfig,
+        header: &[u8],
+        meta: SegmentMeta,
+        plan: crate::model::table_plan::TablePlan,
+    ) -> Result<Self> {
         let root = cfg.root_or_err()?;
         let dir = table_dir(root, header);
         std::fs::create_dir_all(&dir).map_err(|e| io_err(&dir, e))?;
@@ -467,7 +482,7 @@ impl Changelog {
             dir,
             header: header.to_vec(),
             meta,
-            slots: SlotMap::standard(),
+            plan,
             cfg,
             file: Some(file),
             segment,
@@ -495,7 +510,7 @@ impl Changelog {
         self.staged.clear();
         let count = ops
             .iter()
-            .filter(|(key, _)| carried(&self.slots, &self.header, key))
+            .filter(|(key, _)| self.plan.carries_key(key))
             .count();
         if count == 0 {
             return 0;
@@ -507,7 +522,7 @@ impl Changelog {
         self.staged.extend_from_slice(&[0, 0, 0, 0]);
         okm_wire::put_len(&mut self.staged, count);
         for (key, value) in ops {
-            if !carried(&self.slots, &self.header, key) {
+            if !self.plan.carries_key(key) {
                 continue;
             }
             match value {
@@ -1072,6 +1087,7 @@ pub fn write_baseline(
     header: &[u8],
     meta: SegmentMeta,
     ops: &[LoggedOp],
+    plan: crate::model::table_plan::TablePlan,
 ) -> Result<Option<(String, String)>> {
     let Some(root) = cfg.root() else {
         return Ok(None);
@@ -1080,7 +1096,7 @@ pub fn write_baseline(
         .into_iter()
         .filter_map(|p| p.file_name().map(|n| n.to_string_lossy().into_owned()))
         .collect();
-    let mut log = Changelog::open(cfg.clone(), header, meta)?;
+    let mut log = Changelog::open(cfg.clone(), header, meta, plan)?;
     for chunk in ops.chunks(BASELINE_CHUNK) {
         if log.stage(chunk) > 0 {
             log.commit_staged()?;
@@ -1635,7 +1651,7 @@ pub struct ChangelogStore<S> {
     inner: S,
     cfg: ChangelogConfig,
     /// header → the declaration it was registered with.
-    metas: RefCell<BTreeMap<Vec<u8>, SegmentMeta>>,
+    known: RefCell<BTreeMap<Vec<u8>, Known>>,
     /// `[ns: u16 BE]` → header, for the tables a key can name in two bytes (ADR-0074 §3).
     ///
     /// A declaration's key starts with its ns, so a commit finds its table with ONE lookup
@@ -1666,7 +1682,7 @@ impl<S> ChangelogStore<S> {
         Self {
             inner,
             cfg,
-            metas: RefCell::new(BTreeMap::new()),
+            known: RefCell::new(BTreeMap::new()),
             ns_index: RefCell::new(std::collections::HashMap::new()),
             odd_headers: RefCell::new(Vec::new()),
             tables: RefCell::new(BTreeMap::new()),
@@ -1763,10 +1779,10 @@ impl<S> ChangelogStore<S> {
         // The generation is a property of the DECLARATION this store registered, one per
         // table: it is what the segments this instance appends will say.
         let tables: Vec<(Vec<u8>, u8)> = self
-            .metas
+            .known
             .borrow()
             .iter()
-            .map(|(header, meta)| (header.clone(), meta.layout_version))
+            .map(|(header, known)| (header.clone(), known.meta.layout_version))
             .collect();
         let mut out = Vec::new();
         for (header, generation) in tables {
@@ -1925,7 +1941,12 @@ impl<S> ChangelogStore<S> {
             return Ok(false);
         }
         let meta = SegmentMeta::of::<K, R>(KIND_BASELINE);
-        Ok(self.write_baseline(&header, meta)?.is_some())
+        let plan = R::PLAN.get_or_init(|| {
+            crate::model::table_plan::TablePlan::compile(
+                &crate::model::schema::CollectionSchema::of::<K, R>(),
+            )
+        });
+        Ok(self.write_baseline(&header, meta, *plan)?.is_some())
     }
 
     /// Write one baseline for `header`: close the writer first, then snapshot.
@@ -1933,7 +1954,12 @@ impl<S> ChangelogStore<S> {
     /// Closing is the correctness argument, not a tidy-up: the baseline must outrank every
     /// segment already written for the table, and a writer left open would keep appending
     /// to a segment numbered below it, which a replay skips.
-    fn write_baseline(&self, header: &[u8], meta: SegmentMeta) -> Result<Option<(String, String)>>
+    fn write_baseline(
+        &self,
+        header: &[u8],
+        meta: SegmentMeta,
+        plan: crate::model::table_plan::TablePlan,
+    ) -> Result<Option<(String, String)>>
     where
         S: VirtualStorage,
     {
@@ -1943,7 +1969,7 @@ impl<S> ChangelogStore<S> {
         }
         let ops = baseline_ops(&self.inner, header)?;
         let cfg = self.cfg.clone();
-        write_baseline(&cfg, header, meta, &ops)
+        write_baseline(&cfg, header, meta, &ops, plan)
     }
 
     /// Compact the log: one new baseline per table, then delete what it covers.
@@ -1964,7 +1990,7 @@ impl<S> ChangelogStore<S> {
         let Some(root) = self.cfg.root() else {
             return Ok(Vec::new());
         };
-        let headers: Vec<Vec<u8>> = self.metas.borrow().keys().cloned().collect();
+        let headers: Vec<Vec<u8>> = self.known.borrow().keys().cloned().collect();
         let mut out = Vec::new();
         for header in headers {
             let dir = table_dir(root, &header);
@@ -1998,14 +2024,22 @@ impl<S> ChangelogStore<S> {
                 freed: 0,
             });
         };
-        let Some(meta) = self.metas.borrow().get(header).cloned() else {
+        let Some(meta) = self.known.borrow().get(header).map(|k| k.meta.clone()) else {
             return Ok(Compacted {
                 baseline: None,
                 removed: 0,
                 freed: 0,
             });
         };
-        let Some((first, last)) = self.write_baseline(header, meta.with_kind(KIND_BASELINE))?
+        let Some(plan) = self.known.borrow().get(header).map(|k| k.plan) else {
+            return Ok(Compacted {
+                baseline: None,
+                removed: 0,
+                freed: 0,
+            });
+        };
+        let Some((first, last)) =
+            self.write_baseline(header, meta.with_kind(KIND_BASELINE), *plan)?
         else {
             return Ok(Compacted {
                 baseline: None,
@@ -2197,9 +2231,12 @@ impl<S> ChangelogStore<S> {
             return;
         }
         if !self.tables.borrow().contains_key(header) {
-            let meta = self.metas.borrow().get(header).cloned();
+            let known = self.known.borrow().get(header).cloned();
+            let meta = known.as_ref().map(|k| k.meta.clone());
+            let plan = known.as_ref().map(|k| k.plan);
             if let Some(meta) = meta
-                && let Ok(mut log) = Changelog::open(self.cfg.clone(), header, meta)
+                && let Some(plan) = plan
+                && let Ok(mut log) = Changelog::open(self.cfg.clone(), header, meta, *plan)
             {
                 if let Some(gate) = &self.gate {
                     log.attach_gate(std::sync::Arc::clone(gate));
@@ -2223,11 +2260,12 @@ impl<S: VirtualStorage> VirtualStorage for ChangelogStore<S> {
     /// One point read per table per process. The row is the same one every other reader uses,
     /// which is the point: nothing here has to be kept in step with the declaration, because
     /// the declaration IS the row.
-    fn note_table(&self, header: &[u8]) {
+    fn note_table(&self, plan: &'static crate::model::table_plan::TablePlan) {
         if self.cfg.root().is_none() {
             return;
         }
-        if self.metas.borrow().contains_key(header) {
+        let header = plan.header();
+        if self.known.borrow().contains_key(header) {
             return;
         }
         let Some(meta) = crate::model::meta::read(&self.inner, header).ok().flatten() else {
@@ -2261,9 +2299,13 @@ impl<S: VirtualStorage> VirtualStorage for ChangelogStore<S> {
         if let Some(root) = self.cfg.root() {
             let _ = std::fs::create_dir_all(table_dir(root, header));
         }
-        self.metas
-            .borrow_mut()
-            .insert(header.to_vec(), meta_of_segment);
+        self.known.borrow_mut().insert(
+            header.to_vec(),
+            Known {
+                meta: meta_of_segment,
+                plan,
+            },
+        );
         match header {
             [hi, lo] => {
                 self.ns_index
@@ -2281,6 +2323,16 @@ impl<S: VirtualStorage> VirtualStorage for ChangelogStore<S> {
         let ops = [(key.clone(), Some(value.clone()))];
         let touched = self.stage(&ops);
         self.inner.put(key, value)?;
+        self.flush(&touched);
+        Ok(())
+    }
+
+    fn put_bytes(&self, key: &[u8], value: &[u8]) -> Result<()> {
+        // The frame keeps its own copy (it outlives the write); the engine below takes the
+        // span, so a captured point write is one copy, not two.
+        let ops = [(key.to_vec(), Some(value.to_vec()))];
+        let touched = self.stage(&ops);
+        self.inner.put_bytes(key, value)?;
         self.flush(&touched);
         Ok(())
     }

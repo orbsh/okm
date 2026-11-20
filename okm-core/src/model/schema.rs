@@ -206,7 +206,7 @@ fn lookup_default(
 /// DERIVED, so it is not a field here: `okm_core::obj_vocab::cursor_key` builds
 /// it. A host-side writer that allocates ids itself reads and writes that
 /// entry; going around it hands out ids the store has already used.
-#[derive(Clone, Debug, PartialEq)]
+#[derive(Clone, Copy, Debug, PartialEq)]
 pub struct SlotMap {
     pub primary: u16,
     pub dynamic: u16,
@@ -228,7 +228,7 @@ impl SlotMap {
     /// assembly point does not choose them, the numbering does. Named once so a
     /// reader of the map (the capture filter, ADR-0056 §2) takes them from the
     /// declaration instead of re-typing the constants.
-    pub fn standard() -> Self {
+    pub const fn standard() -> Self {
         Self {
             primary: crate::model::index::PRIMARY_SLOT,
             dynamic: crate::model::index::DYNAMIC_SLOT,

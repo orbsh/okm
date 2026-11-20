@@ -1257,6 +1257,13 @@ impl VirtualStorage for EphemeralStore {
         Ok(())
     }
 
+    fn put_bytes(&self, key: &[u8], value: &[u8]) -> crate::error::Result<()> {
+        let mut g = self.write();
+        g.insert(key, value)?;
+        g.maybe_rebuild();
+        Ok(())
+    }
+
     fn get(&self, key: &[u8]) -> crate::error::Result<Option<Vec<u8>>> {
         Ok(self.read().get(key).map(<[u8]>::to_vec))
     }

@@ -401,7 +401,26 @@ pub trait Document: Sized + Clone {
     ///
     /// An implementation that also has lead faces starts from
     /// [`Self::key_entries`], so the payload-free half is written once.
-    fn index_entries(key: &Self::Key, document: &Self, ns: &[u8]) -> Vec<(Vec<u8>, Vec<u8>)>;
+    fn index_entries(key: &Self::Key, document: &Self, ns: &[u8]) -> Vec<(Vec<u8>, Vec<u8>)> {
+        let mut out = crate::model::entries::Entries::new();
+        Self::index_entries_into(key, document, ns, &mut out);
+        out.collect()
+    }
+
+    /// The same entries, appended into the write's buffer: the form the write path calls.
+    ///
+    /// Generated, because only the declaration knows which faces exist. The default answers
+    /// the payload-free half — a declaration with no `#[ok_index]` still has its lead faces.
+    fn index_entries_into(
+        key: &Self::Key,
+        _document: &Self,
+        ns: &[u8],
+        out: &mut crate::model::entries::Entries,
+    ) {
+        for (k, v) in Self::key_entries(key, ns) {
+            out.extend_pair(&k, &v);
+        }
+    }
 
     /// Cross-document reduce hook (see [`crate::model::reduce`]): apply this
     /// document to every declared `#[ok_reduce]` group. Default no-op —
@@ -470,6 +489,17 @@ pub trait Document: Sized + Clone {
     /// without `#[ok_ns]`, so every table has a place of its own in the key
     /// space, and the two constants below are always the ns of a real table.
     const NS_PREFIX: &'static [u8];
+
+    /// The plan this declaration compiles to (ADR-0074 §3), in the table's own static:
+    /// one `OnceLock` per declared table, filled the first time the table is opened and read
+    /// by every store and every collection that shares the type afterwards.
+    ///
+    /// A `static`, not a cache keyed by type: Rust compiles a `static` in a generic scope
+    /// ONCE, so the storage has to live where the declaration lives — the derive emits it
+    /// beside the type, and this const is the pointer to it. That keeps the lookup at a
+    /// constant address instead of a map probe, and it keeps the plan's lifetime the
+    /// process's, which is exactly how long the declaration is true.
+    const PLAN: &'static ::std::sync::OnceLock<crate::model::table_plan::TablePlan>;
 
     /// The same ns as a NUMBER: `NS_PREFIX` decoded. A reader that reasons
     /// about collections rather than keys uses this one — a graph's
@@ -669,6 +699,23 @@ pub trait KvIndex {
         })
     }
 
+    /// [`Self::entry_key`], written into a buffer the caller owns — the entry-blob form. The
+    /// bytes are identical; only where they live differs.
+    fn entry_key_into(
+        ns_prefix: &[u8],
+        key: &Self::Key,
+        document: &Self::Document,
+        buf: &mut Vec<u8>,
+    ) {
+        if let Some(width) = Self::encoded_width(key, document, Self::FIELDS) {
+            buf.reserve(width + ns_prefix.len() + slot_len(Self::SLOT) + Self::key_prefix_width());
+        }
+        buf.extend_from_slice(ns_prefix);
+        write_slot(buf, Self::SLOT);
+        Self::encode_named(key, document, Self::FIELDS, buf);
+        Self::write_key_prefix(key, buf);
+    }
+
     /// Entry-key ASSEMBLY: header, then a segment the caller writes, then the
     /// key-prefix tail. The one place the byte order lives — [`Self::entry_key`]
     /// and the document-free path both come through here, so a face cannot
@@ -700,15 +747,23 @@ pub trait KvIndex {
     /// Entry value: the includes segment (raw payload-field encodings,
     /// concatenation in `INCLUDES` order; empty when no includes).
     fn entry_value(key: &Self::Key, document: &Self::Document) -> Vec<u8> {
-        if Self::INCLUDES.is_empty() {
-            return Vec::new();
-        }
         let mut buf = match Self::encoded_width(key, document, Self::INCLUDES) {
-            Some(w) => Vec::with_capacity(w),
-            None => Vec::new(),
+            Some(w) if !Self::INCLUDES.is_empty() => Vec::with_capacity(w),
+            _ => Vec::new(),
         };
-        Self::encode_named(key, document, Self::INCLUDES, &mut buf);
+        Self::entry_value_into(key, document, &mut buf);
         buf
+    }
+
+    /// [`Self::entry_value`], written into a buffer the caller owns.
+    fn entry_value_into(key: &Self::Key, document: &Self::Document, buf: &mut Vec<u8>) {
+        if Self::INCLUDES.is_empty() {
+            return;
+        }
+        if let Some(width) = Self::encoded_width(key, document, Self::INCLUDES) {
+            buf.reserve(width);
+        }
+        Self::encode_named(key, document, Self::INCLUDES, buf);
     }
 
     /// Decoded form of [`entry_value`](Self::entry_value): the covered
@@ -745,13 +800,30 @@ pub trait KvIndex {
         key: &Self::Key,
         document: &Self::Document,
     ) -> Vec<(Vec<u8>, Vec<u8>)> {
+        let mut out = crate::model::entries::Entries::new();
+        Self::entry_pairs_into(ns_prefix, key, document, &mut out);
+        out.collect()
+    }
+
+    /// The same entries, appended into the write's buffer instead of returned as owned pairs
+    /// (ADR-0074 §3): one allocation per WRITE, not two per entry.
+    ///
+    /// This is the form the write path uses; [`Self::entry_pairs`] is the wrapper for callers
+    /// that want the pairs as values. A `func` index overrides this one, because only the
+    /// declaration knows whether it fans out.
+    fn entry_pairs_into(
+        ns_prefix: &[u8],
+        key: &Self::Key,
+        document: &Self::Document,
+        out: &mut crate::model::entries::Entries,
+    ) {
         if !Self::admits(document) {
-            return Vec::new();
+            return;
         }
-        vec![(
-            Self::entry_key(ns_prefix, key, document),
-            Self::entry_value(key, document),
-        )]
+        out.push(
+            |buf| Self::entry_key_into(ns_prefix, key, document, buf),
+            |buf| Self::entry_value_into(key, document, buf),
+        );
     }
 
     /// `(entry key, entry value)` pairs for a face whose segment is a function

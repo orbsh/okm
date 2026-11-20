@@ -404,8 +404,226 @@ fn bench_dynamic(c: &mut Criterion) {
     g.bench_function("encode_payload/derive_reference", |b| {
         b.iter(|| black_box(make_row(42).encode_payload()))
     });
-    // silence unused warnings for the payload-bytes pair (used above)
+    // The other direction: a row read back. The dynamic side is the same decoder the log and
+    // the lake use (`okm_core::decode`), so this pair is the whole tax of "the reader learns
+    // the layout from bytes" rather than from the type.
+    let parsed_dynamic = okm_core::decode::decode_payload(&schema, &rust_payload).unwrap();
+    g.bench_function("decode_payload/dynamic", |b| {
+        b.iter(|| {
+            black_box(okm_core::decode::decode_payload(&schema, &rust_payload).unwrap());
+            black_box(&parsed_dynamic)
+        })
+    });
+    g.bench_function("decode_payload/derive_reference", |b| {
+        b.iter(|| black_box(BenchRow::decode_payload(&rust_payload)))
+    });
+    g.bench_function("decode_key/dynamic", |b| {
+        b.iter(|| black_box(okm_core::decode::decode_key(&schema, &rust_key).unwrap()))
+    });
+    g.bench_function("decode_key/derive_reference", |b| {
+        b.iter(|| black_box(BenchKey::decode(&rust_key)))
+    });
     let _ = (rust_key, rust_payload);
+    g.finish()
+}
+
+// ---------- the compiled plan, by hand ----------
+
+/// A "typical" table's plan, written as literals — no schema, no names, no dictionary:
+/// `BenchKey` is 4 + 8 + 4 bytes; `BenchRow`'s hot segment is 4 + 8 with two cold TLV
+/// fields behind it.
+///
+/// The question this group answers: what does interpreting a plan that addresses bytes
+/// by OFFSET cost, when the plan carries no field names and the reader builds no `Dict`?
+/// The plan a real compiler would emit is exactly this shape, so the number is the tax
+/// of the walk itself rather than of the dictionary around it.
+mod compiled {
+    use super::*;
+
+    /// `(offset, width)` of every fixed field, in key order.
+    pub const KEY: [(usize, usize); 3] = [(0, 4), (4, 8), (12, 4)];
+    /// `(offset, width)` of every hot field, within the hot segment.
+    pub const HOT: [(usize, usize); 2] = [(0, 4), (4, 8)];
+    pub const HOT_WIDTH: usize = 12;
+    pub const TAG_VISITS: u8 = 2;
+    pub const TAG_NAME: u8 = 3;
+
+    pub fn encode_key(k: &BenchKey) -> [u8; 16] {
+        let mut out = [0u8; 16];
+        out[KEY[0].0..KEY[0].0 + KEY[0].1].copy_from_slice(&k.org_id.to_be_bytes());
+        out[KEY[1].0..KEY[1].0 + KEY[1].1].copy_from_slice(&k.user_id.to_be_bytes());
+        out[KEY[2].0..KEY[2].0 + KEY[2].1].copy_from_slice(&k.tag);
+        out
+    }
+
+    pub fn decode_key(b: &[u8]) -> (u32, u64, [u8; 4]) {
+        let mut tag = [0u8; 4];
+        tag.copy_from_slice(&b[KEY[2].0..KEY[2].0 + KEY[2].1]);
+        (
+            u32::from_be_bytes(b[KEY[0].0..KEY[0].0 + KEY[0].1].try_into().unwrap()),
+            u64::from_be_bytes(b[KEY[1].0..KEY[1].0 + KEY[1].1].try_into().unwrap()),
+            tag,
+        )
+    }
+
+    /// Walk the payload: hot fields by offset into a fixed buffer, cold fields by tag
+    /// into borrowed slices. No allocation, no key lookup, no enum match on a name.
+    pub fn decode_borrowed(b: &[u8]) -> ([u32; 2], Option<&[u8]>, Option<&[u8]>) {
+        let mut hot = [0u32; 2];
+        for (i, (off, width)) in HOT.iter().enumerate() {
+            let mut raw = [0u8; 8];
+            raw[..*width].copy_from_slice(&b[*off..*off + *width]);
+            hot[i] = u32::from_be_bytes([raw[0], raw[1], raw[2], raw[3]]);
+        }
+        let mut visits = None;
+        let mut name = None;
+        let mut pos = HOT_WIDTH;
+        while pos < b.len() {
+            let tag = b[pos];
+            pos += 1;
+            let (len, n) = okm_core::take_len(&b[pos..]).unwrap();
+            pos += n;
+            let value = &b[pos..pos + len];
+            pos += len;
+            match tag {
+                TAG_VISITS => visits = Some(value),
+                TAG_NAME => name = Some(value),
+                _ => {}
+            }
+        }
+        (hot, visits, name)
+    }
+
+    /// The same walk, but producing what the derive's decoder produces: owned fields.
+    pub fn decode_owned(b: &[u8]) -> (u32, u64, u64, String) {
+        let (hot, visits, name) = decode_borrowed(b);
+        // `Reverse<u64>` stores the bit-flipped big-endian form, which is the whole of
+        // what the derive's decoder does to it.
+        let score = !u64::from_be_bytes(b[4..12].try_into().unwrap());
+        let visits = match visits {
+            Some(v) => okm_core::take_len(v).map(|(n, _)| n as u64).unwrap_or(0),
+            None => 0,
+        };
+        (
+            hot[0],
+            score,
+            visits,
+            std::str::from_utf8(name.unwrap_or(&[]))
+                .unwrap()
+                .to_string(),
+        )
+    }
+}
+
+fn bench_compiled_plan(c: &mut Criterion) {
+    let row = make_row(42);
+    let key = make_key(42);
+    let payload = row.encode_payload();
+    let key_bytes = key.encode();
+
+    // The prototype must read the REAL bytes, or the number means nothing.
+    assert_eq!(
+        &compiled::encode_key(&key)[..],
+        &key_bytes[..],
+        "key layout"
+    );
+    let (level, score, visits, name) = compiled::decode_owned(&payload);
+    assert_eq!(
+        (level, visits, name.as_str()),
+        (42, 42, "user-42"),
+        "payload layout"
+    );
+    let _ = score;
+
+    let mut g = c.benchmark_group("plan-tax");
+    g.bench_function("key_encode/compiled", |b| {
+        b.iter(|| black_box(compiled::encode_key(&make_key(42))))
+    });
+    g.bench_function("key_decode/compiled", |b| {
+        b.iter(|| black_box(compiled::decode_key(&key_bytes)))
+    });
+    g.bench_function("payload_decode/compiled_borrowed", |b| {
+        b.iter(|| black_box(compiled::decode_borrowed(&payload)))
+    });
+    g.bench_function("payload_decode/compiled_owned", |b| {
+        b.iter(|| black_box(compiled::decode_owned(&payload)))
+    });
+    g.finish()
+}
+
+// ---------- what a lookup costs ----------
+
+/// The route lookup a commit does, measured on its own: a two-byte key in the maps the store
+/// actually uses. `BTreeMap<Vec<u8>, _>` is what the store keys by header; the `u16` pair is
+/// what the declaration already gives us (a ns is two bytes), so the question "is the map
+/// choice expensive" has a cheap, direct answer.
+fn bench_route_maps(c: &mut Criterion) {
+    use std::collections::{BTreeMap, HashMap};
+
+    let mut g = c.benchmark_group("route-map");
+    for n in [1usize, 8, 64] {
+        let headers: Vec<Vec<u8>> = (0..n as u16).map(|i| i.to_be_bytes().to_vec()).collect();
+        let tree: BTreeMap<Vec<u8>, usize> = headers.iter().cloned().zip(0..).collect();
+        let map: HashMap<u16, usize> = (0..n as u16).map(|i| (i, i as usize)).collect();
+        let probe_header = headers[n / 2].clone();
+        let probe_ns = u16::from_be_bytes([probe_header[0], probe_header[1]]);
+
+        g.bench_function(format!("btreemap_vec/{}", n), |b| {
+            b.iter(|| black_box(tree.get(black_box(&probe_header))))
+        });
+        g.bench_function(format!("hashmap_u16/{}", n), |b| {
+            b.iter(|| black_box(map.get(black_box(&probe_ns))))
+        });
+    }
+    g.finish()
+}
+
+// ---------- what writing the declared access methods costs ----------
+
+/// Two declared indexes (`fields(level) includes(score)`, `fields(level, name)
+/// includes(visits)`) plus the reduce — the shape a "typical" table has. The number this
+/// group reports is the ceiling an interpreter has to reach: whatever moves into `core`
+/// must not add materially to it, and the bulk of it is per-entry allocation, not the field
+/// reads a generated body performs.
+fn bench_index_entries(c: &mut Criterion) {
+    let key = make_key(42);
+    let row = make_row(42);
+    let ns = <BenchRow as Document>::NS_PREFIX;
+
+    let mut g = c.benchmark_group("index-tax");
+    g.bench_function("index_entries/two_declared", |b| {
+        b.iter(|| {
+            black_box(<BenchRow as Document>::index_entries(
+                black_box(&key),
+                black_box(&row),
+                black_box(ns),
+            ))
+        })
+    });
+    // The form a write uses: one buffer, reused, so the append allocates nothing after the
+    // first write. The gap to `index_entries/two_declared` is what the per-entry Vecs cost.
+    let mut sink = okm_core::model::entries::Entries::new();
+    g.bench_function("index_entries_into/reused", |b| {
+        b.iter(|| {
+            sink.clear();
+            <BenchRow as Document>::index_entries_into(
+                black_box(&key),
+                black_box(&row),
+                black_box(ns),
+                &mut sink,
+            );
+            black_box(sink.as_bytes().len())
+        })
+    });
+    g.bench_function("index_entries/one_declared", |b| {
+        b.iter(|| {
+            black_box(<ByLevel as KvIndex>::entry_pairs(
+                black_box(ns),
+                black_box(&key),
+                black_box(&row),
+            ))
+        })
+    });
     g.finish()
 }
 
@@ -418,6 +636,9 @@ criterion_group!(
     bench_scan,
     bench_write_mock,
     bench_write_changelog,
-    bench_dynamic
+    bench_dynamic,
+    bench_compiled_plan,
+    bench_route_maps,
+    bench_index_entries
 );
 criterion_main!(benches);

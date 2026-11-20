@@ -76,6 +76,16 @@ impl VirtualStorage for RedbStore {
         Ok(())
     }
 
+    fn put_bytes(&self, key: &[u8], value: &[u8]) -> crate::error::Result<()> {
+        let txn = self.db.begin_write().map_err(eng)?;
+        {
+            let mut table = txn.open_table(TABLE).map_err(eng)?;
+            table.insert(key, value).map_err(eng)?;
+        }
+        txn.commit().map_err(eng)?;
+        Ok(())
+    }
+
     fn get(&self, key: &[u8]) -> crate::error::Result<Option<Vec<u8>>> {
         let txn = self.db.begin_read().map_err(eng)?;
         // Missing table = empty keyspace (no writes yet).

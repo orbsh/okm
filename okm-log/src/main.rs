@@ -218,11 +218,19 @@ fn compact(args: &[String]) -> Result<i32, String> {
             continue;
         };
         let ops = okm_core::changelog::baseline_ops(&store, &header).map_err(|e| e.to_string())?;
+        // The declaration comes from a segment already in the directory: same table, same
+        // layout, same fingerprint — the log describes itself, so the CLI needs no type.
+        let declaration =
+            okm_core::changelog::window::load_declaration(&dir).map_err(|e| e.to_string())?;
+        let plan: &'static okm_core::model::table_plan::TablePlan = Box::leak(Box::new(
+            okm_core::model::table_plan::TablePlan::compile(&declaration),
+        ));
         let Some((first, last)) = okm_core::changelog::write_baseline(
             &cfg,
             &header,
             meta.with_kind(okm_core::changelog::KIND_BASELINE),
             &ops,
+            *plan,
         )
         .map_err(|e| e.to_string())?
         else {

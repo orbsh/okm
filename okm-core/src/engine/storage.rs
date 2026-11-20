@@ -34,16 +34,24 @@ pub trait VirtualStorage {
     /// Called once per table per process, from attach — never from a write. The default is a
     /// no-op because an engine is a place to put bytes, not a place that keeps history; a
     /// store that does keep one overrides this and reads the table's meta row, which attach
-    /// has just written. A header is all that travels: what the table IS stays in the store,
-    /// where every reader — typed, dynamic, or a build that has no declaration at all — finds
-    /// the same answer.
-    fn note_table(&self, _header: &[u8]) {}
+    /// has just written. What travels is the compiled PLAN, not a header: attach has the
+    /// declaration in hand and the log does not, so the one place that knows what the table is
+    /// answers once, and every later commit indexes that answer (ADR-0074 §3).
+    fn note_table(&self, _plan: &'static crate::model::table_plan::TablePlan) {}
     /// Point write. `Err` is the engine refusing the bytes — the mirror of
     /// `get`'s error, and the reason this answers `Result` instead of `()`:
     /// a write that cannot report a refused commit has no error channel at all,
     /// so every backend used to swallow the failure as a panic in its own text
     /// (ADR-0037's follow-up, the storage trait).
     fn put(&self, key: Vec<u8>, value: Vec<u8>) -> crate::error::Result<()>;
+
+    /// The same write from borrowed bytes — how the entry path hands over what it just built
+    /// in the write's own buffer (ADR-0074 §3). The default copies into the owning form, so an
+    /// engine that cannot take a span is correct if not optimal; the ones that can (every real
+    /// one: their backends take `&[u8]`) override it and skip the copy entirely.
+    fn put_bytes(&self, key: &[u8], value: &[u8]) -> crate::error::Result<()> {
+        self.put(key.to_vec(), value.to_vec())
+    }
     /// Point read. `Ok(None)` is "no such key" — the normal answer of a KV
     /// read, never an error. `Err` is the engine failing to answer at all
     /// (I/O, a fenced handle, a dead transport): the two used to be the same
@@ -383,14 +391,18 @@ pub trait SharedVirtualStorage: VirtualStorage {
 /// ([`crate::changelog::ChangelogStore`]) serve every collection in a process —
 /// two decorators over one directory would be two writers on one segment number.
 impl<S: VirtualStorage + ?Sized> VirtualStorage for &S {
-    fn note_table(&self, header: &[u8]) {
+    fn note_table(&self, plan: &'static crate::model::table_plan::TablePlan) {
         // A wrapper that forgets this one is a silent hole: attach speaks to `&store`, and the
         // log behind it would never learn the table.
-        (**self).note_table(header)
+        (**self).note_table(plan)
     }
 
     fn put(&self, key: Vec<u8>, value: Vec<u8>) -> crate::error::Result<()> {
         (**self).put(key, value)
+    }
+
+    fn put_bytes(&self, key: &[u8], value: &[u8]) -> crate::error::Result<()> {
+        (**self).put_bytes(key, value)
     }
 
     fn get(&self, key: &[u8]) -> crate::error::Result<Option<Vec<u8>>> {
@@ -468,13 +480,20 @@ impl<'a, S: VirtualStorage> BatchStore<'a, S> {
 }
 
 impl<S: VirtualStorage> VirtualStorage for BatchStore<'_, S> {
-    fn note_table(&self, header: &[u8]) {
-        self.store.note_table(header)
+    fn note_table(&self, plan: &'static crate::model::table_plan::TablePlan) {
+        self.store.note_table(plan)
     }
 
     fn put(&self, key: Vec<u8>, value: Vec<u8>) -> crate::error::Result<()> {
         // Buffering an op cannot fail; the commit is where the engine answers.
         self.batch.borrow_mut().put(key, value);
+        Ok(())
+    }
+
+    fn put_bytes(&self, key: &[u8], value: &[u8]) -> crate::error::Result<()> {
+        // A batch owns its ops (it outlives the write), so this is the one place the span has
+        // to become bytes. The frame wants them anyway — one copy instead of two.
+        self.batch.borrow_mut().put(key.to_vec(), value.to_vec());
         Ok(())
     }
 

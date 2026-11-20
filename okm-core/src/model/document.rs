@@ -34,6 +34,10 @@ pub struct Collection<S, K: KeyEncode, R: Document<Key = K>> {
     /// `Cell` is what keeps that sound — `Cell` is `!Sync`, so a set of writes
     /// cannot be interleaved by another thread holding the same `&Collection`.
     epoch: std::cell::Cell<u64>,
+    /// The write's access-method entries, one buffer reused by every write this collection
+    /// makes (ADR-0074 §3): the entries are appended into it and handed to the store as
+    /// spans, so a collection that has written once writes again without allocating for them.
+    entries: std::cell::RefCell<crate::model::entries::Entries>,
     /// The table's field-name vocabulary mirror (ADR-0012), alive for the
     /// COLLECTION's lifetime. The dynamic segment resolves one name per frame;
     /// a cache built per operation turned every dynamic field into an engine
@@ -91,6 +95,7 @@ impl<S: VirtualStorage, K: KeyEncode, R: Document<Key = K>> Collection<S, K, R> 
         Self {
             store,
             epoch: std::cell::Cell::new(0),
+            entries: std::cell::RefCell::new(crate::model::entries::Entries::new()),
             fields_vocab: std::cell::RefCell::new(Vocabulary::new()),
             vocabs: std::cell::RefCell::new(<R::Vocabs as ::core::default::Default>::default()),
             ns_override: None,
@@ -169,7 +174,10 @@ impl<S: VirtualStorage, K: KeyEncode, R: Document<Key = K>> Collection<S, K, R> 
         }
         // The store has the row now; a wrapper that keeps history reads it instead of being
         // told (ADR-0074 §3). This is the only call: once per table per process, here.
-        self.store.note_table(&header);
+        // The table's own static, filled from the declaration attach just verified against the
+        // row (or seeded into it): one plan per table per process, at a constant address.
+        let plan = R::PLAN.get_or_init(|| crate::model::table_plan::TablePlan::compile(&derived));
+        self.store.note_table(plan);
         Ok(())
     }
 
@@ -184,6 +192,7 @@ impl<S: VirtualStorage, K: KeyEncode, R: Document<Key = K>> Collection<S, K, R> 
         Self {
             store,
             epoch: std::cell::Cell::new(0),
+            entries: std::cell::RefCell::new(crate::model::entries::Entries::new()),
             fields_vocab: std::cell::RefCell::new(Vocabulary::new()),
             vocabs: std::cell::RefCell::new(<R::Vocabs as ::core::default::Default>::default()),
             ns_override: Some(ns),
@@ -200,6 +209,7 @@ impl<S: VirtualStorage, K: KeyEncode, R: Document<Key = K>> Collection<S, K, R> 
         Self {
             store: self.store.clone(),
             epoch: std::cell::Cell::new(0),
+            entries: std::cell::RefCell::new(crate::model::entries::Entries::new()),
             fields_vocab: std::cell::RefCell::new(Vocabulary::new()),
             vocabs: std::cell::RefCell::new(<R::Vocabs as ::core::default::Default>::default()),
             ns_override: Some(ns),
@@ -590,9 +600,12 @@ impl<S: VirtualStorage, K: KeyEncode, R: Document<Key = K>> Collection<S, K, R> 
             if let Some(old) = &prev {
                 R::__okm_apply_reduces(&mut store, key, old, &header, false)?;
             }
-            store.put(pkey, document.encode_payload())?;
-            for (ek, ev) in R::index_entries(key, document, &header) {
-                store.put(ek, ev)?;
+            store.put_bytes(&pkey, &document.encode_payload())?;
+            let mut entries = self.entries.borrow_mut();
+            entries.clear();
+            R::index_entries_into(key, document, &header, &mut entries);
+            for (ek, ev) in entries.iter() {
+                store.put_bytes(ek, ev)?;
             }
             // Embedded documents: write children carried with Some(value), and
             // release references the OLD document pointed at that the new one
