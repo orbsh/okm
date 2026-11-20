@@ -44,18 +44,34 @@
 //!
 //! # Shape
 //!
-//! A packed B+tree over the FULL key. Leaves hold 32 slots of
-//! `{record offset, key length, value length}`; inner nodes hold 64
+//! A packed B+tree over the FULL key. Leaves hold 32 slots; inner nodes hold 64
 //! `(separator, child)` pairs, the separator being the SMALLEST key of a child's
 //! subtree — so appending a key, which is the shape of okm's own keys, never
-//! touches a separator. Every byte lives in chunked tables: the records, the
-//! leaves and the inner nodes, addressed by `u32` index. Nothing doubles, so a
-//! `drop` frees whole chunks rather than one allocation per entry, and the
-//! growth slack is under one chunk instead of under 2× the live bytes.
+//! touches a separator.
 //!
-//! A node's record is `[key bytes][value bytes]` contiguous inside one chunk;
-//! an empty value is a zero-length tail and costs no bytes at all, which is the
-//! shape most index entries have.
+//! **A leaf stores the prefix its keys share once.** Sorted keys inside 32
+//! adjacent entries share 8–15 bytes of okm's 11–19 byte keys — the `[ns][slot]`
+//! head, the index field bytes, and the high bytes of a monotonic id — so the
+//! leaf keeps that prefix in one record and each slot keeps only its own tail
+//! (ADR-0072 §Decision 7). A key is `prefix ++ tail`, compared as two parts
+//! without being joined, except when a scan hands it out as an owned `Vec`.
+//!
+//! The prefix is an invariant, not a heuristic: it is always a prefix of every
+//! key in the leaf. A fresh leaf takes its FIRST key as the prefix and the
+//! prefix only ever loosens — a key that diverges inside it shrinks it and
+//! rewrites that leaf's records, which on monotonic keys happens at a byte
+//! boundary rather than per insert. A split copies slots under the same prefix
+//! into both halves, so it re-encodes nothing; re-encoding there instead would
+//! make every split waste as much as the store holds live and turn the rebuild
+//! threshold into a rewrite loop (ADR-0072 §Decision 7).
+//!
+//! Separators are full-key records of their own (one per 64 children), because
+//! the entry they would otherwise point at no longer holds a whole key.
+//!
+//! Every byte lives in chunked tables: the records, the leaves and the inner
+//! nodes, addressed by `u32` index. Nothing doubles, so a `drop` frees whole
+//! chunks rather than one allocation per entry, and the growth slack is under
+//! one chunk instead of under 2× the live bytes.
 //!
 //! Reads take a read lock and writes a write lock: computations read far more
 //! than they write, so a scan does not queue behind another scan.
@@ -64,10 +80,11 @@
 //! space is the PACKING — a `BTreeMap<Vec<u8>, Vec<u8>>` pays a `Vec` header
 //! and a malloc header per key and per value, ~93–104 B of overhead on an entry
 //! whose key is 11–19 B, and every generic `K`/`V` container reproduces that
-//! because it owns `K` and `V` as Rust values. A packed B+tree lands at 31–43 B
-//! per index entry against 109 B, and beats both the `BTreeMap` and a skip list
-//! on point reads (ADR-0072 §Context, §Measured).
+//! because it owns `K` and `V` as Rust values. A packed B+tree with per-leaf
+//! front coding lands at 25–40 B per index entry against 109 B, and its point
+//! reads are within 1.05–1.3× of the `BTreeMap`'s (ADR-0072 §Context, §Measured).
 
+use std::cmp::Ordering;
 use std::sync::{Arc, RwLock, RwLockReadGuard, RwLockWriteGuard};
 
 use crate::engine::storage::{ScanIter, SharedVirtualStorage, VirtualStorage};
@@ -97,6 +114,32 @@ const CHUNK: usize = 1 << CHUNK_BITS;
 const MAX_ARENA: usize = u32::MAX as usize;
 /// Below this the arena is not worth rewriting.
 const MIN_REBUILD: usize = 64 * 1024;
+
+/// The longest common prefix of two keys.
+fn lcp(a: &[u8], b: &[u8]) -> usize {
+    let n = a.len().min(b.len());
+    let mut i = 0;
+    while i < n && a[i] == b[i] {
+        i += 1;
+    }
+    i
+}
+
+/// Compare an entry — `prefix ++ tail` — with `key`.
+fn cmp_entry(prefix: &[u8], tail: &[u8], key: &[u8]) -> Ordering {
+    let n = key.len().min(prefix.len());
+    match prefix[..n].cmp(&key[..n]) {
+        Ordering::Equal => {
+            if key.len() < prefix.len() {
+                // `key` is a proper prefix of this entry's key.
+                Ordering::Greater
+            } else {
+                tail.cmp(&key[prefix.len()..])
+            }
+        }
+        other => other,
+    }
+}
 
 /// Fixed-size chunks of `T`, addressed by a `u32` index: `(chunk << bits) | off`.
 ///
@@ -171,21 +214,25 @@ impl<T: Copy> Slab<T> {
     }
 }
 
-/// One entry in a leaf: where its `[key][value]` record starts and how it is
-/// split. 12 bytes.
+/// One entry in a leaf: where its `[tail][value]` record starts. The key is
+/// `leaf.prefix ++ tail`. 12 bytes.
 #[derive(Clone, Copy, Default)]
 struct Slot {
     rec_off: u32,
-    key_len: u32,
+    suf_len: u32,
     val_len: u32,
 }
 
-/// A leaf: a sorted run of slots, plus the in-order links a scan walks.
+/// A leaf: a sorted run of slots, the prefix the run's keys share (a prefix of
+/// every one of them, `key = prefix ++ slot tail`), and the in-order links a
+/// scan walks.
 #[derive(Clone, Copy)]
 struct Leaf {
     n: u32,
     prev: u32,
     next: u32,
+    prefix_off: u32,
+    prefix_len: u32,
     slots: [Slot; LEAF_SLOTS],
 }
 
@@ -195,13 +242,15 @@ impl Default for Leaf {
             n: 0,
             prev: NIL,
             next: NIL,
+            prefix_off: 0,
+            prefix_len: 0,
             slots: [Slot::default(); LEAF_SLOTS],
         }
     }
 }
 
-/// A separator: the smallest key of a child's subtree, by reference into the
-/// record arena.
+/// A separator: the smallest key of a child's subtree, as its OWN record in the
+/// arena — an entry's record holds only a tail, so a separator cannot borrow it.
 #[derive(Clone, Copy, Default)]
 struct Sep {
     rec_off: u32,
@@ -227,11 +276,11 @@ impl Default for Branch {
 }
 
 struct Inner {
-    /// `[key bytes][value bytes]` records, bump-allocated across fixed chunks.
+    /// `[bytes][value]` records, bump-allocated across fixed chunks.
     chunks: Vec<Vec<u8>>,
     /// Index of the chunk currently being filled.
     open: usize,
-    /// Record bytes that belong to deleted or replaced entries.
+    /// Record bytes that belong to deleted, replaced or re-encoded entries.
     waste: usize,
     /// Leaf table, chunked.
     leaves: Slab<Leaf>,
@@ -265,7 +314,7 @@ fn untag(id: u32) -> u32 {
 
 impl Inner {
     fn new() -> Self {
-        let mut leaves = Slab::new(6); // 64 x 400 B = 25 KiB a chunk
+        let mut leaves = Slab::new(6); // 64 x 404 B = 26 KiB a chunk
         let branches = Slab::new(4); // 16 x 776 B = 12 KiB a chunk
         let root = leaves.push(Leaf::default()).map(leaf_tag).unwrap_or(NIL);
         Self {
@@ -283,20 +332,36 @@ impl Inner {
         }
     }
 
-    /// A record's bytes, key first. A record never spans a chunk, so this is
-    /// one slice and no join.
+    /// A record's bytes. A record never spans a chunk, so this is one slice and
+    /// no join.
     fn record(&self, addr: u32, len: u32) -> &[u8] {
+        // An empty record's address may sit one past the end of its chunk (the
+        // end of a tail that is itself at the chunk's edge); it reads as empty
+        // without consulting a chunk that may not exist yet.
+        if len == 0 {
+            return &[];
+        }
         let chunk = (addr >> CHUNK_BITS) as usize;
         let off = (addr & (CHUNK as u32 - 1)) as usize;
+        debug_assert!(
+            chunk < self.chunks.len() && off + len as usize <= self.chunks[chunk].len(),
+            "bad record addr {addr} len {len} (chunks {}, open {})",
+            self.chunks.len(),
+            self.open
+        );
         &self.chunks[chunk][off..off + len as usize]
     }
 
-    fn slot_key(&self, slot: Slot) -> &[u8] {
-        self.record(slot.rec_off, slot.key_len)
+    fn prefix(&self, leaf: &Leaf) -> &[u8] {
+        self.record(leaf.prefix_off, leaf.prefix_len)
     }
 
-    fn slot_val(&self, slot: Slot) -> &[u8] {
-        self.record(slot.rec_off + slot.key_len, slot.val_len)
+    fn suffix(&self, slot: Slot) -> &[u8] {
+        self.record(slot.rec_off, slot.suf_len)
+    }
+
+    fn value(&self, slot: Slot) -> &[u8] {
+        self.record(slot.rec_off + slot.suf_len, slot.val_len)
     }
 
     fn sep_key(&self, sep: Sep) -> &[u8] {
@@ -321,6 +386,26 @@ impl Inner {
 
     fn is_branch(id: u32) -> bool {
         id & TAG_INNER == TAG_INNER
+    }
+
+    /// A slot's whole key, joined. Only a caller that must HAND OUT the key
+    /// pays for this; comparisons read it as two parts.
+    fn key_of(&self, leaf_id: u32, slot: Slot) -> Vec<u8> {
+        let leaf = self.leaf(leaf_id);
+        let prefix = self.prefix(leaf);
+        let tail = self.suffix(slot);
+        let mut key = Vec::with_capacity(prefix.len() + tail.len());
+        key.extend_from_slice(prefix);
+        key.extend_from_slice(tail);
+        key
+    }
+
+    /// Where `key` sits among a leaf's slots.
+    fn leaf_pos(&self, leaf_id: u32, key: &[u8]) -> Result<usize, usize> {
+        let leaf = self.leaf(leaf_id);
+        let prefix = self.prefix(leaf);
+        leaf.slots[..leaf.n as usize]
+            .binary_search_by(|slot| cmp_entry(prefix, self.suffix(*slot), key))
     }
 
     /// The child whose key range holds `key`: the last separator that is `<=`.
@@ -355,17 +440,20 @@ impl Inner {
         (id, path, depth)
     }
 
-    fn leaf_pos(&self, leaf: &Leaf, key: &[u8]) -> Result<usize, usize> {
-        leaf.slots[..leaf.n as usize].binary_search_by(|s| self.slot_key(*s).cmp(key))
-    }
-
-    /// Append `[key][value]` and answer its offset. `None` means the record
-    /// would cross the `u32` reference limit — a store of that size is a
-    /// deployment error, and the caller reports it rather than truncating.
-    fn append(&mut self, key: &[u8], val: &[u8]) -> Option<u32> {
-        let total = key.len() + val.len();
+    /// Append `[bytes]` and answer its offset. `None` means the store would
+    /// cross the `u32` reference limit — a store of that size is a deployment
+    /// error, and the caller reports it rather than truncating.
+    fn append(&mut self, head: &[u8], tail: &[u8]) -> Option<u32> {
+        let total = head.len() + tail.len();
         if total > MAX_ARENA {
             return None;
+        }
+        // A zero-length record has no bytes to place; address 0 is a valid empty
+        // slice and never depends on where the open chunk ends. (Without this a
+        // record appended to an exactly full chunk produced `open << 16 | CHUNK`,
+        // which walks into the next chunk's index space.)
+        if total == 0 {
+            return Some(0);
         }
         if total > CHUNK {
             // One oversized record owns a chunk of its own (offset 0). The
@@ -375,8 +463,8 @@ impl Inner {
                 return None;
             }
             let mut chunk = Vec::with_capacity(total);
-            chunk.extend_from_slice(key);
-            chunk.extend_from_slice(val);
+            chunk.extend_from_slice(head);
+            chunk.extend_from_slice(tail);
             self.chunks.push(chunk);
             let addr = ((self.chunks.len() as u32 - 1) << CHUNK_BITS) as usize;
             return u32::try_from(addr).ok();
@@ -390,9 +478,20 @@ impl Inner {
         }
         let chunk = &mut self.chunks[self.open];
         let off = chunk.len();
-        chunk.extend_from_slice(key);
-        chunk.extend_from_slice(val);
+        chunk.extend_from_slice(head);
+        chunk.extend_from_slice(tail);
         u32::try_from((self.open << CHUNK_BITS) | off).ok()
+    }
+
+    /// Write an entry's `[tail][value]` record. The caller guarantees `tail` is
+    /// `key` minus the leaf's prefix.
+    fn encode(&mut self, tail: &[u8], value: &[u8]) -> crate::error::Result<Slot> {
+        let rec_off = self.append(tail, value).ok_or_else(too_big)?;
+        Ok(Slot {
+            rec_off,
+            suf_len: tail.len() as u32,
+            val_len: value.len() as u32,
+        })
     }
 
     fn alloc_leaf(&mut self, leaf: Leaf) -> crate::error::Result<u32> {
@@ -423,47 +522,144 @@ impl Inner {
         self.free_branches.push(untag(id));
     }
 
-    fn insert(&mut self, key: &[u8], val: &[u8]) -> crate::error::Result<()> {
-        let (leaf_id, path, depth) = self.descend(key);
-        let at = self.leaf_pos(self.leaf(leaf_id), key);
-        let off = self.append(key, val).ok_or_else(too_big)?;
-        let slot = Slot {
-            rec_off: off,
-            key_len: key.len() as u32,
-            val_len: val.len() as u32,
+    /// A leaf's entries as owned pairs, in order.
+    fn leaf_entries(&self, leaf_id: u32) -> Vec<(Vec<u8>, Vec<u8>)> {
+        let leaf = self.leaf(leaf_id);
+        let mut out = Vec::with_capacity(leaf.n as usize);
+        for slot in &leaf.slots[..leaf.n as usize] {
+            out.push((self.key_of(leaf_id, *slot), self.value(*slot).to_vec()));
+        }
+        out
+    }
+
+    /// Rewrite a leaf's whole run: recompute the shared prefix from its ends,
+    /// store it once, and encode each entry against it. Every structural change
+    /// (insert that does not fit the prefix, split, borrow, merge) goes through
+    /// here, so one function defines the encoding.
+    fn reset_leaf(
+        &mut self,
+        leaf_id: u32,
+        entries: &[(Vec<u8>, Vec<u8>)],
+    ) -> crate::error::Result<()> {
+        debug_assert!(entries.len() <= LEAF_SLOTS);
+        if entries.is_empty() {
+            let leaf = *self.leaf(leaf_id);
+            self.waste += leaf.prefix_len as usize;
+            for slot in &leaf.slots[..leaf.n as usize] {
+                self.waste += (slot.suf_len + slot.val_len) as usize;
+            }
+            let leaf = self.leaf_mut(leaf_id);
+            leaf.n = 0;
+            leaf.prefix_off = 0;
+            leaf.prefix_len = 0;
+            return Ok(());
+        }
+        let shared = match (entries.first(), entries.last()) {
+            (Some((first, _)), Some((last, _))) => lcp(first, last),
+            _ => 0,
         };
-        match at {
+        // The old run's bytes, prefix included, become waste.
+        {
+            let leaf = *self.leaf(leaf_id);
+            self.waste += leaf.prefix_len as usize;
+            for slot in &leaf.slots[..leaf.n as usize] {
+                self.waste += (slot.suf_len + slot.val_len) as usize;
+            }
+        }
+        let prefix_off = self
+            .append(&entries[0].0[..shared], &[])
+            .ok_or_else(too_big)?;
+        let mut slots = [Slot::default(); LEAF_SLOTS];
+        for (at, (key, value)) in entries.iter().enumerate() {
+            slots[at] = self.encode(&key[shared..], value)?;
+        }
+        let leaf = self.leaf_mut(leaf_id);
+        leaf.prefix_off = prefix_off;
+        leaf.prefix_len = shared as u32;
+        leaf.slots[..entries.len()].copy_from_slice(&slots[..entries.len()]);
+        leaf.n = entries.len() as u32;
+        Ok(())
+    }
+
+    /// A leaf's smallest key, materialised as a separator record.
+    fn sep_of(&mut self, leaf_id: u32) -> crate::error::Result<Sep> {
+        let slot = self.leaf(leaf_id).slots[0];
+        let key = self.key_of(leaf_id, slot);
+        let rec_off = self.append(&key, &[]).ok_or_else(too_big)?;
+        Ok(Sep {
+            rec_off,
+            key_len: key.len() as u32,
+        })
+    }
+
+    fn insert(&mut self, key: &[u8], value: &[u8]) -> crate::error::Result<()> {
+        let (leaf_id, path, depth) = self.descend(key);
+        match self.leaf_pos(leaf_id, key) {
             Ok(at) => {
-                // Replace: the record is contiguous, so a new value is a new
-                // record and the old one's bytes become waste.
-                let old = self.leaf(leaf_id).slots[at];
-                self.waste += (old.key_len + old.val_len) as usize;
+                // Replace: the key is unchanged, so only a new record is needed.
+                let leaf = *self.leaf(leaf_id);
+                let old = leaf.slots[at];
+                self.waste += (old.suf_len + old.val_len) as usize;
+                let shared = leaf.prefix_len as usize;
+                let slot = self.encode(&key[shared..], value)?;
                 self.leaf_mut(leaf_id).slots[at] = slot;
             }
             Err(at) => {
-                // Assemble the leaf plus the new slot first: a full leaf has no
-                // room to shift inside itself, and the split takes the whole run.
-                let n = self.leaf(leaf_id).n as usize;
-                let mut slots = [Slot::default(); LEAF_SLOTS + 1];
-                slots[..n].copy_from_slice(&self.leaf(leaf_id).slots[..n]);
-                slots.copy_within(at..n, at + 1);
-                slots[at] = slot;
+                let leaf = *self.leaf(leaf_id);
+                let n = leaf.n as usize;
+                if n == 0 {
+                    // A fresh leaf takes its first key as the shared prefix, so
+                    // its tail is empty and every later key in this leaf shares
+                    // at least that much. Compression therefore starts at 100%
+                    // and only ever loosens — no rewrite is needed to ACQUIRE a
+                    // prefix, which is what keeps the split path waste-free.
+                    let prefix_off = self.append(key, &[]).ok_or_else(too_big)?;
+                    let slot = self.encode(&[], value)?;
+                    {
+                        let leaf = self.leaf_mut(leaf_id);
+                        leaf.prefix_off = prefix_off;
+                        leaf.prefix_len = key.len() as u32;
+                        leaf.slots[0] = slot;
+                        leaf.n = 1;
+                    }
+                    self.len += 1;
+                    if depth > 0 {
+                        // An emptied non-root leaf keeps its parent's separator
+                        // pointing at a key that no longer exists until this
+                        // write gives it one back.
+                        let sep = self.sep_of(leaf_id)?;
+                        self.lift_min(&path, depth, sep);
+                    }
+                    self.epoch += 1;
+                    return Ok(());
+                }
+                let fits = key.starts_with(self.record(leaf.prefix_off, leaf.prefix_len));
+                if !fits {
+                    // The new key diverges inside the shared prefix, so the
+                    // prefix must shrink: every entry's tail grows and every
+                    // record is rewritten. Correctly routed keys share the
+                    // prefix of their leaf's ends, so this is the byte-boundary
+                    // case, not the common one.
+                    let shorter = lcp(self.record(leaf.prefix_off, leaf.prefix_len), key);
+                    let prefix = self.record(leaf.prefix_off, shorter as u32).to_vec();
+                    self.shorten_prefix(leaf_id, &prefix)?;
+                }
+                let shared = self.leaf(leaf_id).prefix_len as usize;
+                let slot = self.encode(&key[shared..], value)?;
                 self.len += 1;
+                if n < LEAF_SLOTS {
+                    let leaf = self.leaf_mut(leaf_id);
+                    leaf.slots.copy_within(at..n, at + 1);
+                    leaf.slots[at] = slot;
+                    leaf.n += 1;
+                } else {
+                    self.split_slots(leaf_id, at, slot, &path, depth)?;
+                }
                 if at == 0 {
                     // This child's smallest key moved, so every separator naming
                     // it moves too.
-                    let sep = Sep {
-                        rec_off: off,
-                        key_len: key.len() as u32,
-                    };
+                    let sep = self.sep_of(leaf_id)?;
                     self.lift_min(&path, depth, sep);
-                }
-                if n < LEAF_SLOTS {
-                    let leaf = self.leaf_mut(leaf_id);
-                    leaf.slots[..n + 1].copy_from_slice(&slots[..n + 1]);
-                    leaf.n = (n + 1) as u32;
-                } else {
-                    self.split_leaf(leaf_id, &slots, at, &path, depth)?;
                 }
             }
         }
@@ -484,18 +680,23 @@ impl Inner {
         }
     }
 
-    /// Split a run of `LEAF_SLOTS + 1` slots into the existing leaf and a new
-    /// right sibling, then push the new separator up.
+    /// Split `LEAF_SLOTS` slots plus the new one into the existing leaf and a
+    /// new right sibling, then push the new separator up.
     ///
     /// The split point is biased when the new key lands at one END of the run:
-    /// okm's own keys are monotonic (ids, timestamps, uuid7), and splitting an
-    /// append 16/17 would leave every finished leaf half empty forever — the
-    /// measured difference is 43 B/entry against 31.
-    fn split_leaf(
+    /// okm's own keys are monotonic (ids, timestamps, uuid7), and an even split
+    /// would leave every finished leaf half empty forever — the measured
+    /// difference is 43 B/entry against 31.
+    ///
+    /// Both halves keep the parent leaf's prefix, so NO slot is re-encoded: a
+    /// slot's record is `key[prefix.len()..]`, which stays valid under the same
+    /// prefix. (Re-encoding here would make every split manufacture as much
+    /// waste as the store holds live, and the rebuild would then thrash.)
+    fn split_slots(
         &mut self,
         leaf_id: u32,
-        slots: &[Slot; LEAF_SLOTS + 1],
         at: usize,
+        slot: Slot,
         path: &[(u32, usize); MAX_HEIGHT],
         depth: usize,
     ) -> crate::error::Result<()> {
@@ -507,30 +708,69 @@ impl Inner {
         } else {
             total / 2
         };
-        let mut right = Leaf {
-            n: (total - half) as u32,
-            ..Default::default()
+        let mut slots = [Slot::default(); LEAF_SLOTS + 1];
+        let (prefix_off, prefix_len, old_next) = {
+            let leaf = self.leaf(leaf_id);
+            slots[..at].copy_from_slice(&leaf.slots[..at]);
+            slots[at] = slot;
+            slots[at + 1..total].copy_from_slice(&leaf.slots[at..LEAF_SLOTS]);
+            (leaf.prefix_off, leaf.prefix_len, leaf.next)
         };
-        right.slots[..total - half].copy_from_slice(&slots[half..total]);
-        right.next = self.leaf(leaf_id).next;
-        right.prev = leaf_id;
-        let right_id = self.alloc_leaf(right)?;
+        let right_id = self.alloc_leaf(Leaf {
+            prev: leaf_id,
+            next: old_next,
+            prefix_off,
+            prefix_len,
+            ..Default::default()
+        })?;
         {
             let left = self.leaf_mut(leaf_id);
             left.slots[..half].copy_from_slice(&slots[..half]);
             left.n = half as u32;
             left.next = right_id;
         }
-        let old_next = self.leaf(right_id).next;
+        {
+            let right = self.leaf_mut(right_id);
+            right.slots[..total - half].copy_from_slice(&slots[half..total]);
+            right.n = (total - half) as u32;
+        }
         if old_next != NIL {
             self.leaf_mut(old_next).prev = right_id;
         }
-        let first = self.leaf(right_id).slots[0];
-        let sep = Sep {
-            rec_off: first.rec_off,
-            key_len: first.key_len,
-        };
+        let sep = self.sep_of(right_id)?;
         self.insert_sep(path, depth, sep, right_id)
+    }
+
+    /// Give a leaf a shorter shared prefix and re-encode every entry against
+    /// it. The caller has established that `prefix` is a prefix of every key in
+    /// the leaf.
+    fn shorten_prefix(&mut self, leaf_id: u32, prefix: &[u8]) -> crate::error::Result<()> {
+        let leaf = *self.leaf(leaf_id);
+        let keep = prefix.len() as u32;
+        let grow = self
+            .record(leaf.prefix_off + keep, leaf.prefix_len - keep)
+            .to_vec();
+        let mut rewritten = Vec::with_capacity(leaf.n as usize);
+        for old in leaf.slots[..leaf.n as usize].iter().copied() {
+            let mut tail = Vec::with_capacity(grow.len() + old.suf_len as usize);
+            tail.extend_from_slice(&grow);
+            tail.extend_from_slice(self.suffix(old));
+            rewritten.push((tail, self.value(old).to_vec()));
+        }
+        self.waste += leaf.prefix_len as usize;
+        for (tail, value) in &rewritten {
+            self.waste += tail.len() + value.len();
+        }
+        let prefix_off = self.append(prefix, &[]).ok_or_else(too_big)?;
+        let mut slots = [Slot::default(); LEAF_SLOTS];
+        for (at, (tail, value)) in rewritten.iter().enumerate() {
+            slots[at] = self.encode(tail, value)?;
+        }
+        let leaf = self.leaf_mut(leaf_id);
+        leaf.prefix_off = prefix_off;
+        leaf.prefix_len = keep;
+        leaf.slots[..rewritten.len()].copy_from_slice(&slots[..rewritten.len()]);
+        Ok(())
     }
 
     /// Add `(sep, child)` to the parent at `path[depth-1]`, splitting upward
@@ -547,7 +787,7 @@ impl Inner {
                 n: 2,
                 ..Default::default()
             };
-            root.seps[0] = self.node_min(self.root);
+            root.seps[0] = self.node_min(self.root)?;
             root.children[0] = self.root;
             root.seps[1] = sep;
             root.children[1] = child;
@@ -608,50 +848,44 @@ impl Inner {
     }
 
     /// The smallest key under a node.
-    fn node_min(&self, id: u32) -> Sep {
+    fn node_min(&mut self, id: u32) -> crate::error::Result<Sep> {
         if Self::is_branch(id) {
-            self.branch(id).seps[0]
+            Ok(self.branch(id).seps[0])
         } else {
-            let slot = self.leaf(id).slots[0];
-            Sep {
-                rec_off: slot.rec_off,
-                key_len: slot.key_len,
-            }
+            self.sep_of(id)
         }
     }
 
     fn get(&self, key: &[u8]) -> Option<&[u8]> {
         let (leaf_id, _, _) = self.descend(key);
-        let leaf = self.leaf(leaf_id);
-        match self.leaf_pos(leaf, key) {
-            Ok(at) => Some(self.slot_val(leaf.slots[at])),
+        match self.leaf_pos(leaf_id, key) {
+            Ok(at) => Some(self.value(self.leaf(leaf_id).slots[at])),
             Err(_) => None,
         }
     }
 
     fn remove(&mut self, key: &[u8]) -> bool {
         let (leaf_id, path, depth) = self.descend(key);
-        let at = match self.leaf_pos(self.leaf(leaf_id), key) {
+        let at = match self.leaf_pos(leaf_id, key) {
             Ok(at) => at,
             Err(_) => return false,
         };
-        let n = self.leaf(leaf_id).n as usize;
-        let gone = self.leaf(leaf_id).slots[at];
-        self.waste += (gone.key_len + gone.val_len) as usize;
+        let leaf = *self.leaf(leaf_id);
+        let n = leaf.n as usize;
+        let gone = leaf.slots[at];
+        self.waste += (gone.suf_len + gone.val_len) as usize;
         {
-            let leaf = self.leaf_mut(leaf_id);
-            leaf.slots.copy_within(at + 1..n, at);
-            leaf.n -= 1;
+            let l = self.leaf_mut(leaf_id);
+            l.slots.copy_within(at + 1..n, at);
+            l.n -= 1;
         }
         self.len -= 1;
         self.epoch += 1;
         if at == 0 && self.leaf(leaf_id).n > 0 {
-            let first = self.leaf(leaf_id).slots[0];
-            let sep = Sep {
-                rec_off: first.rec_off,
-                key_len: first.key_len,
-            };
-            self.lift_min(&path, depth, sep);
+            // `sep_of` borrows `self` mutably, so the min is taken afterwards.
+            if let Ok(sep) = self.sep_of(leaf_id) {
+                self.lift_min(&path, depth, sep);
+            }
         }
         if self.height > 1 && (self.leaf(leaf_id).n as usize) < LEAF_MIN {
             self.fix_leaf(leaf_id, &path, depth);
@@ -665,17 +899,10 @@ impl Inner {
         while self.height > 1 {
             let root = self.root;
             let n = self.branch(root).n;
-            if n > 1 {
+            if n != 1 {
                 return;
             }
-            let only = if n == 1 {
-                self.branch(root).children[0]
-            } else {
-                NIL
-            };
-            if only == NIL {
-                return;
-            }
+            let only = self.branch(root).children[0];
             self.root = only;
             self.height -= 1;
             self.free_branch(root);
@@ -700,57 +927,41 @@ impl Inner {
             None
         };
         if let Some(right) = right.filter(|r| self.leaf(*r).n as usize > LEAF_MIN) {
+            let mut mine = self.leaf_entries(leaf_id);
+            let mut theirs = self.leaf_entries(right);
+            mine.push(theirs.remove(0));
+            if self.reset_leaf(leaf_id, &mine).is_err() || self.reset_leaf(right, &theirs).is_err()
             {
-                let moved = self.leaf(right).slots[0];
-                let rn = self.leaf(right).n as usize;
-                {
-                    let r = self.leaf_mut(right);
-                    r.slots.copy_within(1..rn, 0);
-                    r.n -= 1;
-                }
-                let ln = self.leaf(leaf_id).n as usize;
-                {
-                    let l = self.leaf_mut(leaf_id);
-                    l.slots[ln] = moved;
-                    l.n += 1;
-                }
-                let sep = Sep {
-                    rec_off: self.leaf(right).slots[0].rec_off,
-                    key_len: self.leaf(right).slots[0].key_len,
-                };
-                self.branch_mut(parent).seps[idx + 1] = sep;
                 return;
             }
+            if let Ok(sep) = self.sep_of(right) {
+                self.branch_mut(parent).seps[idx + 1] = sep;
+            }
+            return;
         }
         if let Some(left) = left.filter(|l| self.leaf(*l).n as usize > LEAF_MIN) {
-            {
-                let ln = self.leaf(left).n as usize;
-                let moved = self.leaf(left).slots[ln - 1];
-                self.leaf_mut(left).n -= 1;
-                let n = self.leaf(leaf_id).n as usize;
-                {
-                    let l = self.leaf_mut(leaf_id);
-                    l.slots.copy_within(0..n, 1);
-                    l.slots[0] = moved;
-                    l.n += 1;
-                }
-                let sep = Sep {
-                    rec_off: moved.rec_off,
-                    key_len: moved.key_len,
-                };
-                self.lift_min(path, depth, sep);
+            let mut mine = self.leaf_entries(leaf_id);
+            let mut theirs = self.leaf_entries(left);
+            let moved = theirs.pop();
+            let Some(moved) = moved else { return };
+            mine.insert(0, moved);
+            if self.reset_leaf(leaf_id, &mine).is_err() || self.reset_leaf(left, &theirs).is_err() {
                 return;
             }
+            if let Ok(sep) = self.sep_of(leaf_id) {
+                self.lift_min(path, depth, sep);
+            }
+            return;
         }
         if let Some(right) = right {
-            let moved = self.leaf(right).n as usize;
-            let base = self.leaf(leaf_id).n as usize;
-            let slots: [Slot; LEAF_SLOTS] = self.leaf(right).slots;
+            let mut mine = self.leaf_entries(leaf_id);
+            mine.extend(self.leaf_entries(right));
             let next = self.leaf(right).next;
+            if self.reset_leaf(leaf_id, &mine).is_err() {
+                return;
+            }
             {
                 let l = self.leaf_mut(leaf_id);
-                l.slots[base..base + moved].copy_from_slice(&slots[..moved]);
-                l.n += moved as u32;
                 l.next = next;
             }
             if next != NIL {
@@ -759,16 +970,13 @@ impl Inner {
             self.free_leaf(right);
             self.drop_child(parent, idx + 1, path, depth);
         } else if let Some(left) = left {
-            let moved = self.leaf(leaf_id).n as usize;
-            let base = self.leaf(left).n as usize;
-            let slots: [Slot; LEAF_SLOTS] = self.leaf(leaf_id).slots;
+            let mut mine = self.leaf_entries(left);
+            mine.extend(self.leaf_entries(leaf_id));
             let next = self.leaf(leaf_id).next;
-            {
-                let l = self.leaf_mut(left);
-                l.slots[base..base + moved].copy_from_slice(&slots[..moved]);
-                l.n += moved as u32;
-                l.next = next;
+            if self.reset_leaf(left, &mine).is_err() {
+                return;
             }
+            self.leaf_mut(left).next = next;
             if next != NIL {
                 self.leaf_mut(next).prev = left;
             }
@@ -882,7 +1090,7 @@ impl Inner {
         let (mut leaf_id, _, _) = self.descend(key);
         while leaf_id != NIL {
             let leaf = self.leaf(leaf_id);
-            match self.leaf_pos(leaf, key) {
+            match self.leaf_pos(leaf_id, key) {
                 Ok(at) => return Some((leaf_id, at)),
                 Err(at) if at < leaf.n as usize => return Some((leaf_id, at)),
                 Err(_) => leaf_id = leaf.next,
@@ -895,7 +1103,9 @@ impl Inner {
     fn seek_gt(&self, key: &[u8]) -> Option<(u32, usize)> {
         let (leaf_id, at) = self.seek_ge(key)?;
         let leaf = self.leaf(leaf_id);
-        if at < leaf.n as usize && self.slot_key(leaf.slots[at]) == key {
+        if at < leaf.n as usize
+            && cmp_entry(self.prefix(leaf), self.suffix(leaf.slots[at]), key) == Ordering::Equal
+        {
             if at + 1 < leaf.n as usize {
                 return Some((leaf_id, at + 1));
             }
@@ -912,8 +1122,7 @@ impl Inner {
     /// `p` of 0 hands the walk to the previous leaf, which the caller does.
     fn seek_lt(&self, key: &[u8]) -> Option<(u32, usize)> {
         let (leaf_id, _, _) = self.descend(key);
-        let leaf = self.leaf(leaf_id);
-        let at = match self.leaf_pos(leaf, key) {
+        let at = match self.leaf_pos(leaf_id, key) {
             Ok(at) | Err(at) => at,
         };
         Some((leaf_id, at))
@@ -951,10 +1160,10 @@ impl Inner {
         let mut leaf_id = self.first_leaf();
         'outer: while leaf_id != NIL {
             let leaf = self.leaf(leaf_id);
-            for slot in &leaf.slots[..leaf.n as usize] {
-                let key = self.slot_key(*slot).to_vec();
-                let val = self.slot_val(*slot).to_vec();
-                if fresh.insert(&key, &val).is_err() {
+            for slot in leaf.slots[..leaf.n as usize].iter().copied() {
+                let key = self.key_of(leaf_id, slot);
+                let value = self.value(slot).to_vec();
+                if fresh.insert(&key, &value).is_err() {
                     complete = false;
                     break 'outer;
                 }
@@ -1167,7 +1376,9 @@ impl EphemeralScan {
         }
         let (found, epoch) = self.with(|g| (g.seek_ge(lower), g.epoch));
         let ok = match found {
-            Some((leaf, slot)) => self.with(|g| self.within(g.slot_key(g.leaf(leaf).slots[slot]))),
+            Some((leaf, slot)) => {
+                self.with(|g| self.within(&g.key_of(leaf, g.leaf(leaf).slots[slot])))
+            }
             None => false,
         };
         self.fwd_from = Some(lower.to_vec());
@@ -1213,8 +1424,8 @@ impl Iterator for EphemeralScan {
                     let s = g.leaf(leaf).slots[slot];
                     (
                         Some((leaf, slot)),
-                        g.slot_key(s).to_vec(),
-                        g.slot_val(s).to_vec(),
+                        g.key_of(leaf, s),
+                        g.value(s).to_vec(),
                         g.epoch,
                     )
                 }
@@ -1268,8 +1479,8 @@ impl DoubleEndedIterator for EphemeralScan {
                     let s = g.leaf(leaf).slots[slot - 1];
                     (
                         Some((leaf, slot - 1)),
-                        g.slot_key(s).to_vec(),
-                        g.slot_val(s).to_vec(),
+                        g.key_of(leaf, s),
+                        g.value(s).to_vec(),
                         g.epoch,
                     )
                 }
@@ -1349,6 +1560,63 @@ mod tests {
         assert_eq!(all.len(), 3);
         assert_eq!(all[0].0, b"a");
         assert_eq!(all[2].0, b"abc");
+    }
+
+    /// An index-shaped key: `[ns][slot][org][id]`, 16 bytes, empty value.
+    fn index_key(n: u64) -> Vec<u8> {
+        let mut k = Vec::new();
+        k.extend_from_slice(&3u16.to_be_bytes());
+        k.extend_from_slice(&[0x40, 0x00]);
+        k.extend_from_slice(&(n / 32_000).to_be_bytes().as_slice()[4..]);
+        k.extend_from_slice(&n.to_be_bytes());
+        k
+    }
+
+    #[test]
+    fn a_leaf_stores_the_prefix_its_keys_share_once() {
+        let s = EphemeralStore::new();
+        for n in 0..32_000u64 {
+            s.put(index_key(n), Vec::new()).unwrap();
+        }
+        // 12 B slot + the leaf table's amortised header, and then only the few
+        // tail bytes a 32-key run does not share. Without the shared prefix the
+        // arena would carry all 16 key bytes per entry, i.e. ~31 B/entry.
+        let per_entry = s.bytes() / s.len();
+        assert!(per_entry < 22, "{per_entry} B/entry");
+        for n in [0u64, 1, 31, 32, 33, 1024, 31_999] {
+            assert_eq!(s.get(&index_key(n)).unwrap(), Some(Vec::new()), "key {n}");
+        }
+        let all: Vec<Vec<u8>> = drain(&s, b"", None).into_iter().map(|(k, _)| k).collect();
+        let want: Vec<Vec<u8>> = (0..32_000u64).map(index_key).collect();
+        assert_eq!(all, want);
+    }
+
+    #[test]
+    fn a_key_that_diverges_inside_the_prefix_shortens_it() {
+        let s = EphemeralStore::new();
+        // 64 keys sharing ten bytes, so the leaf's prefix covers most of them.
+        for n in 0..64u64 {
+            let mut k = b"meta.scratch.".to_vec();
+            k.extend_from_slice(&n.to_be_bytes());
+            s.put(k, vec![1]).unwrap();
+        }
+        // A key in the same leaf that diverges at byte 5: the prefix has to give
+        // way, and every tail in the leaf is rewritten.
+        s.put(b"meta!".to_vec(), vec![2]).unwrap();
+        let all = drain(&s, b"", None);
+        assert_eq!(all.len(), 65);
+        assert_eq!(all[0].0, b"meta!");
+        assert_eq!(all[1].0, {
+            let mut k = b"meta.scratch.".to_vec();
+            k.extend_from_slice(&0u64.to_be_bytes());
+            k
+        });
+        for n in [0u64, 31, 63] {
+            let mut k = b"meta.scratch.".to_vec();
+            k.extend_from_slice(&n.to_be_bytes());
+            assert_eq!(s.get(&k).unwrap(), Some(vec![1]), "key {n}");
+        }
+        assert_eq!(s.get(b"meta!").unwrap(), Some(vec![2]));
     }
 
     #[test]
