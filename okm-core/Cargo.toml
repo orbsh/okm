@@ -67,6 +67,12 @@ required-features = ["fjall"]
 name = "engine_paths"
 required-features = ["fjall"]
 
+# What the same rows cost on disk against Parquet, plus the CSV the PostgreSQL
+# and InnoDB arms load (docs/internals/benchmarks.md).
+[[example]]
+name = "size_vs_parquet"
+required-features = ["fjall"]
+
 # The store comes from the `okm-async` dev-dependency (ADR-0059): this file calls
 # `TestStore::slatedb_mem()` and `Graph::to_record_batch_table`.
 [[test]]
