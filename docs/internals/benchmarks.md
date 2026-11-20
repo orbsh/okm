@@ -182,6 +182,37 @@ ANALYZE TABLE orders;
 SELECT data_length, index_length FROM information_schema.tables WHERE table_name = 'orders';
 ```
 
+## Space: what the change log costs, and what the lake gives back
+
+A capturing table pays two bills: the frames it appends, and the baseline compaction writes so that a reader has somewhere to start. Both carry the **truth half** with payloads (ADR-0056) — index, reduce and graph faces are derived and never logged. Measured by the `changelog_size` probe on the same 1 M rows as the space table above, writing through `ChangelogStore` and then calling `compact(0)`:
+
+| what | B/row | on disk | notes |
+|---|---|---|---|
+| log, delta segments | 130.0 | 130.0 MB | 2 sealed segments, 64 MiB rotation |
+| log, baseline after `compact(0)` | 125.4 | 125.4 MB | full scan of the truth half, written back as segments |
+| store, one secondary index | 142.9 | 142.9 MB | the indexed arm of the table above |
+| lake export, as drained today | 120.2 | 120.2 MB | uncompressed parquet + `okm_op`/`okm_slot`/`okm_seq` |
+| parquet zstd(1), same rows | 33.0 | 33.0 MB | no change columns |
+| lance v2, default encoding | 39.5 | 39.5 MB | 4 files, written in 0.2 s |
+
+Three things are worth reading off it:
+
+- **The frame costs 8.6 B per write** (4 B frame length, 1 B op count, 3 B op header over a 15-byte key and a 106-byte value): 130.0 measured against 121.4 logical, about 7 %. It is fixed, so a 20-byte row would pay 40 %.
+- **The log is the only copy with no prefix sharing.** Against the store's documents (112.2 B/row) it is larger; against the indexed store it is 0.91×.
+- **The baseline is a full state copy**, so the steady state is `1 × table + ≤ 1 GiB`, and the 1 GiB default is bigger than a table under a gigabyte: at 5 M rows that window alone is 214.7 B/row. Whole-host accounting with capture on is therefore ~2× the table — 253.9 B/row at 5 M, against 128.5 for the store.
+
+What a write rate turns that into (130 B/write, 64 MiB segments, the 1 GiB compaction trigger):
+
+| writes/s | bytes/s | per day | a segment seals every | compaction fires every |
+|---|---|---|---|---|
+| 1 000 | 0.13 MB | 11.2 GB | 8.6 min | 2.3 h |
+| 10 000 | 1.3 MB | 112.3 GB | 52 s | 14 min |
+| 100 000 | 13 MB | 1.12 TB | 5.2 s | 1.4 min |
+
+The log is a hint, not a WAL: frames are at-most-once and are not individually fsync'd, which is why a migration still ends with a reconcile scan of the old store.
+
+The lake side of the same rows is **120.2 B/row**, because `snapshot::parquet_io` builds its writer with no `WriterProperties` and parquet therefore stores it uncompressed. The same rows at zstd(1) are 33.0 B/row. The export is 3.6× larger than it needs to be, and ADR-0071's move of the baseline into the lake is worth nothing until that one line is added.
+
 ## Dynamic codec tax (okm-dynamic vs Rust derive, same declaration)
 
 | path | dynamic | derive | tax |
