@@ -1676,6 +1676,13 @@ impl<S> ChangelogStore<S> {
         }
     }
 
+    /// The configuration this store was assembled with — where the log is, and what it
+    /// compacts by. A caller that has to reach the table directory (to record a lake
+    /// reference, ADR-0071 §1) needs the root, not a second copy of it.
+    pub fn config(&self) -> &ChangelogConfig {
+        &self.cfg
+    }
+
     /// Give every writer the cutover switch (ADR-0056 §6): closed means this process
     /// lost the log and must stop appending. Applied to the writers already open and to
     /// any opened later.

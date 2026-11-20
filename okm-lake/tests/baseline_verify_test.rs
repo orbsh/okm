@@ -14,10 +14,13 @@
 )]
 
 use okm_async::TestStore;
-use okm_core::changelog::{last_sealed, table_dir, ChangelogConfig, ChangelogStore, LakeBaseline};
+use okm_core::changelog::{
+    ChangelogConfig, ChangelogStore, LakeBaseline, header_hex, lake_baseline, last_sealed,
+    table_dir,
+};
 use okm_core::{Collection, Document, DocumentEncode, KeyEncode};
-use okm_lake::baseline::verify_at;
-use okm_lake::{drain, DrainConfig};
+use okm_lake::baseline::{compact_against, verify_at};
+use okm_lake::{DrainConfig, drain};
 
 #[derive(KeyEncode, Clone, PartialEq, Debug)]
 pub struct K {
@@ -147,7 +150,10 @@ fn a_pointer_is_true_only_while_the_lake_still_says_so() {
 
     let still = verify_at(&table, &truth).expect("an old version keeps its own state");
     assert_eq!(still.version, 0);
-    assert_eq!(still.files, 1, "version 0 held one window, whatever came after");
+    assert_eq!(
+        still.files, 1,
+        "version 0 held one window, whatever came after"
+    );
     assert_eq!(still.covers, covers);
 
     let fresh = verify_at(&table, &pointer(1, later)).expect("the newest version verifies");
@@ -159,4 +165,62 @@ fn a_pointer_is_true_only_while_the_lake_still_says_so() {
         borrowed.contains(&format!("up to {covers}")),
         "the refusal names the coverage it found: {borrowed}"
     );
+}
+
+/// Segments still on disk in a table directory.
+fn segments_left(dir: &std::path::Path) -> usize {
+    std::fs::read_dir(dir)
+        .expect("the table directory")
+        .filter(|entry| {
+            entry
+                .as_ref()
+                .map(|entry| entry.file_name().to_string_lossy().ends_with(".segment"))
+                .unwrap_or(false)
+        })
+        .count()
+}
+
+#[test]
+fn a_compaction_points_at_what_the_lake_actually_holds() {
+    let logs = tempfile::tempdir().expect("logs");
+    let lake = tempfile::tempdir().expect("lake");
+    fill(logs.path(), 0..8);
+    let header = <R as Document>::NS_PREFIX.to_vec();
+    let dir = table_dir(logs.path(), &header);
+    let covers = coverage_of(&dir);
+    drain_into(logs.path(), lake.path());
+    let table = lake_table(lake.path());
+
+    // The store is the same store the application runs: compaction needs the claim, and
+    // the coverage it will delete by comes from the lake, not from the log.
+    let store = ChangelogStore::new(TestStore::slatedb_mem(), ChangelogConfig::new(logs.path()));
+    let compacted =
+        compact_against::<_, R>(&store, &table, 0, 0).expect("compact against the lake");
+    assert!(compacted.baseline.is_some(), "a reference, not a scan");
+    assert_eq!(segments_left(&dir), 0, "everything the lake holds is gone");
+
+    let written = lake_baseline(logs.path(), &header)
+        .expect("read the pointer")
+        .expect("a pointer was written");
+    assert_eq!(written.version, 0);
+    assert_eq!(written.covers, covers, "the coverage came from the lake");
+    assert_eq!(written.table, header_hex(&header));
+    verify_at(&table, &written).expect("the reference it wrote verifies");
+
+    // A lake that holds nothing refuses, and leaves the log as it was: the caller can still
+    // write the scanned baseline instead.
+    let elsewhere = tempfile::tempdir().expect("a lake with no log");
+    let other = tempfile::tempdir().expect("other logs");
+    fill(other.path(), 0..2);
+    let other_header = <R as Document>::NS_PREFIX.to_vec();
+    let other_dir = table_dir(other.path(), &other_header);
+    let store = ChangelogStore::new(TestStore::slatedb_mem(), ChangelogConfig::new(other.path()));
+    compact_against::<_, R>(&store, elsewhere.path(), 0, 0).expect_err("no lake to point at");
+    assert!(
+        lake_baseline(other.path(), &other_header)
+            .expect("read")
+            .is_none(),
+        "a refused compaction writes no pointer"
+    );
+    assert!(segments_left(&other_dir) > 0, "and deletes no segment");
 }

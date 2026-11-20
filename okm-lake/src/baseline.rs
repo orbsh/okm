@@ -17,7 +17,10 @@
 
 use std::path::Path;
 
-use okm_core::changelog::LakeBaseline;
+use okm_core::changelog::{
+    ChangelogStore, Compacted, LakeBaseline, header_hex, last_sealed, table_dir,
+};
+use okm_core::{Document, VirtualStorage};
 
 use crate::delta;
 use crate::status::manifest_at;
@@ -104,4 +107,45 @@ pub fn verify(
 pub fn verify_at(table_dir: &Path, pointer: &LakeBaseline) -> Result<LakeCoverage, String> {
     let (store, table) = delta::lake_of(table_dir)?;
     verify(&store, &table, pointer)
+}
+
+/// Compact a capturing table against the lake version that holds it (ADR-0071 §1).
+///
+/// The coverage is READ FROM THE LAKE, never assumed from the log: what V's own manifests say
+/// they hold is exactly what may be deleted here. A lake that is behind therefore prunes less
+/// and leaves a longer tail — that is the fallback working, not a failure — and a lake with no
+/// such version refuses before anything is touched, so a caller that wanted the scanned
+/// baseline still can.
+pub fn compact_against<S, R>(
+    store: &ChangelogStore<S>,
+    lake_table_dir: &Path,
+    version: u64,
+    keep: usize,
+) -> Result<Compacted, String>
+where
+    S: VirtualStorage,
+    R: Document,
+{
+    let root = store.config().root().ok_or_else(|| {
+        "the log has no local directory, so a lake reference has nowhere to be recorded".to_string()
+    })?;
+    let header = R::NS_PREFIX;
+    let dir = table_dir(root, header);
+    if last_sealed(&dir).is_none() {
+        return Err(format!(
+            "{}: nothing sealed, so a pointer would cover no segments",
+            dir.display()
+        ));
+    }
+    let claim = LakeBaseline {
+        table: header_hex(header),
+        version,
+        covers: 0,
+    };
+    // Ordinal 0 is a segment too, so "covers 0" is a real answer: the guard against an
+    // empty version is verify's own ("no live data files"), not a zero here.
+    let coverage = verify_at(lake_table_dir, &claim)?;
+    store
+        .compact_lake::<R>(version, coverage.covers, keep)
+        .map_err(|e| e.to_string())
 }
