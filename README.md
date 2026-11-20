@@ -304,7 +304,7 @@ okm-core = { version = "0.1", features = ["fjall"] }    # or "redb"; the async e
 ```
 
 - **fjall** (sync): `FjallStore::open(path)` — local LSM engine, single `Database` handle, `persist` on demand.
-- **slatedb** (async): `SlatedbStore::open(path, Arc<dyn ObjectStore>)` — object-storage backed; construct stores from the `slatedb::object_store` re-exports so versions always match slatedb's internals. Async traversal goes through the matching async iterators.
+- **slatedb** (async): `SlatedbStore::open(path, Arc<dyn ObjectStore>)` — object-storage backed; construct stores from the `slatedb::object_store` re-exports so versions always match slatedb's internals. Async traversal goes through the matching async iterators. Not a deployment backend (ADR-0072): it exists as the test matrix's least okm-shaped arm — async behind a sync bridge, object-store persistence, its own compaction and flush cadence — because an abstraction tested only against engines that agree has not been tested.
 - **TestStore**: the test matrix over the real engines (slatedb in-memory, fjall temp dir, redb temp file) — no mock implementation to drift from the real ones.
 
 ### 5. Relations at runtime: the graph
