@@ -154,6 +154,37 @@ impl<S: VirtualStorage, K: KeyEncode, R: Document<Key = K>> Collection<S, K, R> 
         &mut self.store
     }
 
+    /// One reduce group's accumulator, read at THIS table's header.
+    ///
+    /// The prefix a reduce entry lives under is `[partition][ns]` — exactly the
+    /// header the primary rows and every index entry use — so it is composed
+    /// HERE ([`header`](Self::header)) and nowhere else. A caller that rebuilt
+    /// `[partition][ns]` by hand could get one half wrong (a partitioned table
+    /// read without its partition face, a realm segment the store already
+    /// prepended) and then read a window that belongs to another table; the
+    /// watermark it decoded would be somebody else's row. `key`/`document`
+    /// supply the GROUP field values only.
+    pub fn reduce_get<A>(
+        &self,
+        key: &<A::Document as Document>::Key,
+        document: &A::Document,
+    ) -> crate::error::Result<Option<A::Acc>>
+    where
+        A: crate::model::reduce::Reduce<Document = R>,
+    {
+        crate::model::reduce::reduce_get::<S, A>(&self.store, &self.header(), key, document)
+    }
+
+    /// Every group of one reduce on THIS table: `(group segment, accumulator)`,
+    /// in key order. Same prefix rule as [`reduce_get`](Self::reduce_get) — the
+    /// header is the table's, never a caller's reconstruction.
+    pub fn scan_reduces<A>(&self) -> crate::error::Result<Vec<(Vec<u8>, A::Acc)>>
+    where
+        A: crate::model::reduce::Reduce<Document = R>,
+    {
+        crate::model::reduce::scan_reduces::<S, A>(&self.store, &self.header())
+    }
+
     /// The table's key header: `[0xFF][part 1B] (if declared)[ns 2B]` — every
     /// key byte sequence this table writes starts with it. ADR-0014 §5:
     /// the partition segment precedes the ns header (workload isolation
@@ -800,6 +831,11 @@ impl<S: VirtualStorage, K: KeyEncode, R: Document<Key = K>> Collection<S, K, R> 
     /// reads only the entries inside the interval, and rows only for the entries a
     /// consumer pulls. Semantics beyond the leading-field interval (an end that cuts
     /// into the carried pkey, mixed bound widths) are the caller's.
+    ///
+    /// An OPEN end (`None`) is not "to the end of the keyspace": it is closed at
+    /// this access method's own entry prefix by `Scan::new`, the same bound every
+    /// other scan verb gets. The window therefore never leaves the table, and the
+    /// `all()` shape of a scan cannot meet a key another table wrote.
     pub fn scan_range<I>(&self, begin: &[u8], end: Option<&[u8]>) -> Scan<'_, S, K, R, I>
     where
         I: KvIndex<Key = K, Document = R>,
@@ -1407,6 +1443,26 @@ where
         b: Vec<u8>,
         e: Option<Vec<u8>>,
     ) -> Self {
+        // THE single place a scan's window is closed. Every verb above hands in a
+        // lower bound on the access method's own entry prefix and, maybe, an upper
+        // one; the upper bound is clamped here to the end of that prefix, so a scan
+        // is structurally unable to read a key that belongs to another table — not
+        // "unlikely to": the engine never sees such a key. An open bound used to
+        // mean "to the end of the keyspace", which stopped being the table's range
+        // the moment a key could carry a prefix in FRONT of the ns (a realm id,
+        // ADR-0050): past the table's own entries the window then held every
+        // higher-ns table of the same realm, every later realm's slice and the
+        // root-band rows, and decoding those with this declaration's column widths
+        // is what panicked.
+        let own_end = crate::engine::storage::prefix_end(&I::entry_prefix(&header, &[]));
+        let e = match (e, own_end) {
+            // A bound inside the table's range stands (and one that ran past it —
+            // an end built by hand — is cut back to it).
+            (Some(e), Some(own_end)) => Some(if e < own_end { e } else { own_end }),
+            // An open bound is the table's own end; a prefix that reaches the top
+            // of the keyspace (all 0xFF) leaves the caller's bound as it is.
+            (e, own_end) => e.or(own_end),
+        };
         Self {
             col,
             seg_start: segment_start::<I>(&header),

@@ -217,3 +217,93 @@ fn entry_layout_is_ns_slot_group() {
     assert_eq!(&ek[2..4], &[0x50, 0x01]);
     assert_eq!(&ek[4..], &55u64.to_be_bytes());
 }
+
+// ---------------------------------------------------------------------------
+// The reduce prefix: `[partition][ns]`, composed by the TABLE.
+// ---------------------------------------------------------------------------
+
+/// A partitioned reduced table: `#[ok_partition]` puts a face in FRONT of the
+/// ns, so the prefix has two halves and a caller can forget one.
+#[derive(okm_core::KeyEncode, Clone, PartialEq, Debug, Default)]
+pub struct LedgerKey {
+    pub id: u64,
+}
+
+#[derive(DocumentEncode, Clone, PartialEq, Debug)]
+#[ok_ref(LedgerKey)]
+#[ok_partition(3)]
+#[ok_reduce(BookTotal { group(book) })]
+#[ok_ns(26)] // 26 was the lowest number this test binary had not taken
+pub struct Ledger {
+    pub book: u64,
+    pub amount: u64,
+}
+
+pub struct BookTotal;
+
+impl ReduceLogic for BookTotal {
+    type Document = Ledger;
+    type Acc = CountSum;
+    fn fold(acc: &mut Self::Acc, _key: &LedgerKey, item: &Ledger) {
+        acc.count += 1;
+        acc.sum += item.amount;
+    }
+    fn unfold(acc: &mut Self::Acc, _key: &LedgerKey, item: &Ledger) {
+        acc.count -= 1;
+        acc.sum -= item.amount;
+    }
+}
+
+/// `Collection::reduce_get` / `scan_reduces` compose the prefix the write path
+/// already used (`Collection::header`), for primary rows, index entries and
+/// reduce entries alike — one header, one place. The half a hand-composed prefix
+/// drops is the partition face, and dropping it reads a DIFFERENT entry: the
+/// same ns with no partition, where nothing was ever written.
+#[test]
+fn the_reduce_prefix_is_the_tables_own_header() {
+    let t = <Ledger as Document>::collection(TestStore::default());
+    let group_key = LedgerKey { id: 0 };
+    let group_row = Ledger {
+        book: 7,
+        amount: 0,
+    };
+
+    t.put(&LedgerKey { id: 1 }, &Ledger { book: 7, amount: 5 })
+        .unwrap();
+    t.put(&LedgerKey { id: 2 }, &Ledger { book: 7, amount: 11 })
+        .unwrap();
+
+    // Through the table: the group the writes folded.
+    assert_eq!(
+        t.reduce_get::<BookTotal>(&group_key, &group_row)
+            .unwrap(),
+        Some(CountSum { count: 2, sum: 16 }),
+        "the collection composes the header the write path used"
+    );
+
+    // The entry really is `[partition][ns][slot][group]`.
+    let entry = <BookTotal as Reduce>::entry_key(&t.header(), &group_key, &group_row);
+    // `[0xFF][partition 1B][ns 2B][slot 2B][group]` — the ns is TWO bytes, so a
+    // window of three can only ever see its high byte.
+    assert_eq!(&entry[..4], &[0xFF, 3, 0x00, 26], "partition face, then the ns");
+    assert_eq!(&entry[4..6], &[0x50, 0x01], "the reduce family's slot");
+
+    // Under the ns alone — the prefix a caller can build by leaving out the
+    // partition face — there is no entry at all. That is the drift the method
+    // removes: a stray prefix does not read a wrong value, it reads NOTHING (or,
+    // in a crowded ns, a neighbour's row).
+    assert_eq!(
+        okm_core::reduce_get::<_, BookTotal>(
+            t.store(),
+            <Ledger as Document>::NS_PREFIX,
+            &group_key,
+            &group_row,
+        )
+        .unwrap(),
+        None,
+        "a reduce entry is not reachable by its ns alone"
+    );
+
+    // Every group through the same header: one scan, one entry.
+    assert_eq!(t.scan_reduces::<BookTotal>().unwrap().len(), 1);
+}

@@ -70,6 +70,70 @@ fn range_scan_reads_only_the_interval() {
     assert!(hits.is_empty());
 }
 
+/// A second table in the same store, one ns up: its primary entry sorts ABOVE
+/// this table's `by_a` entries in the keyspace, and it has the same key width —
+/// the shape another table's row has when a window is not closed at the table.
+#[derive(KeyEncode, Clone, PartialEq, Debug)]
+pub struct OtherId {
+    pub id: u64,
+}
+
+#[derive(DocumentEncode, Clone, PartialEq, Debug)]
+#[ok_ref(OtherId)]
+#[ok_ns(22)]
+pub struct Other {
+    pub d: u32,
+}
+
+/// The scan window is closed at the access method's own prefix: an OPEN end
+/// (`None`) answers "the rest of THIS table", never "the rest of the keyspace".
+///
+/// This is the regression for a crash, so it is worth naming the shape: with an
+/// open end the walk ran past this table's entries into every higher-ns table
+/// (and, once a realm prefix precedes the ns, into every later realm and the
+/// root band too). A foreign primary entry there is `[header][slot 0][key]` with
+/// no field segment at all, so decoding it as `by_a`'s `u32` sliced 4 bytes out
+/// of an empty remainder — a panic in the decoder, inside an `all()` scan that
+/// had no reason to be reading another table. The property asserted here is the
+/// stronger one: the engine is never handed a key from outside the table.
+#[test]
+fn an_open_range_scan_never_leaves_its_table() {
+    let store = TestStore::default();
+    let rows: Collection<_, RowId, Row> = Collection::new(store.clone());
+    rows.put(&RowId { id: 9 }, &Row { a: 1, tag: 2 }).unwrap();
+
+    let others: Collection<_, OtherId, Other> = Collection::new(store.clone());
+    others.put(&OtherId { id: 9 }, &Other { d: 5 }).unwrap();
+
+    let hits = rows
+        .scan_range::<__OkmIndex_Row_by_a>(&[], None)
+        .collect::<okm_core::error::Result<Vec<_>>>()
+        .unwrap();
+    assert_eq!(hits.len(), 1, "only this table's entries");
+    assert_eq!(hits[0].1.decoded.id, 9);
+    assert_eq!(hits[0].2.as_ref().unwrap().a, 1);
+
+    // The closed window is still the WHOLE table — the fix narrows the end, it
+    // does not drop entries at the top of the range.
+    let last = rows
+        .scan_range::<__OkmIndex_Row_by_a>(&99u32.to_be_bytes(), None)
+        .collect::<okm_core::error::Result<Vec<_>>>()
+        .unwrap();
+    assert!(last.is_empty());
+    let open = rows
+        .scan::<__OkmIndex_Row_by_a>(&[])
+        .collect::<okm_core::error::Result<Vec<_>>>()
+        .unwrap();
+    assert_eq!(open.len(), 1, "the empty probe is the whole table");
+
+    // And the other direction: the neighbour's own scan is just as closed.
+    let theirs = others
+        .scan_keys(&okm_core::model::prefix::PrefixProbe::empty())
+        .collect::<okm_core::error::Result<Vec<_>>>()
+        .unwrap();
+    assert_eq!(theirs, vec![OtherId { id: 9 }]);
+}
+
 #[cfg(feature = "fjall")]
 #[test]
 fn range_scan_fjall() {
