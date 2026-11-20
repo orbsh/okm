@@ -723,3 +723,22 @@ fn a_drain_does_not_end_capture() {
         "both rows are in the log"
     );
 }
+
+#[test]
+fn the_window_follows_what_the_recovery_term_is() {
+    // ADR-0071 §6: the difference between the two windows is not taste — it is whether the
+    // bulk can be recovered from somewhere other than this host.
+    let scanned = ChangelogConfig::new(std::path::Path::new("/tmp/log"));
+    assert_eq!(
+        scanned.compact.as_ref().map(|p| p.after_bytes),
+        Some(1 << 30),
+        "a scanned baseline keeps the 1 GiB window"
+    );
+    let pinned = okm_core::changelog::CompactPolicy::pinned();
+    assert_eq!(pinned.after_bytes, 256 << 20);
+    assert_eq!(pinned.after_secs, 24 * 60 * 60);
+    assert_eq!(
+        pinned.keep, 0,
+        "a pinned table keeps no segment for a human"
+    );
+}

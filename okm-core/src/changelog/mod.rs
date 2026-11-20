@@ -249,8 +249,14 @@ pub struct SegmentInfo {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Location {
     Local(PathBuf),
-    /// No capture at all. The store keeps the wrapper (assembly does not fork), nothing
-    /// is opened, nothing is written, and the cost is one branch per commit.
+    /// No capture: this deployment has no local durable directory to put a log in — the
+    /// ephemeral engine (ADR-0072: data dies with the process), a read-only replica, a
+    /// container's scratch disk (ADR-0071 §7). NOT "logging is expensive": with the baseline
+    /// pinned in the lake the steady cost is a bounded window, so the reason to switch it off
+    /// has to be physical.
+    ///
+    /// The store keeps the wrapper (assembly does not fork), nothing is opened, nothing is
+    /// written, and the cost is one branch per commit.
     Off,
 }
 
@@ -275,9 +281,28 @@ pub struct CompactPolicy {
 }
 
 impl Default for CompactPolicy {
+    /// The window for a table whose baseline is a scan of itself: 1 GiB, because that scan is
+    /// the only recoverable region the app host has. A table whose bulk is pinned in the lake
+    /// has nothing to scan, so it takes [`pinned`](Self::pinned) instead (ADR-0071 §6).
     fn default() -> Self {
         Self {
             after_bytes: 1 << 30,
+            after_secs: 24 * 60 * 60,
+            keep: 0,
+        }
+    }
+}
+
+impl CompactPolicy {
+    /// The window for a table whose baseline is a lake version (ADR-0071 §6).
+    ///
+    /// A quarter of the scanned baseline's window, and the reason is the same one read the
+    /// other way: the recovery term here is the lake, so a smaller window costs a slightly
+    /// longer replay tail and nothing else. A host that points a table at a lake should also
+    /// point it at this — the two are one decision, which is why this is not the default.
+    pub const fn pinned() -> Self {
+        Self {
+            after_bytes: 256 << 20,
             after_secs: 24 * 60 * 60,
             keep: 0,
         }
