@@ -66,7 +66,7 @@
 
 ## 同一批行的四个落点：OKM+fjall、裸 fjall、Redis、Parquet
 
-`cargo run -p okm-core --release --example engine_paths --features test-engines,fjall`——一台机器、单线程、**1,000,000 行**，形状与本文其余各节相同（`BenchKey` + `BenchRow`：一个索引、一个 reduce）。
+`cargo run -p okm-core --release --example engine_paths --features fjall`——一台机器、单线程、**1,000,000 行**，形状与本文其余各节相同（`BenchKey` + `BenchRow`：一个索引、一个 reduce）。
 
 写是一次计时通过：第二遍就是覆盖写，而 LSM 里的覆盖是墓碑加 reduce 的 unfold，比插入慢好几倍——三轮取中间值量到的会是那件事，不是写。读与扫描是三轮的中间值。扫描探针是一个索引值后面挂表的百分之一（`level = i % 100`），即一万行。
 
@@ -192,7 +192,7 @@ key 上的解释器税真实存在，但绝对尺度极小（40 ns 对 5 ns—�
 
 ## 变更日志的捕获税
 
-`cargo run --release --example changelog_tax -p okm-core --features test-engines,fjall`（9 轮配对 × 5,000 次 put，每轮翻转顺序，取各轮比值的中间值——两个 fjall store 各自按自己的节奏做 compaction，所以不成对的中位数会漂）：
+`cargo run --release --example changelog_tax -p okm-core --features fjall`（9 轮配对 × 5,000 次 put，每轮翻转顺序，取各轮比值的中间值——两个 fjall store 各自按自己的节奏做 compaction，所以不成对的中位数会漂）：
 
 | 路径 | 均值 |
 |---|---|

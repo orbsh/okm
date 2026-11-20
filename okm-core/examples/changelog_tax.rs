@@ -6,7 +6,7 @@
 //! writes with `Instant` and prints the per-write cost, so the number the ADR
 //! argues about stops being an estimate.
 //!
-//! Run: cargo run --release --example changelog_tax -p okm-core --features test-engines
+//! Run: cargo run --release --example changelog_tax -p okm-core --features fjall
 
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 

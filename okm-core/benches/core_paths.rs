@@ -3,10 +3,10 @@
 //! engine upgrades. No CI gates — variance in shared-CI runners makes
 //! gates noisy; baselines are for relative comparisons across changes.
 //!
-//! Run: `cargo bench -p okm-core --features test-engines` (the engine feature is
-//! what brings `TestStore` in; without it the bench does not compile), or name a
-//! group to run it alone — `cargo bench -p okm-core --features test-engines --
-//! --bench core_paths "index/entry_key"`.
+//! Run: `cargo bench -p okm-core` — no engine feature: `TestStore` comes in
+//! through the `okm-async` dev-dependency (ADR-0059). Name a group to run it
+//! alone: `cargo bench -p okm-core -- --bench core_paths "index/entry_key"`.
+//! The `query_cost` bench is the one that needs `--features fjall`.
 
 #![allow(
     clippy::unwrap_used,

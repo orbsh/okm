@@ -8,7 +8,7 @@
 //!
 //! ```text
 //! cargo run -p okm-core --release --example engine_paths \
-//!     --features test-engines,fjall
+//!     --features fjall
 //! ```
 //!
 //! The Redis arm reads `REDIS_URL` (default `redis://127.0.0.1:6379`) and skips itself

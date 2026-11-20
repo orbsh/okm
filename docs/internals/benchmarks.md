@@ -67,7 +67,7 @@ The full semantic put (primary + index + reduce RMW) costs ~1.3 µs on an in-mem
 
 ## The same rows in four places: OKM+fjall, bare fjall, Redis, Parquet
 
-`cargo run -p okm-core --release --example engine_paths --features test-engines,fjall` — one machine, one thread, **1,000,000 rows** of the shape used throughout this document (`BenchKey` + `BenchRow`: one index, one reduce).
+`cargo run -p okm-core --release --example engine_paths --features fjall` — one machine, one thread, **1,000,000 rows** of the shape used throughout this document (`BenchKey` + `BenchRow`: one index, one reduce).
 
 Writes are one timed pass: a second pass would overwrite, and an overwrite in an LSM is a tombstone plus a reduce unfold, several times slower than an insert — a median over three runs would have measured that instead of the write. Reads and scans are the median of three. The scan probe is one index value holding a hundredth of the table (`level = i % 100`), so 10,000 rows behind one value.
 
@@ -193,7 +193,7 @@ The interpreter tax on keys is real but absolute-scale tiny (40 ns vs 5 ns — b
 
 ## The change log's capture tax
 
-`cargo run --release --example changelog_tax -p okm-core --features test-engines,fjall` (9 paired rounds × 5,000 puts, order flipped each round, median of the per-round ratios — two fjall stores compact on their own schedule, so an unpaired median drifts):
+`cargo run --release --example changelog_tax -p okm-core --features fjall` (9 paired rounds × 5,000 puts, order flipped each round, median of the per-round ratios — two fjall stores compact on their own schedule, so an unpaired median drifts):
 
 | path | mean |
 |---|---|
