@@ -191,7 +191,7 @@ A capturing table pays two bills: the frames it appends, and the baseline compac
 | log, delta segments | 130.0 | 130.0 MB | 2 sealed segments, 64 MiB rotation |
 | log, baseline after `compact(0)` | 125.4 | 125.4 MB | full scan of the truth half, written back as segments |
 | store, one secondary index | 142.9 | 142.9 MB | the indexed arm of the table above |
-| lake export, as drained today | 120.2 | 120.2 MB | uncompressed parquet + `okm_op`/`okm_slot`/`okm_seq` |
+| lake export, as drained today | 36.3 | 36.3 MB | parquet zstd(1) + `okm_op`/`okm_slot`/`okm_seq`; 120.2 before ADR-0071 §5 |
 | parquet zstd(1), same rows | 33.0 | 33.0 MB | no change columns |
 | lance v2, default encoding | 39.5 | 39.5 MB | 4 files, written in 0.2 s |
 
@@ -211,8 +211,7 @@ What a write rate turns that into (130 B/write, 64 MiB segments, the 1 GiB compa
 
 The log is a hint, not a WAL: frames are at-most-once and are not individually fsync'd, which is why a migration still ends with a reconcile scan of the old store.
 
-The lake side of the same rows is **120.2 B/row**, because `snapshot::parquet_io` builds its writer with no `WriterProperties` and parquet therefore stores it uncompressed. The same rows at zstd(1) are 33.0 B/row. The export is 3.6× larger than it needs to be, and ADR-0071's move of the baseline into the lake is worth nothing until that one line is added.
-
+The lake side of the same rows is **36.3 B/row**: `snapshot::parquet_io` writes with zstd level 1 (ADR-0071 §5), where the same file came out at 120.2 before the codec was set, and the change columns cost the difference against the plain 33.0 arm.
 ## Dynamic codec tax (okm-dynamic vs Rust derive, same declaration)
 
 | path | dynamic | derive | tax |

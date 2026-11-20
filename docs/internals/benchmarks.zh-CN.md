@@ -190,7 +190,7 @@ SELECT data_length, index_length FROM information_schema.tables WHERE table_name
 | 日志，增量段 | 130.0 | 130.0 MB | 2 个封好的段，64 MiB 旋转 |
 | 日志，`compact(0)` 后的基线 | 125.4 | 125.4 MB | 把真相半边整扫一遍再写成段 |
 | 库，带一个二级索引 | 142.9 | 142.9 MB | 上表中的带索引分支 |
-| 湖的导出，按今天的写法 | 120.2 | 120.2 MB | 不压缩 parquet + `okm_op`/`okm_slot`/`okm_seq` |
+| 湖的导出，按今天的写法 | 36.3 | 36.3 MB | parquet zstd(1) + `okm_op`/`okm_slot`/`okm_seq`；ADR-0071 §5 之前是 120.2 |
 | parquet zstd(1)，同一批行 | 33.0 | 33.0 MB | 无变更列 |
 | lance v2，默认编码 | 39.5 | 39.5 MB | 4 个文件，写入 0.2 s |
 
@@ -210,7 +210,7 @@ SELECT data_length, index_length FROM information_schema.tables WHERE table_name
 
 日志是提示，不是 WAL：帧是 at-most-once、不逐条 fsync，所以迁移最后仍然以对旧库的一次 reconcile 扫描收尾。
 
-同一批行在湖那边的开销是 **120.2 B/行**，因为 `snapshot::parquet_io` 构造 writer 时没有给 `WriterProperties`，parquet 于是按不压缩存。同一批行 zstd(1) 是 33.0 B/行。导出比它该有的大 3.6 倍，而 ADR-0071 把基线搬进湖这件事，在补上那一行之前一分不省。
+同一批行在湖那边的开销现在是 **36.3 B/行**：`snapshot::parquet_io` 用 zstd level 1 写（ADR-0071 §5），同一个文件在设上 codec 之前是 120.2，多出来的差额是那三个变更列（同批行不带变更列的 parquet 是 33.0）。
 
 ## 动态 codec 的税（okm-dynamic 对 Rust derive，同一份声明）
 

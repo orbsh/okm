@@ -143,7 +143,8 @@ pub mod parquet_io {
     /// about the format.
     pub fn batch_bytes(batch: &arrow::array::RecordBatch) -> parquet::errors::Result<Vec<u8>> {
         let mut out: Vec<u8> = Vec::new();
-        let mut w = parquet::arrow::ArrowWriter::try_new(&mut out, batch.schema(), None)?;
+        let mut w =
+            parquet::arrow::ArrowWriter::try_new(&mut out, batch.schema(), Some(properties()?))?;
         w.write(batch)?;
         w.close()?;
         Ok(out)
@@ -161,10 +162,22 @@ pub mod parquet_io {
         // (`okm_lake::delta`), which records a schema by name, and a Parquet
         // field id would be a second identity nothing reads.
         let file = std::fs::File::create(path)?;
-        let mut w = parquet::arrow::ArrowWriter::try_new(file, batch.schema(), None)?;
+        let mut w =
+            parquet::arrow::ArrowWriter::try_new(file, batch.schema(), Some(properties()?))?;
         w.write(batch)?;
         w.close()?;
         Ok(())
+    }
+
+    /// The codec every lake data file is written with (ADR-0071 §5). The same rows cost
+    /// 120.2 B/row uncompressed and 33.0 at zstd level 1, and an export exists to be
+    /// smaller than the store it mirrors: moving a baseline into the lake saves nothing
+    /// until this is set.
+    fn properties() -> parquet::errors::Result<parquet::file::properties::WriterProperties> {
+        let level = parquet::basic::ZstdLevel::try_new(1)?;
+        Ok(parquet::file::properties::WriterProperties::builder()
+            .set_compression(parquet::basic::Compression::ZSTD(level))
+            .build())
     }
 
     /// The CATALOG (ADR-0034 §1): one row per table, `(name, ns)`. Pure analysis
