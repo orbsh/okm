@@ -53,6 +53,22 @@ use crate::model::wrappers::wire::{put_len, take_len};
 /// disagree with, and `ensure_layout` seeds it.
 pub const VERSION: &str = "version";
 
+/// The declaration itself, in `CollectionSchema`'s binary form (ADR-0074 §2).
+///
+/// The third runtime name: `version` says which layout wrote the store, `faces` which
+/// declaration's derived faces it holds, and this one the shape those answers refer to. It
+/// is what lets a reader with no compiled declaration — okm-dynamic, a binding, the change
+/// log deciding whether to capture — answer questions about a table it has no type for.
+pub const SCHEMA: &str = "schema";
+
+/// `"0"` when the declaration opts out of the changelog (`#[ok_uncaptured]`, ADR-0074 §2).
+///
+/// Absent means captured, so a store written before this name existed still reads as
+/// captured-by-default — the same direction `Document::CAPTURED` defaults in. Written only by
+/// attach, never by a caller: an opt-out is a declaration, and a declaration is not ambient
+/// configuration that a later assembly can quietly contradict.
+pub const CAPTURE: &str = "capture";
+
 /// The fingerprint of the declaration's structural faces (ADR-0048) — the
 /// derived state that lives outside the primary table and that the payload's
 /// layout number cannot describe: adding an index changes no payload byte, so

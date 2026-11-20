@@ -680,6 +680,158 @@ mod serde_impls {
     }
 }
 
+/// Where two declarations disagree, named the way a human has to act on it (ADR-0074 §4).
+///
+/// One difference, not a diff: a shape change usually makes several, and the first one is
+/// what tells the reader what happened. The alternative — "the bytes differ" — is true and
+/// useless at the hour it gets read.
+pub fn difference(stored: &CollectionSchema, build: &CollectionSchema) -> String {
+    fn field_diff(what: &str, a: &[FieldSchema], b: &[FieldSchema]) -> Option<String> {
+        if a.len() != b.len() {
+            return Some(format!(
+                "{what}: stored {} field(s), this build declares {}",
+                a.len(),
+                b.len()
+            ));
+        }
+        for (i, (x, y)) in a.iter().zip(b).enumerate() {
+            let at = format!("{what}[{i}]");
+            if x.name != y.name {
+                return Some(format!(
+                    "{at}.name: stored {:?}, build {:?}",
+                    x.name, y.name
+                ));
+            }
+            if x.ty != y.ty {
+                return Some(format!("{at}.ty: stored {:?}, build {:?}", x.ty, y.ty));
+            }
+            if x.width != y.width {
+                return Some(format!("{at}.width: stored {}, build {}", x.width, y.width));
+            }
+            if x.offset != y.offset {
+                return Some(format!(
+                    "{at}.offset: stored {}, build {}",
+                    x.offset, y.offset
+                ));
+            }
+            if x.tag != y.tag {
+                return Some(format!("{at}.tag: stored {:?}, build {:?}", x.tag, y.tag));
+            }
+            if x.default != y.default {
+                return Some(format!(
+                    "{at}.default: stored {:?}, build {:?}",
+                    x.default, y.default
+                ));
+            }
+            if x.expect_len != y.expect_len {
+                return Some(format!(
+                    "{at}.expect_len: stored {:?}, build {:?}",
+                    x.expect_len, y.expect_len
+                ));
+            }
+        }
+        None
+    }
+
+    let simple: Option<String> = None
+        .or_else(|| {
+            (stored.name != build.name)
+                .then(|| format!("name: stored {:?}, build {:?}", stored.name, build.name))
+        })
+        .or_else(|| {
+            (stored.ns_prefix != build.ns_prefix).then(|| {
+                format!(
+                    "ns_prefix: stored {:?}, build {:?}",
+                    stored.ns_prefix, build.ns_prefix
+                )
+            })
+        })
+        .or_else(|| {
+            (stored.layout_version != build.layout_version).then(|| {
+                format!(
+                    "layout_version: stored {}, build {}",
+                    stored.layout_version, build.layout_version
+                )
+            })
+        })
+        .or_else(|| {
+            (stored.members != build.members).then(|| {
+                format!(
+                    "members: stored {:?}, build {:?}",
+                    stored.members, build.members
+                )
+            })
+        })
+        .or_else(|| {
+            (stored.member_widths != build.member_widths).then(|| {
+                format!(
+                    "member_widths: stored {:?}, build {:?}",
+                    stored.member_widths, build.member_widths
+                )
+            })
+        })
+        .or_else(|| {
+            (stored.faces != build.faces)
+                .then(|| format!("faces: stored {:?}, build {:?}", stored.faces, build.faces))
+        })
+        .or_else(|| {
+            (stored.redacted != build.redacted).then(|| {
+                format!(
+                    "redacted: stored {:?}, build {:?}",
+                    stored.redacted, build.redacted
+                )
+            })
+        })
+        .or_else(|| {
+            (stored.slots != build.slots).then(|| {
+                format!(
+                    "slot map: stored {:?}, build {:?}",
+                    stored.slots, build.slots
+                )
+            })
+        });
+
+    simple
+        .or_else(|| field_diff("key_fields", &stored.key_fields, &build.key_fields))
+        .or_else(|| field_diff("hot_fields", &stored.hot_fields, &build.hot_fields))
+        .or_else(|| field_diff("cold_fields", &stored.cold_fields, &build.cold_fields))
+        .or_else(|| {
+            (stored.key_len != build.key_len).then(|| {
+                format!(
+                    "key_len: stored {}, build {}",
+                    stored.key_len, build.key_len
+                )
+            })
+        })
+        .or_else(|| {
+            (stored.hot_width != build.hot_width).then(|| {
+                format!(
+                    "hot_width: stored {}, build {}",
+                    stored.hot_width, build.hot_width
+                )
+            })
+        })
+        .or_else(|| {
+            if stored.indexes.len() != build.indexes.len() {
+                return Some(format!(
+                    "indexes: stored {}, build {}",
+                    stored.indexes.len(),
+                    build.indexes.len()
+                ));
+            }
+            for (i, (x, y)) in stored.indexes.iter().zip(&build.indexes).enumerate() {
+                if x != y {
+                    return Some(format!(
+                        "indexes[{i}]: stored {:?}, build {:?}",
+                        x.name, y.name
+                    ));
+                }
+            }
+            None
+        })
+        .unwrap_or_else(|| "the declarations differ in a way this report does not name".to_string())
+}
+
 // ---------------------------------------------------------------------------
 // The binary form (ADR-0074 §2)
 // ---------------------------------------------------------------------------

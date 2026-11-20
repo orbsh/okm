@@ -213,6 +213,18 @@ pub enum Error {
          build that wrote it, then import it into one this build creates"
     )]
     LayoutUnstamped { current: u8 },
+    /// The store's meta row carries a declaration that is not this build's (ADR-0074 §4).
+    ///
+    /// A declaration exists twice by necessity — as compiled constants in the binary and as
+    /// bytes in the store — so attach compares them instead of assuming they agree. A
+    /// disagreement is not drift to be repaired: a shape change is a new layout generation
+    /// (ADR-0042), which is why this names what differs instead of overwriting either side.
+    #[error(
+        "this store was stamped with a different declaration of this table: {what}. A shape \
+         change is a new layout generation: export with the build that wrote it, then import \
+         into one this build creates"
+    )]
+    SchemaMismatch { what: String },
     /// The change log could not be opened or read (ADR-0045). Deliberately NOT
     /// on the write path: a log that cannot be appended records itself in
     /// `Collection::changelog_status` instead, because the write it describes is

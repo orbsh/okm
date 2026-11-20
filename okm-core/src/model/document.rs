@@ -98,6 +98,72 @@ impl<S: VirtualStorage, K: KeyEncode, R: Document<Key = K>> Collection<S, K, R> 
         }
     }
 
+    /// Assemble the table AND attach it to the store (ADR-0074 §1).
+    ///
+    /// The only way in for anything that reads or writes: attach seeds the store's meta row
+    /// with this declaration — layout generation, faces, name, the declaration as bytes, and
+    /// the capture opt-out when the type carries one — or refuses a store that is of another
+    /// generation, carries another declaration, or disagrees about capture. `new` stays
+    /// I/O-free for the crate's own assembly, and it is not a second entry point: a table
+    /// assembled without attaching has no meta row, so nothing downstream can mistake it for
+    /// attached.
+    pub fn open(store: S) -> crate::error::Result<Self> {
+        let this = Self::new(store);
+        this.attach()?;
+        Ok(this)
+    }
+
+    /// Attach: make the store's meta row say what this declaration is, or refuse (ADR-0074).
+    ///
+    /// `ensure_layout` owns the layout and the name; this adds the two things a reader with no
+    /// compiled declaration needs — the declaration itself and the capture opt-out — and
+    /// compares both rather than overwriting either. A disagreement is not drift: a shape
+    /// change is a new layout generation (ADR-0042), and an opt-out that appears or vanishes
+    /// after the fact is exactly the assembly-time switch ADR-0074 removed.
+    fn attach(&self) -> crate::error::Result<()> {
+        let header = self.header();
+        let mut meta = self.ensure_layout()?;
+        let derived = crate::model::schema::CollectionSchema::of::<K, R>();
+        let mut dirty = false;
+        match meta.get(crate::model::meta::SCHEMA) {
+            Some(stored) => {
+                let stored = crate::model::schema::CollectionSchema::decode(stored);
+                if stored != derived {
+                    return Err(crate::error::Error::SchemaMismatch {
+                        what: crate::model::schema::difference(&stored, &derived),
+                    });
+                }
+            }
+            None => {
+                meta.set(crate::model::meta::SCHEMA, derived.encode());
+                dirty = true;
+            }
+        }
+        match meta.get(crate::model::meta::CAPTURE) {
+            Some(stored) => {
+                let opted_out = stored == b"0";
+                if !opted_out != R::CAPTURED {
+                    return Err(crate::error::Error::SchemaMismatch {
+                        what: format!(
+                            "capture: the store says {}, this declaration says {}",
+                            if opted_out { "off" } else { "on" },
+                            if R::CAPTURED { "on" } else { "off" }
+                        ),
+                    });
+                }
+            }
+            None if !R::CAPTURED => {
+                meta.set(crate::model::meta::CAPTURE, b"0".to_vec());
+                dirty = true;
+            }
+            None => {}
+        }
+        if dirty {
+            crate::model::meta::write(&self.store, &header, &meta)?;
+        }
+        Ok(())
+    }
+
     /// The same table, rooted at ANOTHER ns: the same declaration, the same
     /// columns, the same faces — only the key header's ns bytes differ.
     ///
