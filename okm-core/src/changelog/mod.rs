@@ -159,6 +159,12 @@ pub const SEALED_EXT: &str = "segment";
 /// and the header carries it as well (ADR-0056 §7).
 pub const BASELINE_SUFFIX: &str = ".baseline.segment";
 
+/// File-name suffix of the reference a compaction leaves behind when the table's state is
+/// in the lake rather than in this directory (ADR-0071 §1). Deliberately NOT `.segment`:
+/// its body is a reference, not rows, so a reader that does not know this file cannot
+/// apply it as state.
+pub const LAKE_SUFFIX: &str = ".lake-baseline";
+
 /// How many truth-half ops one baseline frame carries. A frame is one length
 /// prefix, so the chunk bounds the record and keeps a big table from building a
 /// single 4 GiB-sized buffer in memory.
@@ -1098,6 +1104,40 @@ pub fn write_baseline(
     })
 }
 
+/// Delete every segment numbered up to `covers`, keeping the newest `keep` of them.
+///
+/// Not expressible as a name comparison the way [`prune_below`] is: the reference file's own
+/// name ends in `.lake-baseline`, which sorts BEFORE `.segment` at the same ordinal, so
+/// `00000007.segment` would survive a `prune_below("00000007.lake-baseline")`. The ordinals
+/// are parsed instead.
+pub fn prune_through(
+    root: &Path,
+    header: &[u8],
+    covers: u64,
+    keep: usize,
+) -> Result<(usize, u64)> {
+    let mut covered: Vec<PathBuf> = all_segments(root, header)?
+        .into_iter()
+        .filter(|path| ordinal_of_path(path).is_some_and(|ordinal| ordinal <= covers))
+        .collect();
+    let cut = covered.len().saturating_sub(keep);
+    let mut removed = 0;
+    let mut freed = 0;
+    for path in covered.drain(..cut) {
+        if let Ok(stat) = std::fs::metadata(&path) {
+            freed += stat.len();
+        }
+        std::fs::remove_file(&path).map_err(|e| io_err(&path, e))?;
+        removed += 1;
+    }
+    Ok((removed, freed))
+}
+
+/// The ordinal a segment's or a reference's name starts with (`00000042.segment` → 42).
+fn ordinal_of_path(path: &Path) -> Option<u64> {
+    path.file_name()?.to_str()?.split('.').next()?.parse().ok()
+}
+
 /// Delete every segment numbered below `baseline`, keeping the newest `keep` of them.
 /// Returns how many went and how many bytes they were.
 pub fn prune_below(
@@ -1125,6 +1165,98 @@ pub fn prune_below(
         removed += 1;
     }
     Ok((removed, freed))
+}
+
+/// Where a table's state is, when it is not in the log directory (ADR-0071 §1).
+///
+/// `covers` is the last segment the lake version contains: the number a replay resumes
+/// above, and the number compaction prunes through. It travels in the file rather than in
+/// its name because the reference is written AFTER the segments it covers, so its own
+/// ordinal would say nothing about coverage.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct LakeBaseline {
+    /// The lake's table key (the exported table's own name).
+    pub table: String,
+    /// The Delta version that holds the state.
+    pub version: u64,
+    /// The last log segment inside that version, inclusive.
+    pub covers: u64,
+}
+
+impl LakeBaseline {
+    fn encode(&self) -> String {
+        format!("{}\n{}\n{}", self.table, self.version, self.covers)
+    }
+
+    fn decode(text: &str) -> Result<Self> {
+        let mut lines = text.lines();
+        let (Some(table), Some(version), Some(covers)) = (lines.next(), lines.next(), lines.next())
+        else {
+            return Err(Error::Changelog {
+                what: format!("{LAKE_SUFFIX}: expected table, version and covers"),
+            });
+        };
+        let number = |field: &str| -> Result<u64> {
+            field.trim().parse::<u64>().map_err(|e| Error::Changelog {
+                what: format!("{LAKE_SUFFIX}: {field:?}: {e}"),
+            })
+        };
+        Ok(Self {
+            table: table.to_string(),
+            version: number(version)?,
+            covers: number(covers)?,
+        })
+    }
+}
+
+/// The reference files in one table directory, in name order (a `.partial` is not one).
+fn lake_files(dir: &Path) -> Result<Vec<PathBuf>> {
+    let entries = match std::fs::read_dir(dir) {
+        Ok(entries) => entries,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(Vec::new()),
+        Err(e) => return Err(io_err(dir, e)),
+    };
+    let mut out = Vec::new();
+    for entry in entries {
+        let entry = entry.map_err(|e| io_err(dir, e))?;
+        let name = entry.file_name();
+        let Some(name) = name.to_str() else { continue };
+        if name.ends_with(LAKE_SUFFIX) {
+            out.push(entry.path());
+        }
+    }
+    out.sort();
+    Ok(out)
+}
+
+/// Record that this table's state is the lake at `(table, version)`, covering every segment
+/// numbered up to `covers` (ADR-0071 §1). One reference per table: the older one is removed
+/// first, and the write is a rename so a torn file never becomes the answer.
+///
+/// The reference is a CLAIM by the caller — core cannot list an object store, so whoever
+/// writes this must have verified the version exists and covers `covers` (ADR-0071 §4).
+pub fn write_lake_baseline(root: &Path, header: &[u8], lake: &LakeBaseline) -> Result<String> {
+    let dir = table_dir(root, header);
+    for old in lake_files(&dir)? {
+        std::fs::remove_file(&old).map_err(|e| io_err(&old, e))?;
+    }
+    let name = format!("{:08}{LAKE_SUFFIX}", lake.covers);
+    let path = dir.join(&name);
+    let partial = dir.join(format!("{name}.partial"));
+    std::fs::write(&partial, lake.encode()).map_err(|e| io_err(&partial, e))?;
+    std::fs::rename(&partial, &path).map_err(|e| io_err(&path, e))?;
+    Ok(name)
+}
+
+/// The reference this table's baseline is, if it is one (`None` when the state, if any, is
+/// in this directory). The newest wins; a directory cannot hold two live references.
+pub fn lake_baseline(root: &Path, header: &[u8]) -> Result<Option<LakeBaseline>> {
+    let files = lake_files(&table_dir(root, header))?;
+    let Some(newest) = files.last() else {
+        return Ok(None);
+    };
+    let text = std::fs::read_to_string(newest).map_err(|e| io_err(newest, e))?;
+    Ok(Some(LakeBaseline::decode(&text)?))
 }
 
 /// Every segment of one table — baselines included — in name order.
@@ -1900,6 +2032,66 @@ impl<S> ChangelogStore<S> {
             freed,
         };
         Ok(compacted)
+    }
+
+    /// Compact BY REFERENCE (ADR-0071 §1): the caller states that the lake holds this
+    /// table at `version`, through segment `covers`, and the log keeps only the tail above
+    /// that number. The alternative is [`compact`](Self::compact), which writes the state
+    /// out here instead.
+    ///
+    /// The claim guard is `compact`'s, for the same reason: a segment pruned under a
+    /// successor's feet is a handover that can never reach its position. The reference is
+    /// not verified here — core cannot list an object store — so the lake side checks the
+    /// version and its coverage before it calls this (ADR-0071 §4).
+    pub fn compact_lake<R: crate::model::index::Document>(
+        &self,
+        version: u64,
+        covers: u64,
+        keep: usize,
+    ) -> Result<Compacted>
+    where
+        S: crate::VirtualStorage,
+    {
+        let Some(root) = self.cfg.root() else {
+            return Ok(Compacted {
+                baseline: None,
+                removed: 0,
+                freed: 0,
+            });
+        };
+        let header = R::NS_PREFIX.to_vec();
+        let dir = table_dir(root, &header);
+        if let Some(current) = owner::read(&dir).map_err(owner_err)?
+            && !self.holds(&current, &dir)
+        {
+            return Err(Error::Changelog {
+                what: format!(
+                    "{}: compaction needs the claim (state {:?}, holder {}); this instance \
+                     holds neither",
+                    owner::path(&dir).display(),
+                    current.state,
+                    current.holder
+                ),
+            });
+        }
+        let table = self
+            .metas
+            .borrow()
+            .get(&header)
+            .map(|meta| meta.name.clone())
+            .unwrap_or_default();
+        let lake = LakeBaseline {
+            table,
+            version,
+            covers,
+        };
+        let name = write_lake_baseline(root, &header, &lake)?;
+        let (removed, freed) = prune_through(root, &header, covers, keep)?;
+        Ok(Compacted {
+            baseline: Some(name),
+            removed,
+            freed,
+        })
     }
 
     /// Does this instance hold the claim in `current`?

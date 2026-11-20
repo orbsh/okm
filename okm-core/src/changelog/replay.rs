@@ -99,6 +99,67 @@ pub struct ReplayReport {
 /// declaration changed shape are the caller's to translate before this point: a
 /// replay does not guess field renames.
 pub fn replay_table<T: ReplayTarget>(dir: &Path, target: &T) -> Result<ReplayReport, String> {
+    if let Some(lake) = lake_ref(dir)? {
+        return Err(format!(
+            "{}: the baseline is lake table {:?} at version {}, covering segment {:08} — import \
+             that version into the target first, then replay_after(dir, {}, ..)",
+            dir.display(),
+            lake.table,
+            lake.version,
+            lake.covers,
+            lake.covers
+        ));
+    }
+    let segments = ordered_segments(dir)?;
+    apply_segments(dir, target, segments)
+}
+
+/// Replay the TAIL of a table whose baseline is in the lake (ADR-0071 §1): every delta
+/// numbered above `after`, which is the last segment the imported version contains. The
+/// caller imports lake@V first — core cannot, an object store is not its to list — and this
+/// applies what the log still owes on top of it.
+pub fn replay_after<T: ReplayTarget>(
+    dir: &Path,
+    after: u64,
+    target: &T,
+) -> Result<ReplayReport, String> {
+    let header = super::window::header_of(dir).map_err(|e| e.to_string())?;
+    let root = dir
+        .parent()
+        .ok_or_else(|| format!("{}: a table directory has a parent", dir.display()))?;
+    let segments = sealed_segments(root, &header)
+        .map_err(|e| e.to_string())?
+        .into_iter()
+        .filter(|path| ordinal_of(path).is_some_and(|ordinal| ordinal > after))
+        .collect();
+    apply_segments(dir, target, segments)
+}
+
+/// The reference this table's baseline is, if it is one.
+fn lake_ref(dir: &Path) -> Result<Option<super::LakeBaseline>, String> {
+    let header = super::window::header_of(dir).map_err(|e| e.to_string())?;
+    let root = dir
+        .parent()
+        .ok_or_else(|| format!("{}: a table directory has a parent", dir.display()))?;
+    super::lake_baseline(root, &header).map_err(|e| e.to_string())
+}
+
+/// The ordinal a segment's name starts with (`00000042.segment` → 42).
+fn ordinal_of(path: &Path) -> Option<u64> {
+    super::window::file_name(path)
+        .split('.')
+        .next()?
+        .parse()
+        .ok()
+}
+
+/// Apply one ordered list of segments. Shared by [`replay_table`] and [`replay_after`] so
+/// the two cannot disagree about how a captured row is decoded and re-interned.
+fn apply_segments<T: ReplayTarget>(
+    dir: &Path,
+    target: &T,
+    segments: Vec<PathBuf>,
+) -> Result<ReplayReport, String> {
     let header = super::window::header_of(dir).map_err(|e| e.to_string())?;
 
     let mut report = ReplayReport::default();
@@ -109,7 +170,7 @@ pub fn replay_table<T: ReplayTarget>(dir: &Path, target: &T) -> Result<ReplayRep
     // upgrade — a name the new shape does not have lands in the dynamic segment.
     let mut schemas: HashMap<u8, crate::schema::CollectionSchema> = HashMap::new();
 
-    for segment in ordered_segments(dir)? {
+    for segment in segments {
         report.segments += 1;
         let generation = super::segment_info(&segment)
             .map_err(|e| e.to_string())?
