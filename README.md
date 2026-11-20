@@ -401,7 +401,7 @@ Eight implementations of the sync contract — six backends and two adapters:
 | `RedbStore` | `engine/redb_backend.rs` | COW B-tree (feature `redb`) | yes |
 | `SlatedbSync` | `engine/slatedb_backend.rs` | sync view over slatedb; the async face is `SlatedbStore` | no |
 | `RemoteStore` | `engine/nest.rs` | wire client; its server half `NestStorage` is a pump over one engine mutex, **not** a `VirtualStorage` | no |
-| `TestStore` | `engine/test_engine.rs` | test matrix over the real engines (slatedb-mem / fjall / redb) | yes |
+| `TestStore` | `engine/test_engine.rs` | test matrix over the real engines (ephemeral, the default / slatedb-mem / fjall / redb) | yes |
 | `EngineBox` | `bindings/okm-entry` | **adapter**: dispatches to an in-process `TestStore` or a host-injected `Engine` (four byte methods) — what lets a host hold a different okm build | no |
 | `BatchStore` | `engine/storage.rs` | **adapter**: decorates an `S`, redirects writes into a `Batch`, lands nothing itself | no |
 

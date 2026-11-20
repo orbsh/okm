@@ -73,7 +73,7 @@ Design decisions live in `docs/adr/`; this file is the index — what shipped, w
 ## The stores
 
 - [x] 2026-11-20 — the ephemeral engine is a packed B+tree over chunked tables and okm's non-persistent mode (the same declarations, durability chosen at assembly); it is an arm of the engine matrix — ADR-0072
-- [ ] 2026-11-20 — the matrix's cheap zero-fs default moves off slatedb and onto the ephemeral engine; slatedb stays as the arm that disagrees, and stays evidence only while the suite asks `VirtualStorage` rather than the fixture — ADR-0073
+- [x] 2026-11-20 — the matrix's cheap zero-fs default is the ephemeral engine (`TestStore::default()`), slatedb stays as the arm that disagrees and is reached by asking for it or by running `matrix()`, and it stays evidence only while the suite asks `VirtualStorage` rather than the fixture — ADR-0073
 
 ## Packaging and gates
 

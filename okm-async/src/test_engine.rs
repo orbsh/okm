@@ -3,8 +3,10 @@
 //! to drift.
 //!
 //! Matrix: the ephemeral engine (ADR-0072 — in memory, zero fs, always
-//! present), slatedb in-memory (zero fs, default), fjall temp-dir, redb
-//! temp-file. A test calls `TestStore::matrix()` (or the `for_each_engine!`
+//! present, the default), slatedb in-memory, fjall temp-dir, redb temp-file.
+//! The DEFAULT is okm's own non-persistent mode, so a test's cheap arm and a
+//! temporary deployment's engine are the same engine; slatedb stays as the arm
+//! that disagrees (ADR-0073). A test calls `TestStore::matrix()` (or the `for_each_engine!`
 //! helper) and its body runs once per engine. The ephemeral arm is what holds
 //! the engine that a temporary realm runs on to the same contract as the ones
 //! that write to disk.
@@ -129,27 +131,14 @@ impl TestStore {
     }
 }
 
-#[cfg(feature = "slatedb")]
 impl Default for TestStore {
-    /// Default test engine: slatedb in-memory (zero fs, fastest to spin).
+    /// Default test engine: the ephemeral engine — no filesystem at all, and okm's own
+    /// non-persistent mode (ADR-0072). A test's cheap arm and a temporary deployment's
+    /// engine being the same engine is the point (ADR-0073): slatedb stays in
+    /// [`matrix`](Self::matrix) as the arm that disagrees, not as the one everything
+    /// starts on.
     fn default() -> Self {
-        Self::slatedb_mem()
-    }
-}
-
-#[cfg(all(not(feature = "slatedb"), feature = "fjall"))]
-impl Default for TestStore {
-    /// No slatedb in this build: fjall temp-dir is the fallback.
-    fn default() -> Self {
-        Self::fjall_tmp()
-    }
-}
-
-#[cfg(all(not(feature = "slatedb"), not(feature = "fjall"), feature = "redb"))]
-impl Default for TestStore {
-    /// Only redb in this build.
-    fn default() -> Self {
-        Self::redb_tmp()
+        Self::ephemeral()
     }
 }
 

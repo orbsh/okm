@@ -14,7 +14,7 @@ slatedb is the disagreement. It is asynchronous behind a sync bridge (`SlatedbSy
 
 1. **slatedb stays, as a conformance fixture.** It is not a supported deployment backend and is not advertised as one: a build that deploys okm does not enable the feature. What it is for is the opposite of deployment — being the engine that fails when a test assumes fjall.
 2. **It stays on the matrix as its own arm.** `TestStore::matrix()` keeps `slatedb-mem`, and CI's `--all-features` job runs it. A fixture nobody runs is decoration.
-3. **The cheap default moves off it.** As `EphemeralStore` lands in core, the default zero-fs engine for tests becomes the one with no runtime and no async bridge, so the ordinary case stays cheap and slatedb's arm becomes explicit. Until then, `slatedb-mem` stays the default.
+3. **The cheap default is off it.** `TestStore::default()` is the ephemeral engine — the one with no runtime and no async bridge — so the ordinary case stays cheap and slatedb's arm is explicit. `slatedb-mem` is reached by asking for it or by running the matrix; nothing starts on it.
 4. **Tests are written against the trait, not against the fixture.** The arm is evidence only while the suite asks `VirtualStorage` questions; a test that special-cases slatedb turns the control into decoration.
 
 ## What follows from it
