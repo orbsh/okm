@@ -467,6 +467,18 @@ fn checkpoint_version(name: &str) -> Option<u64> {
 }
 
 fn read_log(store: &dyn LakeStore, table: &str) -> Result<LogState, String> {
+    read_log_upto(store, table, None)
+}
+
+/// The log AS OF a version: what a reader at version `upto` would see.
+///
+/// Delta's whole point is that a version is addressable — a baseline may name an old one and
+/// the lake will have moved on since (ADR-0071 §1). `None` is the live state.
+fn read_log_upto(
+    store: &dyn LakeStore,
+    table: &str,
+    upto: Option<u64>,
+) -> Result<LogState, String> {
     let log = crate::store::table_key(table, "_delta_log/");
     let mut state = LogState::default();
     let mut versions: Vec<(u64, String)> = Vec::new();
@@ -493,6 +505,10 @@ fn read_log(store: &dyn LakeStore, table: &str) -> Result<LogState, String> {
     }
     checkpoints.sort();
     versions.sort();
+    if let Some(upto) = upto {
+        checkpoints.retain(|(version, _)| *version <= upto);
+        versions.retain(|(version, _)| *version <= upto);
+    }
 
     let mut from = None;
     if let Some((version, key)) = checkpoints.pop() {
@@ -722,6 +738,19 @@ fn write_actions(
 /// the table's schema string (which is where the key columns are marked).
 pub fn files_in_order(store: &dyn LakeStore, table: &str) -> Result<Vec<String>, String> {
     Ok(read_log(store, table)?.order)
+}
+
+/// The table's live files as of a version — [`files_in_order`] for a reader that names one.
+///
+/// This is what a lake reference is checked against (ADR-0071 §4): the pointer says version V
+/// covered segment S, and the answer has to come from V's own state, not from a lake that has
+/// drained three more windows since.
+pub fn files_in_order_at_version(
+    store: &dyn LakeStore,
+    table: &str,
+    version: u64,
+) -> Result<Vec<String>, String> {
+    Ok(read_log_upto(store, table, Some(version))?.order)
 }
 
 /// The table's live files with the partition values each one carries, in log order.

@@ -89,7 +89,7 @@ fn the_reference_names_the_version_and_a_replay_owes_only_the_tail() {
     assert_eq!(
         lake,
         okm_core::changelog::LakeBaseline {
-            table: "lake_rows".to_string(),
+            table: okm_core::changelog::header_hex(<LRow as Document>::NS_PREFIX),
             version: 5,
             covers,
         }

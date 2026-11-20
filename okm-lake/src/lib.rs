@@ -35,6 +35,7 @@
     )
 )]
 
+pub mod baseline;
 pub mod bounds;
 pub mod bridge;
 pub mod cli;

@@ -776,7 +776,7 @@ pub fn segment_layout(dir: &Path) -> Result<Option<u8>> {
 
 /// The directory a table header owns under the changelog root.
 pub fn table_dir(root: &Path, header: &[u8]) -> PathBuf {
-    root.join(hex(header))
+    root.join(header_hex(header))
 }
 
 /// Name of the schema sidecar for one layout version. One file per version, not
@@ -1124,12 +1124,7 @@ pub fn write_baseline(
 /// name ends in `.lake-baseline`, which sorts BEFORE `.segment` at the same ordinal, so
 /// `00000007.segment` would survive a `prune_below("00000007.lake-baseline")`. The ordinals
 /// are parsed instead.
-pub fn prune_through(
-    root: &Path,
-    header: &[u8],
-    covers: u64,
-    keep: usize,
-) -> Result<(usize, u64)> {
+pub fn prune_through(root: &Path, header: &[u8], covers: u64, keep: usize) -> Result<(usize, u64)> {
     let mut covered: Vec<PathBuf> = all_segments(root, header)?
         .into_iter()
         .filter(|path| ordinal_of_path(path).is_some_and(|ordinal| ordinal <= covers))
@@ -1189,7 +1184,8 @@ pub fn prune_below(
 /// ordinal would say nothing about coverage.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct LakeBaseline {
-    /// The lake's table key (the exported table's own name).
+    /// The lake's table key — the header in hex, i.e. the same name this crate gives the
+    /// table's directory. NOT the declared name: that one is human-facing and may change.
     pub table: String,
     /// The Delta version that holds the state.
     pub version: u64,
@@ -1608,7 +1604,10 @@ fn create_segment(dir: &Path, segment: u64) -> Result<File> {
         .map_err(|e| io_err(&path, e))
 }
 
-fn hex(header: &[u8]) -> String {
+/// A table's identity as a directory name and as a lake table key: its header in hex.
+/// The DECLARED name is human-facing and may change; this does not, which is why a lake
+/// reference carries this and not the name.
+pub fn header_hex(header: &[u8]) -> String {
     use std::fmt::Write as _;
     let mut out = String::with_capacity(header.len() * 2);
     for byte in header {
@@ -2088,14 +2087,8 @@ impl<S> ChangelogStore<S> {
                 ),
             });
         }
-        let table = self
-            .metas
-            .borrow()
-            .get(&header)
-            .map(|meta| meta.name.clone())
-            .unwrap_or_default();
         let lake = LakeBaseline {
-            table,
+            table: header_hex(&header),
             version,
             covers,
         };
