@@ -87,7 +87,7 @@ impl<S: VirtualStorage, K: KeyEncode, R: Document<Key = K>> Collection<S, K, R> 
     /// `R::NS_PREFIX` (ADR-0002: the ns vocabulary is code; ADR-0010:
     /// engine choice is per-assembly-point, ns is not). The assembly
     /// site picks the engine; it never restates the ns.
-    pub fn new(store: S) -> Self {
+    fn bare(store: S) -> Self {
         Self {
             store,
             epoch: std::cell::Cell::new(0),
@@ -108,7 +108,7 @@ impl<S: VirtualStorage, K: KeyEncode, R: Document<Key = K>> Collection<S, K, R> 
     /// assembled without attaching has no meta row, so nothing downstream can mistake it for
     /// attached.
     pub fn open(store: S) -> crate::error::Result<Self> {
-        let this = Self::new(store);
+        let this = Self::bare(store);
         this.attach()?;
         Ok(this)
     }
@@ -128,10 +128,16 @@ impl<S: VirtualStorage, K: KeyEncode, R: Document<Key = K>> Collection<S, K, R> 
         match meta.get(crate::model::meta::SCHEMA) {
             Some(stored) => {
                 let stored = crate::model::schema::CollectionSchema::decode(stored);
+                if let Some(what) = crate::model::schema::shape_difference(&stored, &derived) {
+                    return Err(crate::error::Error::SchemaMismatch { what });
+                }
+                // Same shape, different description (an index added, a column redacted):
+                // ADR-0048's repairable drift. The row is updated so a reader with no
+                // declaration sees the current one; the FACES stamp stays what attach found,
+                // because rewriting it would erase the `Stale` answer that drift is reported by.
                 if stored != derived {
-                    return Err(crate::error::Error::SchemaMismatch {
-                        what: crate::model::schema::difference(&stored, &derived),
-                    });
+                    meta.set(crate::model::meta::SCHEMA, derived.encode());
+                    dirty = true;
                 }
             }
             None => {
@@ -640,7 +646,7 @@ impl<S: VirtualStorage, K: KeyEncode, R: Document<Key = K>> Collection<S, K, R> 
     /// multi-writer future (optimistic CAS) triggers only if multiple
     /// live writers over one store become a real requirement.
     pub fn upsert_with(&self, key: &K, f: impl FnOnce(Option<R>) -> R) -> crate::error::Result<R> {
-        let new = f(self.get_row(key)?);
+        let new = f(self.row_opt(key)?);
         self.put(key, &new)?;
         Ok(new)
     }
@@ -768,9 +774,20 @@ impl<S: VirtualStorage, K: KeyEncode, R: Document<Key = K>> Collection<S, K, R> 
     ///
     /// Sugar for `get::<(parts::Row,)>` — the common case where the typed
     /// payload is the whole question. A key that holds only a dynamic segment
-    /// (ADR-0035's slot-1-only document) answers `None` here; ask for the
+    /// (ADR-0035's slot-1-only document) answers [`Error::RowAbsent`]; ask for the
     /// [`Value`](crate::model::parts::Value) part to see that half.
-    pub fn get_row(&self, key: &K) -> crate::error::Result<Option<R>> {
+    ///
+    /// One layer, one answer: the row, or why there is none. "Is there a row" is
+    /// [`has_row`](Self::has_row) — it does not build a payload to throw away, and it is what
+    /// an existence check means.
+    pub fn get_row(&self, key: &K) -> crate::error::Result<R> {
+        self.row_opt(key)?.ok_or(crate::error::Error::RowAbsent)
+    }
+
+    /// The row, or nothing. Internal, because "absent" is a decision the caller should state:
+    /// a verb that merges or deletes reads this, and a caller asking for the row reads
+    /// [`get_row`](Self::get_row).
+    pub(crate) fn row_opt(&self, key: &K) -> crate::error::Result<Option<R>> {
         let k = self.primary_key(key);
         let v = match self.store.get(&k)? {
             Some(v) => v,
@@ -780,6 +797,11 @@ impl<S: VirtualStorage, K: KeyEncode, R: Document<Key = K>> Collection<S, K, R> 
         R::__okm_embed_deref(&mut document, &self.store)?;
         R::__okm_deref_vocab(&mut document, &mut self.vocabs.borrow_mut(), &self.store)?;
         Ok(Some(document))
+    }
+
+    /// Is there a row behind this key? One engine point read, no payload decode.
+    pub fn has_row(&self, key: &K) -> crate::error::Result<bool> {
+        Ok(self.store.get(&self.primary_key(key))?.is_some())
     }
 
     /// Point read, by parts: the caller names which halves of the document it
@@ -1169,7 +1191,7 @@ impl<S: VirtualStorage, K: KeyEncode, R: Document<Key = K>> Collection<S, K, R> 
         // nothing — this interface speaks about typed rows.
         let mut announced: Option<R> = None;
         if !typed.is_empty() {
-            let prev = self.get_row(key)?;
+            let prev = self.row_opt(key)?;
             let mut merged = prev.as_ref().map(|r| r.to_map()).unwrap_or_default();
             merged.extend(typed);
             let document = R::try_from_map(&merged)?;
@@ -1210,7 +1232,7 @@ impl<S: VirtualStorage, K: KeyEncode, R: Document<Key = K>> Collection<S, K, R> 
         // name is `purge`'s write, so it announces what `purge` announces.
         let mut announced: Option<(crate::subscribe::Op, R)> = None;
         if typed.is_empty() {
-            if let Some(prev) = self.get_row(key)? {
+            if let Some(prev) = self.row_opt(key)? {
                 self.delete_into(&mut batch, key, &prev)?;
                 announced = Some((crate::subscribe::Op::Delete, prev));
             }
@@ -1218,7 +1240,7 @@ impl<S: VirtualStorage, K: KeyEncode, R: Document<Key = K>> Collection<S, K, R> 
             // The stored row is the face-sweep source: without it the previous
             // values' entries would dangle, exactly what `put` is allowed to do
             // and a whole-document verb is not.
-            let prev = self.get_row(key)?;
+            let prev = self.row_opt(key)?;
             let document = R::try_from_map(&typed)?;
             self.save_with_prev_into(&mut batch, key, &document, prev.as_ref())?;
             announced = Some((crate::subscribe::Op::Put, document));
@@ -1458,26 +1480,6 @@ impl<S: VirtualStorage, K: KeyEncode, R: Document<Key = K>> Collection<S, K, R> 
     }
 }
 
-impl<S, K, R> Collection<crate::changelog::ChangelogStore<S>, K, R>
-where
-    S: VirtualStorage,
-    K: KeyEncode,
-    R: Document<Key = K>,
-{
-    /// Assemble over a CAPTURING store (ADR-0056 §2): register the declaration —
-    /// the sidecar it needs and what a segment of this table is stamped with —
-    /// then hand back the ordinary collection.
-    ///
-    /// The collection carries no log of its own: capture belongs to the store, so
-    /// every write path is covered without a per-assembly-site switch. Fallible
-    /// because registration touches the filesystem (`new` stays I/O-free,
-    /// ADR-0043).
-    pub fn captured(store: crate::changelog::ChangelogStore<S>) -> crate::error::Result<Self> {
-        store.register::<K, R>()?;
-        Ok(Self::new(store))
-    }
-}
-
 /// One scan in progress: the answer to a prefix, exact or range question, pulled
 /// on demand. Its `Iterator` item is [`ScanHit`] — `(Fields, Key, Row)` — because
 /// that is what almost every caller asks for; [`parts`](Scan::parts) names a
@@ -1620,7 +1622,7 @@ where
         &self,
         raw: &crate::model::index::RawHit,
     ) -> crate::error::Result<P::Output> {
-        let mut fetch = |key: &K| self.col.get_row(key);
+        let mut fetch = |key: &K| self.col.row_opt(key);
         let mut hit = crate::model::parts::Hit::new(raw, &mut fetch);
         P::take(&mut hit)
     }

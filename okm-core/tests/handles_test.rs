@@ -296,7 +296,7 @@ fn verify_issue_once(store: &TestStore, engine: &str) {
     let first = registry
         .handle_of(&person(1))
         .unwrap_or_else(|e| panic!("{engine}: probe: {e}"))
-        .expect("p1 was an endpoint");
+        .expect("the first mention allocates a handle");
     assert_eq!(first.id(), FIRST_HANDLE, "{engine}: p1 was first sight");
     assert_eq!(
         registry.handle_of(&person(1)).unwrap(),
@@ -352,7 +352,10 @@ fn verify_traversal_yields_handles(store: &TestStore, engine: &str) {
     .unwrap_or_else(|e| panic!("{engine}: commit: {e}"));
 
     let registry = Handles::new(store, NS.to_be_bytes());
-    let here = registry.handle_of(&person(1)).unwrap().expect("p1");
+    let here = registry
+        .handle_of(&person(1))
+        .expect("p1")
+        .expect("a handle");
     let steps: Vec<EdgeStep> = g.out(&person(1)).collect();
     assert_eq!(steps.len(), 3, "{engine}: three out-edges");
 
@@ -481,7 +484,10 @@ fn verify_delete_leaves_the_handle(store: &TestStore, engine: &str) {
         .unwrap_or_else(|e| panic!("{engine}: commit: {e}"));
 
     let registry = Handles::new(store, NS.to_be_bytes());
-    let one = registry.handle_of(&person(1)).unwrap().expect("p1");
+    let one = registry
+        .handle_of(&person(1))
+        .expect("p1")
+        .expect("a handle");
     let rows = face(store, HANDLE_NODE_SLOT).len();
 
     // Delete p1's ONLY edge: p1 is now an endpoint of nothing, and its handle
@@ -527,7 +533,10 @@ fn verify_delete_leaves_the_handle(store: &TestStore, engine: &str) {
     let cursor = registry.next_handle().unwrap();
     g.incorporate(Fragment::new([Decl::edge(head(person(3), org(3)))]))
         .unwrap_or_else(|e| panic!("{engine}: commit: {e}"));
-    let three = registry.handle_of(&person(3)).unwrap().expect("p3");
+    let three = registry
+        .handle_of(&person(3))
+        .expect("p3")
+        .expect("a handle");
     assert!(
         three >= cursor,
         "{engine}: the new node is issued past the watermark, not into the hole"

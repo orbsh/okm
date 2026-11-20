@@ -19,7 +19,7 @@ fn fjall_roundtrip() {
     let dir = tempfile::tempdir().unwrap();
     let store = FjallStore::open(dir.path(), "edges").unwrap();
     let rows: okm_core::Collection<FjallStore, UserSessionKey, UserSessionRow> =
-        okm_core::Collection::new(store);
+        okm_core::Collection::open(store).unwrap();
 
     let k = |user_id: u64, session_id: u64| UserSessionKey {
         user_id,
@@ -57,7 +57,7 @@ fn fjall_roundtrip() {
     drop(rows);
     let store2 = FjallStore::open(dir.path(), "edges").unwrap();
     let rows2: okm_core::Collection<FjallStore, UserSessionKey, UserSessionRow> =
-        okm_core::Collection::new(store2);
+        okm_core::Collection::open(store2).unwrap();
     let probe = okm_core::PrefixProbe::<UserSessionKey>::new(101u64.to_be_bytes().to_vec());
     assert_eq!(rows2.scan_keys(&probe).count(), 1);
 }

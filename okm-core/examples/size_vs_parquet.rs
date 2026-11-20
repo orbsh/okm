@@ -293,7 +293,7 @@ fn main() {
     let _ = std::fs::remove_dir_all(&doc_dir);
     let db = Database::create_or_recover(fjall::Config::new(&doc_dir)).expect("open fjall");
     let store = FjallStore::from_db(db.clone(), "okm").expect("keyspace");
-    let t: Collection<FjallStore, OrderKey, OrderRow> = Collection::new(store.clone());
+    let t: Collection<FjallStore, OrderKey, OrderRow> = Collection::open(store.clone()).unwrap();
     let started = Instant::now();
     for r in dataset(rows) {
         let key = OrderKey {
@@ -339,7 +339,7 @@ fn main() {
     let _ = std::fs::remove_dir_all(&idx_dir);
     let db = Database::create_or_recover(fjall::Config::new(&idx_dir)).expect("open fjall");
     let store = FjallStore::from_db(db.clone(), "okm").expect("keyspace");
-    let t: Collection<FjallStore, OrderKey, IndexedRow> = Collection::new(store.clone());
+    let t: Collection<FjallStore, OrderKey, IndexedRow> = Collection::open(store.clone()).unwrap();
     let started = Instant::now();
     for r in dataset(rows) {
         let key = OrderKey {

@@ -32,7 +32,7 @@ pub struct User {
 #[test]
 fn variant_column_export() {
     let mut t: okm_core::Collection<TestStore, UserKey, User> =
-        okm_core::Collection::new(TestStore::slatedb_mem());
+        okm_core::Collection::open(TestStore::slatedb_mem()).unwrap();
 
     // Document 1: declared fields + dynamic segment.
     let mut dyn1 = Dict::new();

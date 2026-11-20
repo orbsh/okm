@@ -47,7 +47,7 @@ fn table_of(file: &std::path::Path) -> std::path::PathBuf {
 }
 
 fn collection(root: &std::path::Path) -> Collection<ChangelogStore<TestStore>, K, R> {
-    Collection::captured(ChangelogStore::new(
+    Collection::open(ChangelogStore::new(
         TestStore::slatedb_mem(),
         ChangelogConfig::new(root),
     ))
@@ -73,7 +73,7 @@ pub struct LaggingRow {
 fn lagging_collection(
     root: &std::path::Path,
 ) -> Collection<ChangelogStore<TestStore>, K, LaggingRow> {
-    Collection::captured(ChangelogStore::new(
+    Collection::open(ChangelogStore::new(
         TestStore::slatedb_mem(),
         ChangelogConfig::new(root),
     ))
@@ -310,7 +310,7 @@ fn a_window_with_a_delete_writes_a_change_row() {
 }
 
 #[test]
-fn a_table_without_a_sidecar_stops_the_drain() {
+fn a_table_without_a_declaration_stops_the_drain() {
     let root = tempfile::tempdir().expect("root");
     let out = tempfile::tempdir().expect("out");
     {
@@ -324,24 +324,43 @@ fn a_table_without_a_sidecar_stops_the_drain() {
         )
         .expect("put");
     }
-    // The bytes without the declaration: readable, not columns.
+    // The bytes without the declaration: readable, not columns. The declaration rides in
+    // the segment header (ADR-0074 §2), so stripping it means editing the header — no file
+    // beside the segments is consulted at all.
     for dir in std::fs::read_dir(root.path()).expect("root dirs") {
         let dir = dir.expect("entry").path();
-        if dir.is_dir() {
-            for f in std::fs::read_dir(&dir).expect("table dir") {
-                let p = f.expect("entry").path();
-                if p.file_name()
-                    .and_then(|n| n.to_str())
-                    .is_some_and(|n| n.starts_with("schema-v"))
-                {
-                    std::fs::remove_file(p).expect("remove sidecar");
-                }
+        if !dir.is_dir() {
+            continue;
+        }
+        for f in std::fs::read_dir(&dir).expect("table dir") {
+            let p = f.expect("entry").path();
+            if p.extension().and_then(|e| e.to_str()) != Some("segment") {
+                continue;
             }
+            let mut bytes = std::fs::read(&p).expect("segment");
+            // fmt | kind | layout | hdr_len | header | name_len | name | fingerprint |
+            // schema_len | schema
+            let hdr_len = bytes[3] as usize;
+            let name_at = 4 + hdr_len;
+            let name_len = u16::from_be_bytes([bytes[name_at], bytes[name_at + 1]]) as usize;
+            let schema_at = name_at + 2 + name_len + 16;
+            let len = u32::from_be_bytes([
+                bytes[schema_at],
+                bytes[schema_at + 1],
+                bytes[schema_at + 2],
+                bytes[schema_at + 3],
+            ]) as usize;
+            bytes.drain(schema_at + 4..schema_at + 4 + len);
+            bytes[schema_at..schema_at + 4].copy_from_slice(&0u32.to_be_bytes());
+            std::fs::write(&p, bytes).expect("rewrite the header");
         }
     }
     let err = drain(root.path(), &DrainConfig::new(out.path(), "test"))
-        .expect_err("no sidecar means no columns");
-    assert!(err.to_string().contains("sidecar"), "got: {err}");
+        .expect_err("no declaration means no columns");
+    assert!(
+        err.to_string().contains("no declaration"),
+        "the refusal names the missing half: {err}"
+    );
 }
 
 /// The reader reports what the log says and the sink writes it: a removal is a fact —
@@ -1821,7 +1840,7 @@ fn one_drain_covers_every_generation_in_the_directory() {
         .expect("put");
     }
     {
-        let c: Collection<_, K, R2> = Collection::captured(ChangelogStore::new(
+        let c: Collection<_, K, R2> = Collection::open(ChangelogStore::new(
             TestStore::slatedb_mem(),
             ChangelogConfig::new(root.path()),
         ))

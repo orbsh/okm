@@ -149,8 +149,7 @@ fn injected_reduce_preset_accums_in_the_host_engine() {
     let mut ek = vec![0u8, 7];
     ek.extend_from_slice(&20481u16.to_be_bytes());
     let acc = engine
-        .get(&ek)
-        .unwrap()
+        .get(&ek).unwrap()
         .expect("the preset reduce wrote its accumulator to the host engine");
     assert_eq!(u64::from_be_bytes(acc.as_slice().try_into().unwrap()), 2);
     // Unfold on delete brings it back to 1 (Count is reversible).

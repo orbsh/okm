@@ -183,7 +183,7 @@ impl Fixture {
             .keyspace("query-cost", fjall::KeyspaceCreateOptions::default)
             .expect("keyspace");
         let store = FjallStore::from_db(db.clone(), "query-cost").expect("open fjall");
-        let col: Col = Collection::new(store);
+        let col: Col = Collection::open(store).unwrap();
 
         let t0 = std::time::Instant::now();
         for i in 0..ROWS {
@@ -367,7 +367,7 @@ fn point(c: &mut Criterion, f: &Fixture) {
     });
     // The other half of the document layer, alone: the payload's TLV decode with
     // the key encode and the engine read both out of the picture.
-    let payload = f.col.get_row(&f.point_key).unwrap().unwrap();
+    let payload = f.col.get_row(&f.point_key).unwrap();
     let bytes = okm_core::Document::encode_payload(&payload);
     g.bench_function("decode_payload", |b| {
         b.iter(|| {
@@ -512,7 +512,7 @@ fn join(c: &mut Criterion, f: &Fixture) {
         b.iter(|| {
             let mut acc = 0u64;
             for k in join_streams(&f.col, PROBE_STATUS) {
-                acc += f.col.get_row(&k).unwrap().map(|r| r.amount).unwrap_or(0);
+                acc += f.col.get_row(&k).map(|r| r.amount).unwrap_or(0);
             }
             black_box(acc)
         })

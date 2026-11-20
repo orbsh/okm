@@ -42,7 +42,8 @@ fn row(nickname: &str) -> Membership {
 }
 
 fn seeded() -> Collection<TestStore, MembershipKey, Membership> {
-    let col: Collection<_, MembershipKey, Membership> = Collection::new(TestStore::default());
+    let col: Collection<_, MembershipKey, Membership> =
+        Collection::open(TestStore::default()).unwrap();
     for (channel, member, nickname) in
         [(1u64, 10u64, "a"), (1, 11, "b"), (2, 10, "c"), (2, 11, "d")]
     {

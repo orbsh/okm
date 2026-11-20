@@ -73,11 +73,12 @@ fn main() {
     // `fjall_tmp`, a durable store: the honest arm for a capture tax. `slatedb_mem`
     // is a memory object store, so the log's durability story does not apply to it —
     // and before it stopped awaiting the WAL on every put it cost 101 ms/write.
-    let plain: Collection<TestStore, TaxKey, TaxRow> = Collection::new(TestStore::fjall_tmp());
+    let plain: Collection<TestStore, TaxKey, TaxRow> =
+        Collection::open(TestStore::fjall_tmp()).unwrap();
     let root = std::env::temp_dir().join("okm-changelog-tax");
     let _ = std::fs::remove_dir_all(&root);
     std::fs::create_dir_all(&root).expect("log dir");
-    let captured: Collection<_, TaxKey, TaxRow> = Collection::captured(ChangelogStore::new(
+    let captured: Collection<_, TaxKey, TaxRow> = Collection::open(ChangelogStore::new(
         TestStore::fjall_tmp(),
         okm_core::changelog::ChangelogConfig::new(&root),
     ))

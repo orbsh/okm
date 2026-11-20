@@ -166,7 +166,7 @@ const SWEEP_LEVEL: u32 = 960;
 
 fn measure_fjall(dir: &Path, rows: u64) -> Line {
     let store = FjallStore::open(dir, "okm").expect("open fjall");
-    let t: Collection<FjallStore, BenchKey, BenchRow> = Collection::new(store.clone());
+    let t: Collection<FjallStore, BenchKey, BenchRow> = Collection::open(store.clone()).unwrap();
 
     for i in 0..2_000u64 {
         t.put(&make_key(i), &make_row(i)).expect("warm");
@@ -316,7 +316,7 @@ fn measure_fjall(dir: &Path, rows: u64) -> Line {
 /// The same store with an fsync per write: the other end of the durability knob.
 fn fjall_fsync_ns(dir: &Path) -> f64 {
     let store = FjallStore::open(dir, "durable").expect("open fjall");
-    let t: Collection<FjallStore, BenchKey, BenchRow> = Collection::new(store.clone());
+    let t: Collection<FjallStore, BenchKey, BenchRow> = Collection::open(store.clone()).unwrap();
     let ops = 2_000u64;
     let started = Instant::now();
     for i in 0..ops {

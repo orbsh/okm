@@ -194,9 +194,15 @@ pub struct SegmentMeta {
     pub layout_version: u8,
     /// The table's declared name (`#[ok_name]`, ADR-0034). Empty = unnamed.
     pub name: String,
-    /// The declaration's face fingerprint (ADR-0048): ties the file to the
-    /// sidecar a reader finds beside it.
+    /// The declaration's face fingerprint (ADR-0048).
     pub fingerprint: [u8; crate::model::faces::FINGERPRINT_LEN],
+    /// The declaration itself, as `CollectionSchema` bytes (ADR-0074 §2).
+    ///
+    /// It rides in EVERY segment header, so a file read anywhere — copied out of its
+    /// directory, restored on another machine — can turn its payloads into columns. This is
+    /// the log's own DDL record: the same bytes the store's `schema` row holds, from the same
+    /// codec, written once per file instead of once per directory beside it.
+    pub schema: Vec<u8>,
 }
 
 impl SegmentMeta {
@@ -209,13 +215,15 @@ impl SegmentMeta {
         }
     }
 
-    /// The meta a writer of `<R>` stamps on a segment of `kind`.
-    pub fn of<R: crate::Document>(kind: u8) -> Self {
+    /// The meta a writer of `<K, R>` stamps on a segment of `kind` — including the
+    /// declaration, projected from the compiled one.
+    pub fn of<K: crate::model::key::KeyEncode, R: crate::Document<Key = K>>(kind: u8) -> Self {
         Self {
             kind,
             layout_version: R::LAYOUT_VERSION,
             name: R::TABLE_NAME.to_string(),
             fingerprint: R::FACES,
+            schema: crate::model::schema::CollectionSchema::of::<K, R>().encode(),
         }
     }
 }
@@ -804,57 +812,6 @@ pub fn table_dir(root: &Path, header: &[u8]) -> PathBuf {
     root.join(header_hex(header))
 }
 
-/// Name of the schema sidecar for one layout version. One file per version, not
-/// per segment: the declaration is a property of the shape, and a shape change
-/// changes the number (ADR-0042).
-#[cfg(feature = "schema-serde")]
-pub fn sidecar_name(layout_version: u8) -> String {
-    format!("schema-v{layout_version}.json")
-}
-
-/// Write the table's declaration beside its segments, ONCE per layout version.
-///
-/// The log carries names (the vocabulary faces ride as ops); it does not carry
-/// types or key layout — the payload is positional and the key is a fixed-width
-/// concatenation with no field boundaries. This file is that half, and without
-/// it the log is readable as bytes and useless as columns.
-///
-/// Idempotent for the same schema, and a REFUSAL for a different one at the same
-/// version: two shapes behind one number means the number stopped meaning
-/// anything (ADR-0042), and a reader that guessed which one it got would be
-/// wrong half the time.
-#[cfg(feature = "schema-serde")]
-pub fn write_sidecar(
-    dir: &Path,
-    schema: &crate::model::schema::CollectionSchema,
-) -> Result<PathBuf> {
-    let name = sidecar_name(schema.layout_version);
-    let path = dir.join(&name);
-    let json = serde_json::to_string_pretty(schema).map_err(|e| Error::Changelog {
-        what: format!("{name}: {e}"),
-    })?;
-    match std::fs::read_to_string(&path) {
-        Ok(existing) if existing == json => return Ok(path),
-        Ok(_) => {
-            return Err(Error::Changelog {
-                what: format!(
-                    "{}: a DIFFERENT schema is already stamped for layout version {} — \
-                     a shape change needs a new version (ADR-0042)",
-                    path.display(),
-                    schema.layout_version
-                ),
-            });
-        }
-        Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
-        Err(e) => return Err(io_err(&path, e)),
-    }
-    // Write-then-rename: a reader must never see half a schema.
-    let tmp = dir.join(format!("{name}.partial"));
-    std::fs::write(&tmp, &json).map_err(|e| io_err(&tmp, e))?;
-    std::fs::rename(&tmp, &path).map_err(|e| io_err(&path, e))?;
-    Ok(path)
-}
-
 /// The baseline segments of one table, in name order (empty when it has none).
 ///
 /// A baseline is `kind = baseline`: the table's whole truth half at one moment.
@@ -1353,8 +1310,9 @@ pub fn read_open_tail(path: &Path) -> Result<Vec<OpFrame>> {
     frames_of(path, false)
 }
 
-/// The bytes a segment starts with (ADR-0056 §7):
-/// `fmt | kind | layout_version | hdr_len | header | name_len | name | fingerprint`.
+/// The bytes a segment starts with (ADR-0056 §7, ADR-0074 §2):
+/// `fmt | kind | layout_version | hdr_len | header | name_len | name | fingerprint |
+///  schema_len | schema`.
 ///
 /// The table header rides inside the file because the directory name is the only
 /// other copy, and a copied segment carries no directory. Lengths are clamped
@@ -1374,6 +1332,8 @@ fn header_bytes(header: &[u8], meta: &SegmentMeta) -> Vec<u8> {
     out.extend_from_slice(&(name.len() as u16).to_be_bytes());
     out.extend_from_slice(name);
     out.extend_from_slice(&meta.fingerprint);
+    out.extend_from_slice(&(meta.schema.len() as u32).to_be_bytes());
+    out.extend_from_slice(&meta.schema);
     out
 }
 
@@ -1403,11 +1363,14 @@ fn parse<'a>(path: &Path, bytes: &'a [u8], strict: bool) -> Result<Parsed<'a>> {
     let name = String::from_utf8_lossy(field(path, bytes, &mut at, name_len)?).into_owned();
     let mut fingerprint = [0u8; FINGERPRINT_LEN];
     fingerprint.copy_from_slice(field(path, bytes, &mut at, FINGERPRINT_LEN)?);
+    let schema_len = be_u32(path, field(path, bytes, &mut at, 4)?)? as usize;
+    let schema = field(path, bytes, &mut at, schema_len)?.to_vec();
     let meta = SegmentMeta {
         kind,
         layout_version,
         name,
         fingerprint,
+        schema,
     };
     // `at` is the body's offset now, and every slice into the file is absolute.
     let body_at = at;
@@ -1941,11 +1904,9 @@ impl<S> ChangelogStore<S> {
         // generation is the ordinary state after an upgrade, and this build appends to it
         // under its own number. What a generation identifies is the bytes of ONE segment
         // (its header says which), never the directory.
-        #[cfg(feature = "schema-serde")]
-        write_sidecar(&dir, &crate::model::schema::CollectionSchema::of::<K, R>())?;
         self.metas
             .borrow_mut()
-            .insert(header, SegmentMeta::of::<R>(KIND_DELTA));
+            .insert(header, SegmentMeta::of::<K, R>(KIND_DELTA));
         Ok(())
     }
 
@@ -1981,7 +1942,7 @@ impl<S> ChangelogStore<S> {
         if has_baseline(&table_dir(root, &header))? {
             return Ok(false);
         }
-        let meta = SegmentMeta::of::<R>(KIND_BASELINE);
+        let meta = SegmentMeta::of::<K, R>(KIND_BASELINE);
         Ok(self.write_baseline(&header, meta)?.is_some())
     }
 
@@ -2292,6 +2253,10 @@ impl<S: VirtualStorage> VirtualStorage for ChangelogStore<S> {
             fingerprint: meta
                 .faces()
                 .unwrap_or([0u8; crate::model::faces::FINGERPRINT_LEN]),
+            schema: meta
+                .get(crate::model::meta::SCHEMA)
+                .unwrap_or_default()
+                .to_vec(),
         };
         self.metas
             .borrow_mut()

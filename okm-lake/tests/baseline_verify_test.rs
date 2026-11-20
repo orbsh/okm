@@ -41,7 +41,7 @@ pub struct R {
 }
 
 fn collection(root: &std::path::Path) -> Collection<ChangelogStore<TestStore>, K, R> {
-    Collection::captured(ChangelogStore::new(
+    Collection::open(ChangelogStore::new(
         TestStore::slatedb_mem(),
         ChangelogConfig::new(root),
     ))
@@ -260,7 +260,7 @@ fn a_pointered_table_comes_back_from_the_lake_and_then_the_tail() {
 
     // A reader with nothing local: the lake holds the state, the log holds the tail.
     let blank = TestStore::slatedb_mem();
-    let mut plain: Collection<_, K, R> = Collection::new(blank.shared_handle());
+    let mut plain: Collection<_, K, R> = Collection::open(blank.shared_handle()).unwrap();
     let restored = restore_at(&dir, &table, &mut plain).expect("restore lake@V");
     assert_eq!(restored.version, 0);
     assert_eq!(restored.covers, covers);

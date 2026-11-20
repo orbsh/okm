@@ -36,7 +36,8 @@ fn a_batch_emits_no_event_and_still_lands() {
         true
     });
 
-    let t: Collection<TestStore, AccountKey, Account> = Collection::new(TestStore::slatedb_mem());
+    let t: Collection<TestStore, AccountKey, Account> =
+        Collection::open(TestStore::slatedb_mem()).unwrap();
 
     // Direction check first: this collection DOES announce a point write. Without
     // it, "the queue stayed empty" would also be true of a sink that was never
@@ -68,7 +69,7 @@ fn a_batch_emits_no_event_and_still_lands() {
     t.commit_batch(batch).unwrap();
 
     assert!(
-        t.get_row(&AccountKey { id: 1 }).unwrap().is_some(),
+        t.has_row(&AccountKey { id: 1 }).unwrap(),
         "the batch's rows landed"
     );
     assert_eq!(

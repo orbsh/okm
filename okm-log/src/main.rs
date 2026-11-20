@@ -294,7 +294,7 @@ fn replay(args: &[String]) -> Result<i32, String> {
         Some(header) => {
             let dir = okm_core::changelog::window::dir_of(&root, &decode_hex(&header)?);
             let schema =
-                okm_core::changelog::window::load_sidecar(&dir).map_err(|e| e.to_string())?;
+                okm_core::changelog::window::load_declaration(&dir).map_err(|e| e.to_string())?;
             let ns = u16::from_be_bytes(
                 decode_hex(&header)?
                     .as_slice()

@@ -71,7 +71,7 @@ fn dump<S: VirtualStorage + ?Sized>(store: &S) -> Vec<(Vec<u8>, Vec<u8>)> {
 }
 
 fn seed(store: &TestStore, rows: &[(u64, u64)]) {
-    let t: Collection<TestStore, NoteKey, Note> = Collection::new(store.clone());
+    let t: Collection<TestStore, NoteKey, Note> = Collection::open(store.clone()).unwrap();
     // Attach, as a real caller does at boot: this is what stamps the store's
     // faces, and what makes a later declaration with another face set `Stale`
     // rather than `Unknown`.
@@ -94,7 +94,7 @@ fn a_rebuild_builds_the_face_a_second_declaration_added() {
     seed(&store, &[(1, 7), (2, 8)]);
 
     // The store was stamped by `Note`; `NotePlus` declares one more face.
-    let plus: Collection<TestStore, NoteKey, NotePlus> = Collection::new(store.clone());
+    let plus: Collection<TestStore, NoteKey, NotePlus> = Collection::open(store.clone()).unwrap();
     assert!(matches!(
         plus.faces_status().unwrap(),
         FaceStatus::Stale { .. }
@@ -143,7 +143,7 @@ fn a_rebuild_builds_the_face_a_second_declaration_added() {
 fn a_face_entry_lost_behind_the_stores_back_comes_back() {
     let store = TestStore::default();
     seed(&store, &[(1, 7), (2, 8)]);
-    let t: Collection<TestStore, NoteKey, Note> = Collection::new(store.clone());
+    let t: Collection<TestStore, NoteKey, Note> = Collection::open(store.clone()).unwrap();
 
     // Take one entry away without writing a row: this is what a face looks like
     // when it fell behind — bytes that no verb of the write path produced.
@@ -189,8 +189,8 @@ fn the_chunk_size_does_not_change_what_the_store_ends_up_holding() {
     let all = TestStore::default();
     seed(&all, &[(1, 7), (2, 7), (3, 8), (4, 8), (5, 9)]);
 
-    let t1: Collection<TestStore, NoteKey, Note> = Collection::new(one.clone());
-    let t2: Collection<TestStore, NoteKey, Note> = Collection::new(all.clone());
+    let t1: Collection<TestStore, NoteKey, Note> = Collection::open(one.clone()).unwrap();
+    let t2: Collection<TestStore, NoteKey, Note> = Collection::open(all.clone()).unwrap();
 
     let small = t1.rebuild_faces(1).unwrap();
     let big = t2.rebuild_faces(usize::MAX).unwrap();
@@ -263,7 +263,7 @@ fn an_interrupted_rebuild_writes_no_stamp_and_a_rerun_finishes_the_job() {
         inner: inner.clone(),
         commits_left: Rc::new(std::cell::Cell::new(1)),
     };
-    let t: Collection<Flaky, NoteKey, NotePlus> = Collection::new(flaky);
+    let t: Collection<Flaky, NoteKey, NotePlus> = Collection::open(flaky).unwrap();
     assert_eq!(
         t.faces_status().unwrap(),
         FaceStatus::Unknown {
@@ -278,7 +278,7 @@ fn an_interrupted_rebuild_writes_no_stamp_and_a_rerun_finishes_the_job() {
     assert!(!t.faces_status().unwrap().is_current());
 
     // The same store, a caller that can finish: one run, then a match.
-    let t2: Collection<TestStore, NoteKey, NotePlus> = Collection::new(inner.clone());
+    let t2: Collection<TestStore, NoteKey, NotePlus> = Collection::open(inner.clone()).unwrap();
     t2.rebuild_faces(1).unwrap();
     assert_eq!(t2.faces_status().unwrap(), FaceStatus::Match);
     assert_eq!(
@@ -293,7 +293,7 @@ fn an_interrupted_rebuild_writes_no_stamp_and_a_rerun_finishes_the_job() {
 #[test]
 fn a_table_that_declares_no_faces_only_gets_its_stamp() {
     let store = TestStore::default();
-    let t: Collection<TestStore, NoteKey, Plain> = Collection::new(store.clone());
+    let t: Collection<TestStore, NoteKey, Plain> = Collection::open(store.clone()).unwrap();
     t.put(&NoteKey { id: 1 }, &Plain { value: 3 }).unwrap();
 
     let report = t.rebuild_faces(1).unwrap();
@@ -313,7 +313,7 @@ fn the_chunked_sweep_survives_a_native_snapshot_iterator() {
     // the claim is asserted rather than assumed.
     let store = TestStore::fjall_tmp();
     seed(&store, &[(1, 7), (2, 8), (3, 7)]);
-    let t: Collection<TestStore, NoteKey, Note> = Collection::new(store.clone());
+    let t: Collection<TestStore, NoteKey, Note> = Collection::open(store.clone()).unwrap();
 
     let report = t.rebuild_faces(1).unwrap();
     assert_eq!(report.documents, 3);

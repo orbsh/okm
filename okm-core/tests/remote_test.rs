@@ -60,7 +60,7 @@ fn table_semantics_over_remote() {
     let handle = spawn_host(TestStore::default(), &[0x00, 0x09]);
     let remote = handle.open();
 
-    let t: Collection<RemoteStore, UserKey, User> = Collection::new(remote);
+    let t: Collection<RemoteStore, UserKey, User> = Collection::open(remote).unwrap();
     t.put(&UserKey { id: 42 }, &User { level: 3 }).unwrap();
     t.put(&UserKey { id: 43 }, &User { level: 5 }).unwrap();
 
@@ -68,7 +68,7 @@ fn table_semantics_over_remote() {
     // pump applies them asynchronously) — wait for the round trip to
     // catch up before asserting.
     wait_for(
-        || t.get_row(&UserKey { id: 42 }).unwrap().is_some(),
+        || t.has_row(&UserKey { id: 42 }).unwrap(),
         "first put to land",
     );
 
@@ -83,7 +83,6 @@ fn table_semantics_over_remote() {
     // Point get via the table (full round trip: frame → host → engine → back).
     let document = t
         .get_row(&UserKey { id: 42 })
-        .unwrap()
         .expect("document round-tripped");
     assert_eq!(document.level, 3);
 
@@ -97,7 +96,7 @@ fn table_semantics_over_remote() {
     // Delete removes both halves remotely.
     t.purge(&UserKey { id: 42 }).unwrap();
     wait_for(
-        || t.get_row(&UserKey { id: 42 }).unwrap().is_none(),
+        || !t.has_row(&UserKey { id: 42 }).unwrap(),
         "delete to propagate",
     );
     assert_eq!(
@@ -196,7 +195,7 @@ fn commit_batch_is_one_frame_one_commit() {
 #[test]
 fn remote_scan_range_is_lazy_paged() {
     let handle = spawn_host(TestStore::default(), &[0x00, 0x11]);
-    let t: Collection<RemoteStore, UserKey, User> = Collection::new(handle.open());
+    let t: Collection<RemoteStore, UserKey, User> = Collection::open(handle.open()).unwrap();
     let remote = handle.open();
     for i in 0..40u64 {
         t.put(
@@ -207,10 +206,7 @@ fn remote_scan_range_is_lazy_paged() {
         )
         .unwrap();
     }
-    wait_for(
-        || t.get_row(&UserKey { id: 39 }).unwrap().is_some(),
-        "writes to land",
-    );
+    wait_for(|| t.has_row(&UserKey { id: 39 }).unwrap(), "writes to land");
 
     // Sender-side bounds: `[ns 2B][fixed face 0x00][pkey 8B]` (User
     // declares no partition, so no 0xFF escape). The hosted prefix
@@ -340,7 +336,7 @@ fn entry_ledger<S: VirtualStorage>(
 #[test]
 fn routine_put_carries_face_and_ledger_in_one_frame() {
     let handle = spawn_host(TestStore::default(), &[0x00, 0x12]);
-    let t: Collection<RemoteStore, EntryKey, Entry> = Collection::new(handle.open());
+    let t: Collection<RemoteStore, EntryKey, Entry> = Collection::open(handle.open()).unwrap();
     let k = EntryKey { id: 1 };
 
     t.put(
@@ -351,7 +347,7 @@ fn routine_put_carries_face_and_ledger_in_one_frame() {
         },
     )
     .unwrap();
-    wait_for(|| t.get_row(&k).unwrap().is_some(), "row to land");
+    wait_for(|| t.has_row(&k).unwrap(), "row to land");
     // Face: an index scan round trip (entry key + fetch-back).
     assert_eq!(
         t.scan::<Entry_ByAccount>(&7u64.to_be_bytes())
@@ -377,7 +373,7 @@ fn routine_put_carries_face_and_ledger_in_one_frame() {
 
     // Delete: the removals and the unfold share a frame too.
     t.purge(&k).unwrap();
-    wait_for(|| t.get_row(&k).unwrap().is_none(), "delete to propagate");
+    wait_for(|| !t.has_row(&k).unwrap(), "delete to propagate");
     assert_eq!(entry_ledger(&t, 8), Some(0));
     assert!(
         t.scan::<Entry_ByAccount>(&8u64.to_be_bytes())

@@ -103,15 +103,12 @@ fn field_desc_reports_wrapper_kinds() {
 
 #[test]
 fn table_round_trip_with_wrappers() {
-    let t: Collection<TestStore, WKey, WRow> = Collection::new(TestStore::slatedb_mem());
+    let t: Collection<TestStore, WKey, WRow> = Collection::open(TestStore::slatedb_mem()).unwrap();
     for i in 0..5u64 {
         t.put(&WKey { org: 1, id: i }, &sample(i)).unwrap();
     }
     for i in 0..5u64 {
-        let r = t
-            .get_row(&WKey { org: 1, id: i })
-            .unwrap()
-            .expect("document");
+        let r = t.get_row(&WKey { org: 1, id: i }).expect("document");
         assert_eq!(r, sample(i));
     }
 }
@@ -126,26 +123,26 @@ mod parquet {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("wrappers.parquet");
 
-        let t1: Collection<TestStore, WKey, WRow> = Collection::new(TestStore::slatedb_mem());
+        let t1: Collection<TestStore, WKey, WRow> =
+            Collection::open(TestStore::slatedb_mem()).unwrap();
         for i in 0..4u64 {
             t1.put(&WKey { org: 2, id: i }, &sample(i)).unwrap();
         }
         parquet_io::export_parquet(&t1, &path).unwrap();
 
-        let mut t2: Collection<TestStore, WKey, WRow> = Collection::new(TestStore::slatedb_mem());
+        let mut t2: Collection<TestStore, WKey, WRow> =
+            Collection::open(TestStore::slatedb_mem()).unwrap();
         let n = parquet_io::import_parquet(&mut t2, &path).unwrap();
         assert_eq!(n, 4);
         for i in 0..4u64 {
-            assert_eq!(
-                t2.get_row(&WKey { org: 2, id: i }).unwrap().unwrap(),
-                sample(i)
-            );
+            assert_eq!(t2.get_row(&WKey { org: 2, id: i }).unwrap(), sample(i));
         }
     }
 
     #[test]
     fn record_batch_columns_are_logical_types() {
-        let t: Collection<TestStore, WKey, WRow> = Collection::new(TestStore::slatedb_mem());
+        let t: Collection<TestStore, WKey, WRow> =
+            Collection::open(TestStore::slatedb_mem()).unwrap();
         for i in 0..3u64 {
             t.put(&WKey { org: 3, id: i }, &sample(i)).unwrap();
         }

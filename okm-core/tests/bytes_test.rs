@@ -49,14 +49,14 @@ fn bytes_wire_hex_lock() {
 #[test]
 fn bytes_put_get_roundtrip() {
     let store = TestStore::default();
-    let col = Collection::new(store.clone());
+    let col = Collection::open(store.clone()).unwrap();
     let doc = Blob {
         payload: Bytes::new(vec![1, 2, 3, 0xFF]),
         tag: Bytes::default(),
     };
     let key = BlobId { id: 42 };
     col.put(&key, &doc).unwrap();
-    let got = col.get_row(&key).unwrap().unwrap();
+    let got = col.get_row(&key).unwrap();
     assert_eq!(got, doc);
 }
 

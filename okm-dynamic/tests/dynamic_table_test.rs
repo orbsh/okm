@@ -144,7 +144,8 @@ fn segment_key(org_id: u32, user_id: u64) -> Vec<u8> {
 
 #[test]
 fn dynamic_entries_equal_typed_entries() {
-    let typed: Collection<TestStore, UserKey, User> = Collection::new(TestStore::slatedb_mem());
+    let typed: Collection<TestStore, UserKey, User> =
+        Collection::open(TestStore::slatedb_mem()).unwrap();
     let dynamic = dynamic_table(TestStore::slatedb_mem());
 
     let document = User {
@@ -172,6 +173,11 @@ fn dynamic_entries_equal_typed_entries() {
         .scan_suffix(&[])
         .expect("a scan on a working store")
     {
+        // The table describes ITSELF in the same keyspace (ADR-0074 §1): that row is the
+        // store's own account of what it holds, not an entry of it.
+        if full.last() == Some(&(okm_core::META_SLOT as u8)) {
+            continue;
+        }
         let v = typed.store().get(&full).unwrap().unwrap_or_default();
         typed_entries.push((full, v));
     }
@@ -601,7 +607,8 @@ fn dynamic_rejects_key_field_indexes() {
 fn dynamic_fields_equal_typed_fields() {
     use okm_value::Variant;
 
-    let typed: Collection<TestStore, UserKey, User> = Collection::new(TestStore::slatedb_mem());
+    let typed: Collection<TestStore, UserKey, User> =
+        Collection::open(TestStore::slatedb_mem()).unwrap();
     let dynamic = dynamic_table(TestStore::slatedb_mem());
 
     let document = User {
@@ -647,6 +654,11 @@ fn dynamic_fields_equal_typed_fields() {
         .scan_suffix(&[])
         .expect("a scan on a working store")
     {
+        // The table describes ITSELF in the same keyspace (ADR-0074 §1): that row is the
+        // store's own account of what it holds, not an entry of it.
+        if full.last() == Some(&(okm_core::META_SLOT as u8)) {
+            continue;
+        }
         let v = typed.store().get(&full).unwrap().unwrap_or_default();
         typed_entries.push((full, v));
     }
@@ -917,7 +929,7 @@ fn dynamic_variable_width_index_matches_typed_bytes() {
     }
 
     let typed: Collection<TestStore, EmailKey, Subscriber> =
-        Collection::new(TestStore::slatedb_mem());
+        Collection::open(TestStore::slatedb_mem()).unwrap();
     let schema = CollectionSchema::of::<EmailKey, Subscriber>();
     let dynamic = DynamicCollection::new(
         TestStore::slatedb_mem(),
@@ -951,6 +963,11 @@ fn dynamic_variable_width_index_matches_typed_bytes() {
         .scan_suffix(&[])
         .expect("a scan on a working store")
     {
+        // The table describes ITSELF in the same keyspace (ADR-0074 §1): that row is the
+        // store's own account of what it holds, not an entry of it.
+        if full.last() == Some(&(okm_core::META_SLOT as u8)) {
+            continue;
+        }
         let v = typed.store().get(&full).unwrap().unwrap_or_default();
         typed_entries.push((full, v));
     }
@@ -1082,7 +1099,7 @@ fn a_dynamic_store_stamps_the_number_its_schema_came_with() {
     let table = DynamicCollection::new(store.clone(), 41, declared, methods);
     table.ensure_layout().unwrap();
 
-    let typed = User::collection(store.clone());
+    let typed = User::open(store.clone()).unwrap();
     assert_eq!(
         typed.faces_status().unwrap(),
         okm_core::FaceStatus::Match,
@@ -1104,7 +1121,7 @@ fn a_dynamic_store_stamps_the_number_its_schema_came_with() {
     let table = DynamicCollection::new(store.clone(), 41, declared, vec![first]);
     table.ensure_layout().unwrap();
     assert!(matches!(
-        User::collection(store.clone()).faces_status().unwrap(),
+        User::open(store.clone()).unwrap().faces_status().unwrap(),
         okm_core::FaceStatus::Stale { .. }
     ));
     assert_eq!(typed.ensure_layout().unwrap().faces(), Some(User::FACES));
@@ -1121,7 +1138,7 @@ fn a_dynamic_store_stamps_the_number_its_schema_came_with() {
     // (its index is named, the dynamic one is `plain`), which is `Stale`: the store
     // was built for a different declaration, not for no declaration at all.
     assert!(matches!(
-        User::collection(store.clone()).faces_status().unwrap(),
+        User::open(store.clone()).unwrap().faces_status().unwrap(),
         okm_core::FaceStatus::Stale { .. }
     ));
 }

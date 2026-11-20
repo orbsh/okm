@@ -172,21 +172,33 @@ fn row(account: u64) -> LedgerRow {
 
 #[test]
 fn put_is_one_engine_commit() {
-    let t = <LedgerRow as Document>::collection(Counting::new(TestStore::slatedb_mem()));
+    let t = <LedgerRow as Document>::open(Counting::new(TestStore::slatedb_mem())).unwrap();
+    // Attach wrote the table's meta row on the way in (ADR-0074 §1); what this test is about
+    // is the WRITE path, so the counters are read from where the caller's work begins.
+    let c = t.store();
+    let (commits, puts, dels, ops) = (
+        c.commits.get(),
+        c.bare_puts.get(),
+        c.bare_dels.get(),
+        c.ops_committed.get(),
+    );
     t.put(&LedgerKey { id: 1 }, &row(7)).unwrap();
 
-    let c = t.store();
-    assert_eq!(c.commits.get(), 1, "a semantic write is one engine commit");
-    assert_eq!(c.bare_puts.get(), 0, "no op may bypass the batch");
-    assert_eq!(c.bare_dels.get(), 0, "no op may bypass the batch");
     assert_eq!(
-        c.ops_committed.get(),
+        c.commits.get() - commits,
+        1,
+        "a semantic write is one engine commit"
+    );
+    assert_eq!(c.bare_puts.get() - puts, 0, "no op may bypass the batch");
+    assert_eq!(c.bare_dels.get() - dels, 0, "no op may bypass the batch");
+    assert_eq!(
+        c.ops_committed.get() - ops,
         3,
         "primary + face + ledger ride the one commit"
     );
 
     // The commit really carried them: row, face and ledger are all visible.
-    assert_eq!(t.get_row(&LedgerKey { id: 1 }).unwrap(), Some(row(7)));
+    assert_eq!(t.get_row(&LedgerKey { id: 1 }).unwrap(), row(7));
     assert_eq!(
         t.scan::<Ledger_ByAccount>(&7u64.to_be_bytes())
             .collect::<okm_core::error::Result<Vec<_>>>()
@@ -199,7 +211,7 @@ fn put_is_one_engine_commit() {
 
 #[test]
 fn overwrite_is_one_engine_commit() {
-    let t = <LedgerRow as Document>::collection(Counting::new(TestStore::slatedb_mem()));
+    let t = <LedgerRow as Document>::open(Counting::new(TestStore::slatedb_mem())).unwrap();
     let k = LedgerKey { id: 1 };
     t.put(&k, &row(7)).unwrap();
     t.store().reset();
@@ -229,7 +241,7 @@ fn overwrite_is_one_engine_commit() {
 
 #[test]
 fn delete_is_one_engine_commit() {
-    let t = <LedgerRow as Document>::collection(Counting::new(TestStore::slatedb_mem()));
+    let t = <LedgerRow as Document>::open(Counting::new(TestStore::slatedb_mem())).unwrap();
     let k = LedgerKey { id: 1 };
     t.put(&k, &row(7)).unwrap();
     t.store().reset();
@@ -240,7 +252,7 @@ fn delete_is_one_engine_commit() {
     assert_eq!(c.commits.get(), 1, "a removal is one engine commit");
     assert_eq!(c.ops_committed.get(), 3, "del primary + del face + unfold");
     assert_eq!((c.bare_puts.get(), c.bare_dels.get()), (0, 0));
-    assert!(t.get_row(&k).unwrap().is_none());
+    assert!(!t.has_row(&k).unwrap());
     assert!(
         t.scan::<Ledger_ByAccount>(&7u64.to_be_bytes())
             .collect::<okm_core::error::Result<Vec<_>>>()
@@ -252,7 +264,7 @@ fn delete_is_one_engine_commit() {
 
 #[test]
 fn dynamic_write_including_vocabulary_growth_is_one_engine_commit() {
-    let t = <LedgerRow as Document>::collection(Counting::new(TestStore::slatedb_mem()));
+    let t = <LedgerRow as Document>::open(Counting::new(TestStore::slatedb_mem())).unwrap();
     t.store().reset();
 
     let mut fields = Dict::new();
@@ -284,7 +296,7 @@ fn dynamic_write_including_vocabulary_growth_is_one_engine_commit() {
 
 #[test]
 fn merge_of_a_declared_field_is_one_engine_commit() {
-    let t = <LedgerRow as Document>::collection(Counting::new(TestStore::slatedb_mem()));
+    let t = <LedgerRow as Document>::open(Counting::new(TestStore::slatedb_mem())).unwrap();
     let k = LedgerKey { id: 1 };
     t.put(&k, &row(7)).unwrap();
     t.store().reset();
@@ -299,9 +311,9 @@ fn merge_of_a_declared_field_is_one_engine_commit() {
     assert_eq!(c.commits.get(), 1, "merge is one engine commit");
     assert_eq!(c.ops_committed.get(), 4, "unfold + primary + face + fold");
     assert_eq!((c.bare_puts.get(), c.bare_dels.get()), (0, 0));
-    assert_eq!(t.get_row(&k).unwrap().unwrap().amount, 9);
+    assert_eq!(t.get_row(&k).unwrap().amount, 9);
     assert_eq!(
-        t.get_row(&k).unwrap().unwrap().account,
+        t.get_row(&k).unwrap().account,
         7,
         "unnamed declared field kept"
     );
@@ -309,7 +321,7 @@ fn merge_of_a_declared_field_is_one_engine_commit() {
 
 #[test]
 fn replace_is_one_engine_commit_across_both_slots() {
-    let t = <LedgerRow as Document>::collection(Counting::new(TestStore::slatedb_mem()));
+    let t = <LedgerRow as Document>::open(Counting::new(TestStore::slatedb_mem())).unwrap();
     let k = LedgerKey { id: 1 };
     t.put(&k, &row(7)).unwrap();
     // Intern the dynamic name first, so the replace below measures the write
@@ -341,9 +353,9 @@ fn replace_is_one_engine_commit_across_both_slots() {
         "unfold + primary + face put + STALE face del + fold, then the slot-1 entry"
     );
     assert_eq!((c.bare_puts.get(), c.bare_dels.get()), (0, 0));
-    assert_eq!(t.get_row(&k).unwrap().unwrap().account, 8);
+    assert_eq!(t.get_row(&k).unwrap().account, 8);
     assert_eq!(
-        t.get_row(&k).unwrap().unwrap().amount,
+        t.get_row(&k).unwrap().amount,
         0,
         "unnamed declared field defaults"
     );
@@ -357,7 +369,7 @@ fn replace_is_one_engine_commit_across_both_slots() {
 
 #[test]
 fn purge_is_one_engine_commit() {
-    let t = <LedgerRow as Document>::collection(Counting::new(TestStore::slatedb_mem()));
+    let t = <LedgerRow as Document>::open(Counting::new(TestStore::slatedb_mem())).unwrap();
     let k = LedgerKey { id: 1 };
     t.put(&k, &row(7)).unwrap();
     t.put(
@@ -420,20 +432,20 @@ fn the_verbs_take_a_shared_handle_and_still_commit_once_each() {
         );
     }
 
-    let t = <LedgerRow as Document>::collection(Counting::new(TestStore::slatedb_mem()));
+    let t = <LedgerRow as Document>::open(Counting::new(TestStore::slatedb_mem())).unwrap();
+    let c = t.store();
+    let (commits, puts, dels) = (c.commits.get(), c.bare_puts.get(), c.bare_dels.get());
     drive(&t);
 
-    let c = t.store();
     assert_eq!(
-        c.commits.get(),
+        c.commits.get() - commits,
         4,
         "one commit per verb, on a shared handle"
     );
-    assert_eq!(c.bare_puts.get(), 0);
-    assert_eq!(c.bare_dels.get(), 0);
-    assert_eq!(
-        t.get_row(&LedgerKey { id: 1 }).unwrap(),
-        None,
+    assert_eq!(c.bare_puts.get() - puts, 0);
+    assert_eq!(c.bare_dels.get() - dels, 0);
+    assert!(
+        !t.has_row(&LedgerKey { id: 1 }).unwrap(),
         "purge took the row"
     );
 }

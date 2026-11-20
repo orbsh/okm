@@ -232,7 +232,7 @@ fn bench_scan(c: &mut Criterion) {
     let mut g = c.benchmark_group("index-scan");
     for &fanout in &[1usize, 100, 10_000] {
         let t: Collection<TestStore, BenchKey, BenchRow> =
-            Collection::new(TestStore::slatedb_mem());
+            Collection::open(TestStore::slatedb_mem()).unwrap();
         for i in 0..fanout as u64 {
             let k = make_key(1_000_000 + i);
             // Same tag for all rows in this group → one prefix value,
@@ -282,7 +282,7 @@ fn bench_write_mock(c: &mut Criterion) {
     let mut g = c.benchmark_group("write-mock");
     g.bench_function("put/row_with_index+reduce", |b| {
         let t: Collection<TestStore, BenchKey, BenchRow> =
-            Collection::new(TestStore::slatedb_mem());
+            Collection::open(TestStore::slatedb_mem()).unwrap();
         let mut i = 0u64;
         b.iter(|| {
             t.put(&make_key(i), &make_row(i)).unwrap();
@@ -292,7 +292,7 @@ fn bench_write_mock(c: &mut Criterion) {
     });
     g.bench_function("get/point", |b| {
         let t: Collection<TestStore, BenchKey, BenchRow> =
-            Collection::new(TestStore::slatedb_mem());
+            Collection::open(TestStore::slatedb_mem()).unwrap();
         t.put(&make_key(1), &make_row(1)).unwrap();
         // Both slots plus the composition a document read pays: a point read
         // answers parts, the row converts to a value, the values merge.
@@ -340,7 +340,7 @@ fn bench_write_changelog(c: &mut Criterion) {
 
     g.bench_function("put/plain", |b| {
         let t: Collection<TestStore, BenchKey, BenchRow> =
-            Collection::new(TestStore::slatedb_mem());
+            Collection::open(TestStore::slatedb_mem()).unwrap();
         let key = make_key(7);
         let row = make_row(7);
         b.iter(|| {
@@ -355,7 +355,7 @@ fn bench_write_changelog(c: &mut Criterion) {
         let _ = std::fs::remove_dir_all(&root);
         std::fs::create_dir_all(&root).unwrap();
         let t: Collection<_, BenchKey, BenchRow> =
-            Collection::captured(okm_core::changelog::ChangelogStore::new(
+            Collection::open(okm_core::changelog::ChangelogStore::new(
                 TestStore::slatedb_mem(),
                 okm_core::changelog::ChangelogConfig::new(&root),
             ))

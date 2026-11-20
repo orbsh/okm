@@ -1178,8 +1178,8 @@ mod tests {
     #[test]
     fn join_on_the_scanned_field_needs_no_sort_and_pairs_in_the_caller() {
         let store = TestStore::default();
-        let users = <Person as Document>::collection(store.clone());
-        let orders = <Order as Document>::collection(store.clone());
+        let users = <Person as Document>::open(store.clone()).unwrap();
+        let orders = <Order as Document>::open(store.clone()).unwrap();
         for (k, r) in [
             (PersonKey { id: 1 }, Person { name: "ada".into() }),
             (PersonKey { id: 2 }, Person { name: "bob".into() }),

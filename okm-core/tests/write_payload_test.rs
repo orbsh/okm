@@ -46,7 +46,7 @@ pub struct Doc {
 use __OkmIndex_Doc_by_owner as Doc_ByOwner;
 
 fn table() -> Collection<TestStore, DocKey, Doc> {
-    <Doc as Document>::collection(TestStore::slatedb_mem())
+    <Doc as Document>::open(TestStore::slatedb_mem()).unwrap()
 }
 
 fn map(pairs: &[(&str, Variant)]) -> Dict {
@@ -96,7 +96,7 @@ fn a_typed_payload_writes_the_row_and_its_faces_and_sweeps_nothing() {
     .unwrap();
 
     assert_eq!(faces(&t, 1), 1, "the face was written from the row");
-    assert_eq!(t.get_row(&k).unwrap().unwrap().owner, 1);
+    assert_eq!(t.get_row(&k).unwrap().owner, 1);
 
     // The struct door's documented contract: a changed indexed value leaves the
     // old entry dangling. `put` is the one write that does not read the row
@@ -111,7 +111,7 @@ fn a_typed_payload_writes_the_row_and_its_faces_and_sweeps_nothing() {
     )
     .unwrap();
 
-    assert_eq!(t.get_row(&k).unwrap().unwrap().owner, 2);
+    assert_eq!(t.get_row(&k).unwrap().owner, 2);
     assert_eq!(faces(&t, 2), 1, "the new value's face is here");
     assert_eq!(
         faces(&t, 1),
@@ -143,7 +143,7 @@ fn an_object_payload_merges_declared_names_and_sweeps_the_old_face() {
     )
     .unwrap();
 
-    let row = t.get_row(&k).unwrap().unwrap();
+    let row = t.get_row(&k).unwrap();
     assert_eq!(row.owner, 2, "the named declared field was rewritten");
     assert_eq!(row.tag, "a", "an unnamed declared field kept its value");
     assert_eq!(
@@ -164,7 +164,7 @@ fn an_object_payload_merges_declared_names_and_sweeps_the_old_face() {
     )
     .unwrap();
 
-    assert_eq!(t.get_row(&k).unwrap().unwrap().owner, 2, "row untouched");
+    assert_eq!(t.get_row(&k).unwrap().owner, 2, "row untouched");
     let doc = doc_map(&t, &k);
     assert_eq!(
         doc.get("note").cloned(),
@@ -202,7 +202,7 @@ fn a_one_element_tuple_payload_replaces_the_whole_document() {
     t.put(&k, (&Variant::Map(map(&[("owner", Variant::U64(3))])),))
         .unwrap();
 
-    let row = t.get_row(&k).unwrap().unwrap();
+    let row = t.get_row(&k).unwrap();
     assert_eq!(row.owner, 3);
     assert_eq!(row.tag, "", "an absent declared name takes the default");
     let doc = doc_map(&t, &k);
@@ -221,7 +221,7 @@ fn a_one_element_tuple_payload_replaces_the_whole_document() {
     // `replace` with no declared name at all is `purge`'s write, through the
     // same verb.
     t.put(&k, (&Variant::Map(Dict::new()),)).unwrap();
-    assert!(t.get_row(&k).unwrap().is_none());
+    assert!(!t.has_row(&k).unwrap());
     let (row, seg) = t
         .get::<(okm_core::parts::Row, okm_core::parts::Value)>(&k)
         .unwrap();

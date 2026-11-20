@@ -72,7 +72,7 @@ impl ReduceLogic for AuthorStats {
 
 #[test]
 fn fold_unfold_roundtrip_is_exact() {
-    let t = <Post as Document>::collection(TestStore::slatedb_mem());
+    let t = <Post as Document>::open(TestStore::slatedb_mem()).unwrap();
 
     let k1 = PostKey { id: 1 };
     let r1 = Post {
@@ -169,7 +169,7 @@ impl ReduceLogic for TopicStats {
 
 #[test]
 fn group_and_fold_use_key_fields() {
-    let t = <Topic as Document>::collection(TestStore::slatedb_mem());
+    let t = <Topic as Document>::open(TestStore::slatedb_mem()).unwrap();
 
     let k1 = TopicKey { forum: 7, id: 100 };
     let k2 = TopicKey { forum: 7, id: 42 };
@@ -201,7 +201,7 @@ fn group_and_fold_use_key_fields() {
 
 #[test]
 fn entry_layout_is_ns_slot_group() {
-    let t = <Post as Document>::collection(TestStore::slatedb_mem());
+    let t = <Post as Document>::open(TestStore::slatedb_mem()).unwrap();
     let k = PostKey { id: 9 };
     let r = Post {
         author_id: 55,
@@ -261,7 +261,7 @@ impl ReduceLogic for BookTotal {
 /// same ns with no partition, where nothing was ever written.
 #[test]
 fn the_reduce_prefix_is_the_tables_own_header() {
-    let t = <Ledger as Document>::collection(TestStore::default());
+    let t = <Ledger as Document>::open(TestStore::default()).unwrap();
     let group_key = LedgerKey { id: 0 };
     let group_row = Ledger { book: 7, amount: 0 };
 

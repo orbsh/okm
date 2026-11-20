@@ -51,7 +51,7 @@ fn collection(
     store: &TestStore,
     root: &std::path::Path,
 ) -> Collection<ChangelogStore<TestStore>, K, R> {
-    Collection::captured(ChangelogStore::new(
+    Collection::open(ChangelogStore::new(
         store.clone(),
         ChangelogConfig::new(root),
     ))

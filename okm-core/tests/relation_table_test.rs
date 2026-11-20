@@ -33,7 +33,7 @@ pub struct Membership {
 fn a_relation_table_answers_both_directions_with_its_payload() {
     let store = TestStore::slatedb_mem();
     let table: okm_core::Collection<TestStore, MembershipKey, Membership> =
-        okm_core::Collection::new(store.clone());
+        okm_core::Collection::open(store.clone()).unwrap();
 
     let k = |channel: u64, member: u64| MembershipKey { channel, member };
     let row = |member: u64, since_ms: i64| Membership {

@@ -680,6 +680,30 @@ mod serde_impls {
     }
 }
 
+/// Where two declarations disagree about the BYTES, which is the only part attach refuses
+/// (ADR-0074 §4, amended by ADR-0048's rule).
+///
+/// A declaration also carries what the derived faces are (`indexes`, `faces`) and what an
+/// export hides (`redacted`). Those move without moving a single payload byte: adding an index
+/// is exactly ADR-0048's repairable drift, and refusing it here would turn `Stale` into an
+/// unreachable state. So the shape is checked, and the rest is a description the newest build
+/// updates — while the stamp that says who wrote the store stays what `ensure_layout` recorded.
+pub fn shape_difference(stored: &CollectionSchema, build: &CollectionSchema) -> Option<String> {
+    let mut a = stored.clone();
+    let mut b = build.clone();
+    a.indexes.clear();
+    b.indexes.clear();
+    a.faces.clear();
+    b.faces.clear();
+    a.redacted.clear();
+    b.redacted.clear();
+    if a == b {
+        None
+    } else {
+        Some(difference(&a, &b))
+    }
+}
+
 /// Where two declarations disagree, named the way a human has to act on it (ADR-0074 §4).
 ///
 /// One difference, not a diff: a shape change usually makes several, and the first one is

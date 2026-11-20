@@ -53,20 +53,25 @@ fn the_store_captures_without_the_collection_asking() {
     let root = tempfile::tempdir().expect("root");
     {
         // No `with_changelog`: the store has the switch, the collection does not.
-        let c: Collection<_, K, Row> = Collection::captured(store(root.path())).expect("assemble");
+        let c: Collection<_, K, Row> = Collection::open(store(root.path())).expect("assemble");
         c.put(&K { id: 1 }, &Row { level: 3 }).expect("put");
         c.put(&K { id: 2 }, &Row { level: 4 }).expect("put");
     }
 
+    // No sidecar: the description attach writes is the table's meta row, in the store
+    // (ADR-0074 §2). A file beside the segments would be a second copy that can drift.
     let dir = root.path().join(NS.iter().fold(String::new(), |mut s, b| {
         s.push_str(&format!("{b:02x}"));
         s
     }));
-    let sidecar = dir.join(format!(
-        "schema-v{}.json",
-        <Row as Document>::LAYOUT_VERSION
-    ));
-    assert!(sidecar.exists(), "registration writes the sidecar");
+    assert!(
+        !dir.join(format!(
+            "schema-v{}.json",
+            <Row as Document>::LAYOUT_VERSION
+        ))
+        .exists(),
+        "the description lives in the store, not in a sidecar"
+    );
 
     let segments = sealed_segments(root.path(), NS).expect("list segments");
     assert_eq!(segments.len(), 1, "a clean shutdown seals the segment");
@@ -91,7 +96,7 @@ fn the_store_captures_without_the_collection_asking() {
 fn a_caller_owned_batch_is_captured_at_the_store() {
     let root = tempfile::tempdir().expect("root");
     {
-        let c: Collection<_, K, Row> = Collection::captured(store(root.path())).expect("assemble");
+        let c: Collection<_, K, Row> = Collection::open(store(root.path())).expect("assemble");
         let mut batch = Batch::default();
         c.save_with_prev_into(&mut batch, &K { id: 9 }, &Row { level: 7 }, None)
             .expect("into the caller's batch");
@@ -118,10 +123,9 @@ fn an_uncaptured_table_writes_no_log() {
     let root = tempfile::tempdir().expect("root");
     let kept;
     {
-        let q: Collection<_, K, Quiet> =
-            Collection::captured(store(root.path())).expect("assemble");
+        let q: Collection<_, K, Quiet> = Collection::open(store(root.path())).expect("assemble");
         q.put(&K { id: 1 }, &Quiet { level: 1 }).expect("put");
-        kept = q.get_row(&K { id: 1 }).expect("get").is_some();
+        kept = q.has_row(&K { id: 1 }).expect("get");
     }
 
     assert!(kept, "the write still landed in the store");
@@ -161,7 +165,7 @@ fn an_uncaptured_table_writes_no_log() {
 fn a_baseline_makes_a_mid_life_log_complete() {
     let root = tempfile::tempdir().expect("root");
     {
-        let c: Collection<_, K, Row> = Collection::captured(store(root.path())).expect("assemble");
+        let c: Collection<_, K, Row> = Collection::open(store(root.path())).expect("assemble");
         c.put(&K { id: 1 }, &Row { level: 3 }).expect("put");
 
         assert!(

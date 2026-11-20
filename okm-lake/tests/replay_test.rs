@@ -37,7 +37,7 @@ pub struct R {
 
 fn write_log(root: &std::path::Path) -> TestStore {
     let store = TestStore::slatedb_mem();
-    let c: Collection<_, K, R> = Collection::captured(ChangelogStore::new(
+    let c: Collection<_, K, R> = Collection::open(ChangelogStore::new(
         store.shared_handle(),
         ChangelogConfig::new(root),
     ))
@@ -72,7 +72,7 @@ fn replay_rewrites_the_rows_through_the_targets_write_path() {
 
     // The target: a fresh store, declared from the sidecar the log carries, so this
     // is the standalone shape — no application types reach the replayer.
-    let schema = okm_core::changelog::window::load_sidecar(&dir).expect("sidecar");
+    let schema = okm_core::changelog::window::load_declaration(&dir).expect("sidecar");
     let target: DynamicCollection<TestStore> =
         DynamicCollection::new(TestStore::slatedb_mem(), 75, schema, Vec::new());
 
@@ -115,7 +115,7 @@ fn reconciliation_repairs_what_the_log_never_carried() {
         .filter_map(|e| e.ok().map(|e| e.path()))
         .find(|p| p.is_dir())
         .expect("one table directory");
-    let schema = okm_core::changelog::window::load_sidecar(&dir).expect("sidecar");
+    let schema = okm_core::changelog::window::load_declaration(&dir).expect("sidecar");
     let header = okm_core::changelog::window::header_of(&dir).expect("header");
 
     let target: DynamicCollection<TestStore> =
@@ -125,7 +125,7 @@ fn reconciliation_repairs_what_the_log_never_carried() {
 
     // Changes that never reach a segment: a second collection over the SAME store,
     // with no capturing decorator in the way.
-    let plain: Collection<_, K, R> = Collection::new(old.shared_handle());
+    let plain: Collection<_, K, R> = Collection::open(old.shared_handle()).unwrap();
     assert!(plain.purge(&K { id: 3 }).expect("purge"), "row 3 existed");
     plain
         .put(
@@ -179,7 +179,7 @@ fn reconciliation_repairs_what_the_log_never_carried() {
 fn a_dynamic_field_survives_the_replay() {
     let log = tempfile::tempdir().expect("log");
     let store = TestStore::slatedb_mem();
-    let c: Collection<_, K, R> = Collection::captured(ChangelogStore::new(
+    let c: Collection<_, K, R> = Collection::open(ChangelogStore::new(
         store.shared_handle(),
         ChangelogConfig::new(log.path()),
     ))
@@ -209,7 +209,7 @@ fn a_dynamic_field_survives_the_replay() {
         .filter_map(|e| e.ok().map(|e| e.path()))
         .find(|p| p.is_dir())
         .expect("one table directory");
-    let schema = okm_core::changelog::window::load_sidecar(&dir).expect("sidecar");
+    let schema = okm_core::changelog::window::load_declaration(&dir).expect("sidecar");
     let target: DynamicCollection<TestStore> =
         DynamicCollection::new(TestStore::slatedb_mem(), 75, schema, Vec::new());
 
@@ -242,7 +242,7 @@ fn a_dynamic_field_survives_the_replay() {
 fn a_dynamic_only_document_survives_replay_and_reconciliation() {
     let log = tempfile::tempdir().expect("log");
     let store = TestStore::slatedb_mem();
-    let c: Collection<_, K, R> = Collection::captured(ChangelogStore::new(
+    let c: Collection<_, K, R> = Collection::open(ChangelogStore::new(
         store.shared_handle(),
         ChangelogConfig::new(log.path()),
     ))
@@ -258,7 +258,7 @@ fn a_dynamic_only_document_survives_replay_and_reconciliation() {
         .filter_map(|e| e.ok().map(|e| e.path()))
         .find(|p| p.is_dir())
         .expect("one table directory");
-    let schema = okm_core::changelog::window::load_sidecar(&dir).expect("sidecar");
+    let schema = okm_core::changelog::window::load_declaration(&dir).expect("sidecar");
     let header = okm_core::changelog::window::header_of(&dir).expect("header");
     let target: DynamicCollection<TestStore> =
         DynamicCollection::new(TestStore::slatedb_mem(), 75, schema.clone(), Vec::new());

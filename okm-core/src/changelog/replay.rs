@@ -179,7 +179,7 @@ fn apply_segments<T: ReplayTarget>(
         let schema = match schemas.get(&generation) {
             Some(schema) => schema.clone(),
             None => {
-                let schema = super::window::sidecar_of(dir, generation)
+                let schema = super::window::declaration_of(dir, generation)
                     .map_err(|e| format!("{}: layout {generation}: {e}", dir.display()))?;
                 schemas.insert(generation, schema.clone());
                 schema
@@ -303,7 +303,7 @@ where
         // The NEWEST declaration: it is what the store being built is declared with, even
         // when the directory still carries older generations beside it. Reading the
         // history is the per-segment job below (ADR-0056 §5).
-        let schema = super::window::load_sidecar(&dir).map_err(|e| e.to_string())?;
+        let schema = super::window::load_declaration(&dir).map_err(|e| e.to_string())?;
         let header = super::window::header_of(&dir).map_err(|e| e.to_string())?;
         out.push(run(&dir, &header, &schema)?);
     }

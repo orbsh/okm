@@ -90,6 +90,13 @@ pub enum Error {
         predicate: u16,
         dst_ns: u16,
     },
+    /// `get_row` asked for a key the store does not hold.
+    ///
+    /// Absence is a routine answer, not a broken invariant — but it is still one answer, and
+    /// two layers (`Result<Option<R>>`) made every call site unwrap twice to say one thing.
+    /// `has_row` is the question "is it there" asked without building an error to throw away.
+    #[error("get_row: the store holds no row for this key")]
+    RowAbsent,
     /// A fragment handed to `incorporate` declared deletions. `incorporate`
     /// writes; a delete is `retract`'s business, and one batch carrying both
     /// would have two meanings.

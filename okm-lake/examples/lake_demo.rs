@@ -39,7 +39,7 @@ fn main() {
     let lake = std::path::PathBuf::from(args.next().expect("usage: lake_demo <log> <lake>"));
 
     {
-        let c: Collection<_, K, R> = Collection::captured(ChangelogStore::new(
+        let c: Collection<_, K, R> = Collection::open(ChangelogStore::new(
             TestStore::slatedb_mem(),
             ChangelogConfig::new(&log),
         ))

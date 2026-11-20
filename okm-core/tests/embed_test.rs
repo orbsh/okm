@@ -41,9 +41,9 @@ pub struct User {
 
 #[test]
 fn embed_roundtrip() {
-    let users = <User as Document>::collection(TestStore::slatedb_mem());
+    let users = <User as Document>::open(TestStore::slatedb_mem()).unwrap();
     let addrs: okm_core::Collection<TestStore, AddressKey, Address> =
-        okm_core::Collection::new(users.store().clone());
+        okm_core::Collection::open(users.store().clone()).unwrap();
     let akey = AddressKey {
         owner_id: 2,
         kind: 1,
@@ -66,9 +66,9 @@ fn embed_roundtrip() {
         )
         .unwrap();
     // child written at its own key
-    assert_eq!(addrs.get_row(&akey).unwrap(), Some(addr.clone()));
+    assert_eq!(addrs.get_row(&akey).unwrap(), addr.clone());
     // deref on read
-    let u = users.get_row(&ukey).expect("store").expect("user");
+    let u = users.get_row(&ukey).expect("user");
     assert_eq!(u.address.value, Some(addr.clone()));
     // reference-only write: new user pointing at the same address
     let ukey2 = OwnerKey {
@@ -84,11 +84,11 @@ fn embed_roundtrip() {
             },
         )
         .unwrap();
-    assert_eq!(addrs.get_row(&akey).unwrap(), Some(addr.clone()));
-    let u2 = users.get_row(&ukey2).expect("store").expect("user2");
+    assert_eq!(addrs.get_row(&akey).unwrap(), addr.clone());
+    let u2 = users.get_row(&ukey2).expect("user2");
     assert_eq!(u2.address.value, Some(addr.clone()));
     // deleted child reads back as None
     addrs.purge(&akey).unwrap();
-    let u3 = users.get_row(&ukey2).expect("store").expect("user3");
+    let u3 = users.get_row(&ukey2).expect("user3");
     assert_eq!(u3.address.value, None);
 }

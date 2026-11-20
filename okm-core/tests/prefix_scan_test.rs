@@ -38,7 +38,7 @@ pub struct Device {
 
 /// 7 devices: org 1 holds 5 (users 10 and 11), org 2 holds 2.
 fn seeded() -> Collection<TestStore, DeviceKey, Device> {
-    let col: Collection<_, DeviceKey, Device> = Collection::new(TestStore::default());
+    let col: Collection<_, DeviceKey, Device> = Collection::open(TestStore::default()).unwrap();
     let mut label = 0u32;
     for (org, user, count) in [(1u32, 10u64, 3u16), (1, 11, 2), (2, 10, 2)] {
         for device in 0..count {
@@ -281,7 +281,7 @@ fn index_prefix_probe_is_typed_and_byte_identical() {
 #[cfg(feature = "fjall")]
 #[test]
 fn prefix_scan_reverses_on_a_native_backend() {
-    let col: Collection<_, DeviceKey, Device> = Collection::new(TestStore::fjall_tmp());
+    let col: Collection<_, DeviceKey, Device> = Collection::open(TestStore::fjall_tmp()).unwrap();
     for device in 0..20u16 {
         col.put(
             &DeviceKey {

@@ -79,7 +79,8 @@ fn dmap(pairs: &[(&str, Variant)]) -> Dict {
 
 #[test]
 fn view_projects_both_slots_and_leaves_the_typed_read_alone() {
-    let t: Collection<TestStore, UserKey, User> = Collection::new(TestStore::slatedb_mem());
+    let t: Collection<TestStore, UserKey, User> =
+        Collection::open(TestStore::slatedb_mem()).unwrap();
     t.put(&key(1), &user(1, 2)).unwrap();
 
     // A static-only document: the view carries the declared names.
@@ -100,7 +101,7 @@ fn view_projects_both_slots_and_leaves_the_typed_read_alone() {
     assert_eq!(got.len(), 4);
     assert_eq!(got.get("score"), Some(&Variant::U64(99)));
     assert_eq!(got.get("note"), Some(&Variant::Str("hello".into())));
-    assert_eq!(t.get_row(&key(1)).unwrap().unwrap(), user(1, 2));
+    assert_eq!(t.get_row(&key(1)).unwrap(), user(1, 2));
 
     // Vocabulary landed in the id family under the same ns, cursor included
     // (ADR-0032: the face holds its allocation cursor at the bare prefix).
@@ -121,14 +122,15 @@ fn view_projects_both_slots_and_leaves_the_typed_read_alone() {
     // not the primary entry.
     t.put(&key(9), &Variant::Map(dmap(&[("only", Variant::U64(1))])))
         .unwrap();
-    assert!(t.get_row(&key(9)).unwrap().is_none(), "no static segment");
+    assert!(!t.has_row(&key(9)).unwrap(), "no static segment");
     assert_eq!(doc_of(&t, &key(9)).unwrap().unwrap().len(), 1);
 }
 
 #[test]
 fn a_point_read_answers_parts_apart() {
     use okm_core::parts;
-    let t: Collection<TestStore, UserKey, User> = Collection::new(TestStore::slatedb_mem());
+    let t: Collection<TestStore, UserKey, User> =
+        Collection::open(TestStore::slatedb_mem()).unwrap();
     t.put(&key(1), &user(1, 2)).unwrap();
     t.put(
         &key(1),
@@ -151,7 +153,7 @@ fn a_point_read_answers_parts_apart() {
     // makes the two answers the same type AND the same value.
     assert_eq!(
         t.get::<(parts::Row,)>(&key(1)).unwrap(),
-        t.get_row(&key(1)).unwrap()
+        Some(t.get_row(&key(1)).unwrap())
     );
 
     // The dynamic half alone, without decoding the row.
@@ -175,7 +177,8 @@ fn a_point_read_answers_parts_apart() {
 
 #[test]
 fn merge_touches_only_the_names_it_is_given() {
-    let t: Collection<TestStore, UserKey, User> = Collection::new(TestStore::slatedb_mem());
+    let t: Collection<TestStore, UserKey, User> =
+        Collection::open(TestStore::slatedb_mem()).unwrap();
     t.put(&key(1), &user(1, 5)).unwrap();
 
     t.put(
@@ -199,7 +202,8 @@ fn merge_touches_only_the_names_it_is_given() {
 
 #[test]
 fn merge_of_a_declared_field_is_an_rmw_and_cleans_the_old_face() {
-    let t: Collection<TestStore, UserKey, User> = Collection::new(TestStore::slatedb_mem());
+    let t: Collection<TestStore, UserKey, User> =
+        Collection::open(TestStore::slatedb_mem()).unwrap();
     t.put(&key(1), &user(1, 5)).unwrap();
     assert_eq!(
         t.scan::<ByLevel>(&5u32.to_be_bytes())
@@ -212,7 +216,7 @@ fn merge_of_a_declared_field_is_an_rmw_and_cleans_the_old_face() {
     t.put(&key(1), &Variant::Map(dmap(&[("level", Variant::U64(30))])))
         .unwrap();
 
-    let row = t.get_row(&key(1)).unwrap().unwrap();
+    let row = t.get_row(&key(1)).unwrap();
     assert_eq!(
         (row.legacy, row.level),
         (1, 30),
@@ -236,7 +240,8 @@ fn merge_of_a_declared_field_is_an_rmw_and_cleans_the_old_face() {
 
 #[test]
 fn replace_is_the_doc_of() {
-    let t: Collection<TestStore, UserKey, User> = Collection::new(TestStore::slatedb_mem());
+    let t: Collection<TestStore, UserKey, User> =
+        Collection::open(TestStore::slatedb_mem()).unwrap();
     t.put(&key(1), &user(9, 9)).unwrap();
     t.put(&key(1), &Variant::Map(dmap(&[("gone", Variant::U64(1))])))
         .unwrap();
@@ -251,7 +256,7 @@ fn replace_is_the_doc_of() {
         ])),),
     )
     .unwrap();
-    assert_eq!(t.get_row(&key(1)).unwrap().unwrap(), user(0, 4));
+    assert_eq!(t.get_row(&key(1)).unwrap(), user(0, 4));
     let got = doc_of(&t, &key(1)).unwrap().unwrap();
     assert!(
         !got.contains_key("gone"),
@@ -272,7 +277,7 @@ fn replace_is_the_doc_of() {
         (&Variant::Map(dmap(&[("legacy", Variant::U64(7))])),),
     )
     .unwrap();
-    assert_eq!(t.get_row(&key(3)).unwrap().unwrap(), user(7, 0));
+    assert_eq!(t.get_row(&key(3)).unwrap(), user(7, 0));
 
     // An empty map IS the empty document.
     t.put(&key(1), (&Variant::Map(Dict::new()),)).unwrap();
@@ -281,7 +286,8 @@ fn replace_is_the_doc_of() {
 
 #[test]
 fn purge_clears_both_slots_in_one_call() {
-    let t: Collection<TestStore, UserKey, User> = Collection::new(TestStore::slatedb_mem());
+    let t: Collection<TestStore, UserKey, User> =
+        Collection::open(TestStore::slatedb_mem()).unwrap();
     t.put(&key(2), &user(1, 1)).unwrap();
     t.put(&key(2), &Variant::Map(dmap(&[("x", Variant::U64(1))])))
         .unwrap();
@@ -341,7 +347,8 @@ fn from_map_refuses_a_value_that_does_not_fit_the_declared_width() {
 fn a_refused_merge_returns_the_error_and_writes_nothing() {
     // 拒绝发生在任何 op 进 batch 之前：存储原封不动，调用方拿到 Err 而不是
     // 一个静默改过的文档（也不是 panic —— 这是调用方数据，不是故障）。
-    let t: Collection<TestStore, UserKey, User> = Collection::new(TestStore::slatedb_mem());
+    let t: Collection<TestStore, UserKey, User> =
+        Collection::open(TestStore::slatedb_mem()).unwrap();
     t.put(&key(1), &user(3, 4)).unwrap();
 
     let err = t
@@ -355,7 +362,7 @@ fn a_refused_merge_returns_the_error_and_writes_nothing() {
         "unexpected error: {err:?}"
     );
     assert_eq!(
-        t.get_row(&key(1)).unwrap().unwrap(),
+        t.get_row(&key(1)).unwrap(),
         user(3, 4),
         "a refused merge writes nothing"
     );
@@ -363,7 +370,7 @@ fn a_refused_merge_returns_the_error_and_writes_nothing() {
     // 同一个 API 上的成功路径不受影响。
     t.put(&key(1), &Variant::Map(dmap(&[("level", Variant::U64(9))])))
         .unwrap();
-    assert_eq!(t.get_row(&key(1)).unwrap().unwrap(), user(3, 9));
+    assert_eq!(t.get_row(&key(1)).unwrap(), user(3, 9));
 }
 
 /// Two handles on one engine allocate from the SAME cursor: the mirror must not
@@ -372,8 +379,8 @@ fn a_refused_merge_returns_the_error_and_writes_nothing() {
 #[test]
 fn two_handles_on_one_engine_do_not_share_an_id() {
     let store = TestStore::slatedb_mem();
-    let a: Collection<TestStore, UserKey, User> = Collection::new(store.shared_handle());
-    let b: Collection<TestStore, UserKey, User> = Collection::new(store.shared_handle());
+    let a: Collection<TestStore, UserKey, User> = Collection::open(store.shared_handle()).unwrap();
+    let b: Collection<TestStore, UserKey, User> = Collection::open(store.shared_handle()).unwrap();
     a.put(
         &key(1),
         &Variant::Map(dmap(&[("alpha", Variant::Str("x".into()))])),
@@ -408,7 +415,7 @@ fn two_handles_on_one_engine_do_not_share_an_id() {
 #[test]
 fn one_dynamic_name_across_documents_survives_a_fresh_mirror() {
     let store = TestStore::slatedb_mem();
-    let t: Collection<TestStore, UserKey, User> = Collection::new(store.clone());
+    let t: Collection<TestStore, UserKey, User> = Collection::open(store.clone()).unwrap();
     t.put(&key(1), &user(1, 2)).unwrap();
     t.put(&key(2), &user(1, 3)).unwrap();
     t.put(
@@ -427,7 +434,8 @@ fn one_dynamic_name_across_documents_survives_a_fresh_mirror() {
         Some(&Variant::Str("beta".into()))
     );
 
-    let fresh: Collection<TestStore, UserKey, User> = Collection::new(store.shared_handle());
+    let fresh: Collection<TestStore, UserKey, User> =
+        Collection::open(store.shared_handle()).unwrap();
     assert_eq!(
         doc_of(&fresh, &key(1)).unwrap().unwrap().get("tag"),
         Some(&Variant::Str("alpha".into()))

@@ -600,7 +600,7 @@ fn member_set_is_checked_at_write() {
 fn a_fragment_is_one_commit_and_a_document_is_another() {
     let store = okm_async::TestStore::slatedb_mem();
     let mut g: Graph<_, Employment> = Graph::new(store.clone());
-    let nodes = okm_core::Collection::new(store.clone());
+    let nodes = okm_core::Collection::open(store.clone()).unwrap();
 
     // The fragment IS the unit of atomicity (ADR-0066 §7): there is no
     // caller-owned batch to fold an edge write into, so a caller that also
@@ -617,10 +617,7 @@ fn a_fragment_is_one_commit_and_a_document_is_another() {
     )
     .unwrap();
 
-    assert!(
-        nodes.get_row(&UserId { id: 1 }).unwrap().is_some(),
-        "document landed"
-    );
+    assert!(nodes.has_row(&UserId { id: 1 }).unwrap(), "document landed");
     assert_eq!(
         g.out_edges(&user(1)).unwrap(),
         vec![k],
@@ -634,7 +631,7 @@ fn node_kind_filter_intersects_typed_traversal() {
     // `(:User)-[employs]->(:Org kind=2)` = predicate face ∪ node kind
     // face, intersected in memory — two cheap faces, one convergence.
     let store = okm_async::TestStore::slatedb_mem();
-    let orgs = okm_core::Collection::new(store.clone());
+    let orgs = okm_core::Collection::open(store.clone()).unwrap();
     let mut g: Graph<_, Employment> = Graph::new(store.clone());
 
     // Org 9 kind=2, Org 10 kind=3.

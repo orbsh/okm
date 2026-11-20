@@ -55,7 +55,7 @@ fn a_uuid_payload_field_keeps_its_kind_and_round_trips() {
     assert_eq!(<Session as Document>::FIELDS[1].ty, FieldType::Uuid7);
 
     let store = TestStore::fjall_tmp();
-    let rows: Collection<_, Uuid7, Session> = Collection::new(store);
+    let rows: Collection<_, Uuid7, Session> = Collection::open(store).unwrap();
     let device = Uuid7::with_millis(5_000);
     let token = Uuid4::new();
     rows.put(
@@ -67,7 +67,7 @@ fn a_uuid_payload_field_keeps_its_kind_and_round_trips() {
         },
     )
     .unwrap();
-    let got = rows.get_row(&device).unwrap().expect("row");
+    let got = rows.get_row(&device).expect("row");
     assert_eq!(got.token, token);
     assert_eq!(got.device, device);
     assert_eq!(got.note, "kept");
@@ -87,7 +87,7 @@ fn a_uuid7_key_is_sixteen_bytes_and_its_order_is_time_order() {
 #[test]
 fn rows_round_trip_by_uuid_key_and_scans_return_the_key() {
     let store = TestStore::fjall_tmp();
-    let devices: Collection<_, Uuid7, Device> = Collection::new(store.clone());
+    let devices: Collection<_, Uuid7, Device> = Collection::open(store.clone()).unwrap();
     let a = Uuid7::with_millis(1_000);
     let b = Uuid7::with_millis(2_000);
     devices
@@ -109,7 +109,7 @@ fn rows_round_trip_by_uuid_key_and_scans_return_the_key() {
         )
         .unwrap();
 
-    let got = devices.get_row(&a).unwrap().expect("row a");
+    let got = devices.get_row(&a).expect("row a");
     assert_eq!(got.alias, "laptop");
 
     // The keyspace is already in clock order: no re-sorting, no index needed to read it that way.
@@ -119,7 +119,7 @@ fn rows_round_trip_by_uuid_key_and_scans_return_the_key() {
         .collect();
     assert_eq!(keys, vec![a, b], "v7 keys sort by their millisecond prefix");
 
-    let tokens: Collection<_, Uuid4, Token> = Collection::new(store);
+    let tokens: Collection<_, Uuid4, Token> = Collection::open(store).unwrap();
     let t = Uuid4::new();
     tokens
         .put(
@@ -130,8 +130,5 @@ fn rows_round_trip_by_uuid_key_and_scans_return_the_key() {
             },
         )
         .unwrap();
-    assert_eq!(
-        tokens.get_row(&t).unwrap().expect("token row").device.key,
-        a
-    );
+    assert_eq!(tokens.get_row(&t).expect("token row").device.key, a);
 }

@@ -58,7 +58,8 @@ fn put_rows(t: &mut Collection<TestStore, ExportKey, ExportRow>) -> Vec<(ExportK
 
 #[test]
 fn schema_is_generated_from_field_desc() {
-    let t: Collection<TestStore, ExportKey, ExportRow> = Collection::new(TestStore::slatedb_mem());
+    let t: Collection<TestStore, ExportKey, ExportRow> =
+        Collection::open(TestStore::slatedb_mem()).unwrap();
     let cols = t.export_columns();
     // key half then payload half, declaration order within each half
     let names: Vec<_> = cols.iter().map(|(n, _)| *n).collect();
@@ -121,7 +122,7 @@ fn field_desc_tables_match_declaration() {
 #[test]
 fn batch_values_roundtrip_through_struct_decode() {
     let mut t: Collection<TestStore, ExportKey, ExportRow> =
-        Collection::new(TestStore::slatedb_mem());
+        Collection::open(TestStore::slatedb_mem()).unwrap();
     let rows = put_rows(&mut t);
 
     let batch = t.to_record_batch().unwrap();
@@ -177,7 +178,7 @@ fn batch_values_roundtrip_through_struct_decode() {
 fn batch_respects_key_order() {
     // scan_suffix 返回 key 序，导出应保持该顺序（user_id 升序）
     let mut t: Collection<TestStore, ExportKey, ExportRow> =
-        Collection::new(TestStore::slatedb_mem());
+        Collection::open(TestStore::slatedb_mem()).unwrap();
     put_rows(&mut t);
     let batch = t.to_record_batch().unwrap();
     let uid = batch
@@ -210,7 +211,8 @@ fn fixed_bytes_maps_to_binary() {
         pub n: u32,
     }
 
-    let t: Collection<TestStore, BinKey, BinRow> = Collection::new(TestStore::slatedb_mem());
+    let t: Collection<TestStore, BinKey, BinRow> =
+        Collection::open(TestStore::slatedb_mem()).unwrap();
     let k = BinKey {
         id: 1,
         name: *b"abcd",
@@ -254,7 +256,8 @@ fn vector_field_maps_to_binary() {
         pub ring: Vector<u32>,
     }
 
-    let t: Collection<TestStore, RingKey, RingRow> = Collection::new(TestStore::slatedb_mem());
+    let t: Collection<TestStore, RingKey, RingRow> =
+        Collection::open(TestStore::slatedb_mem()).unwrap();
     t.put(
         &RingKey { id: 1 },
         &RingRow {
@@ -290,7 +293,8 @@ fn vector_field_maps_to_binary() {
 /// 空表导出：batch 零行、schema 完整。
 #[test]
 fn empty_table_exports_full_schema() {
-    let t: Collection<TestStore, ExportKey, ExportRow> = Collection::new(TestStore::slatedb_mem());
+    let t: Collection<TestStore, ExportKey, ExportRow> =
+        Collection::open(TestStore::slatedb_mem()).unwrap();
     let batch = t.to_record_batch().unwrap();
     assert_eq!(batch.num_rows(), 0);
     assert_eq!(batch.num_columns(), 6);
@@ -345,7 +349,8 @@ fn device_row(device: Uuid7, token: Uuid4) -> DeviceRow {
 /// `unreachable!` and panicked before a row left the store.
 #[test]
 fn uuid_field_exports_as_fixed_size_binary() {
-    let t: Collection<TestStore, DeviceKey, DeviceRow> = Collection::new(TestStore::slatedb_mem());
+    let t: Collection<TestStore, DeviceKey, DeviceRow> =
+        Collection::open(TestStore::slatedb_mem()).unwrap();
     let device = Uuid7::with_millis(1_700_000_000_000);
     let token = Uuid4::from_bytes([
         0xAB, 0xCD, 0xEF, 0x01, 0x23, 0x45, 0x67, 0x89, 0xAB, 0xCD, 0xEF, 0x01, 0x23, 0x45, 0x67,
@@ -389,7 +394,7 @@ fn uuid_field_exports_as_fixed_size_binary() {
 
     // Zero rows still build the column at the declared width, not an error.
     let empty: Collection<TestStore, DeviceKey, DeviceRow> =
-        Collection::new(TestStore::slatedb_mem());
+        Collection::open(TestStore::slatedb_mem()).unwrap();
     let empty_batch = empty.to_record_batch().unwrap();
     assert_eq!(empty_batch.num_rows(), 0);
     assert_eq!(empty_batch.column(1).len(), 0);
@@ -404,7 +409,8 @@ fn uuid_field_survives_a_parquet_round_trip() {
     let dir = tempfile::tempdir().unwrap();
     let path = dir.path().join("devices.parquet");
 
-    let t1: Collection<TestStore, DeviceKey, DeviceRow> = Collection::new(TestStore::slatedb_mem());
+    let t1: Collection<TestStore, DeviceKey, DeviceRow> =
+        Collection::open(TestStore::slatedb_mem()).unwrap();
     let rows = [
         (1u64, Uuid7::with_millis(1_700_000_000_000)),
         (2u64, Uuid7::with_millis(1_700_000_000_001)),
@@ -416,15 +422,12 @@ fn uuid_field_survives_a_parquet_round_trip() {
     okm_lake::snapshot::parquet_io::export_parquet(&t1, &path).unwrap();
 
     let mut t2: Collection<TestStore, DeviceKey, DeviceRow> =
-        Collection::new(TestStore::slatedb_mem());
+        Collection::open(TestStore::slatedb_mem()).unwrap();
     let n = okm_lake::snapshot::parquet_io::import_parquet(&mut t2, &path).unwrap();
     assert_eq!(n, 2);
     for (id, device) in rows {
-        let got = t2
-            .get_row(&DeviceKey { id })
-            .unwrap()
-            .expect("restored row");
+        let got = t2.get_row(&DeviceKey { id }).expect("restored row");
         assert_eq!(got.device, device);
-        assert_eq!(got, t1.get_row(&DeviceKey { id }).unwrap().unwrap());
+        assert_eq!(got, t1.get_row(&DeviceKey { id }).unwrap());
     }
 }

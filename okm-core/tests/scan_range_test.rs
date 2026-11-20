@@ -32,7 +32,7 @@ pub struct Row {
 #[test]
 fn range_scan_reads_only_the_interval() {
     let store = TestStore::default();
-    let col: Collection<_, RowId, Row> = Collection::new(store.clone());
+    let col: Collection<_, RowId, Row> = Collection::open(store.clone()).unwrap();
 
     let rows: Vec<(u32, u32)> = (0..100).map(|i| (i, i * 7)).collect();
     for (id, (a, tag)) in rows.iter().enumerate() {
@@ -99,10 +99,10 @@ pub struct Other {
 #[test]
 fn an_open_range_scan_never_leaves_its_table() {
     let store = TestStore::default();
-    let rows: Collection<_, RowId, Row> = Collection::new(store.clone());
+    let rows: Collection<_, RowId, Row> = Collection::open(store.clone()).unwrap();
     rows.put(&RowId { id: 9 }, &Row { a: 1, tag: 2 }).unwrap();
 
-    let others: Collection<_, OtherId, Other> = Collection::new(store.clone());
+    let others: Collection<_, OtherId, Other> = Collection::open(store.clone()).unwrap();
     others.put(&OtherId { id: 9 }, &Other { d: 5 }).unwrap();
 
     let hits = rows
@@ -138,7 +138,7 @@ fn an_open_range_scan_never_leaves_its_table() {
 #[test]
 fn range_scan_fjall() {
     let store = TestStore::fjall_tmp();
-    let col: Collection<_, RowId, Row> = Collection::new(store);
+    let col: Collection<_, RowId, Row> = Collection::open(store).unwrap();
     for i in 0..50u32 {
         col.put(&RowId { id: i as u64 }, &Row { a: i, tag: 0 })
             .unwrap();
@@ -154,7 +154,7 @@ fn range_scan_fjall() {
 #[test]
 fn range_scan_redb() {
     let store = TestStore::redb_tmp();
-    let col: Collection<_, RowId, Row> = Collection::new(store);
+    let col: Collection<_, RowId, Row> = Collection::open(store).unwrap();
     for i in 0..50u32 {
         col.put(&RowId { id: i as u64 }, &Row { a: i, tag: 0 })
             .unwrap();
@@ -173,7 +173,7 @@ fn range_scan_redb() {
 #[test]
 fn lazy_range_scan_matches_buffered() {
     let store = TestStore::default();
-    let col: Collection<_, RowId, Row> = Collection::new(store.clone());
+    let col: Collection<_, RowId, Row> = Collection::open(store.clone()).unwrap();
     for i in 0..100u32 {
         col.put(&RowId { id: i as u64 }, &Row { a: i, tag: i * 7 })
             .unwrap();
@@ -212,7 +212,7 @@ fn lazy_range_scan_matches_buffered() {
 #[test]
 fn lazy_range_scan_fjall_native_double_ended() {
     let store = TestStore::fjall_tmp();
-    let col: Collection<_, RowId, Row> = Collection::new(store);
+    let col: Collection<_, RowId, Row> = Collection::open(store).unwrap();
     for i in 0..50u32 {
         col.put(&RowId { id: i as u64 }, &Row { a: i, tag: 0 })
             .unwrap();

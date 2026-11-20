@@ -62,7 +62,7 @@ fn a_compaction_prunes_what_the_baseline_covers_and_replay_still_works() {
 
     let writer = store(log.path());
     writer.register::<RowKey, Row>().unwrap();
-    let app = Collection::<_, RowKey, Row>::captured(writer).unwrap();
+    let app = Collection::<_, RowKey, Row>::open(writer).unwrap();
     for id in 0..12 {
         app.put(
             &RowKey { id },
@@ -129,16 +129,16 @@ fn a_compaction_prunes_what_the_baseline_covers_and_replay_still_works() {
         "12 covered + 4 above, saw {}",
         applied.ops
     );
-    let restored = Collection::<_, RowKey, Row>::new(target);
+    let restored = Collection::<_, RowKey, Row>::open(target).unwrap();
     for id in 0..12 {
         assert_eq!(
-            restored.get_row(&RowKey { id }).unwrap().unwrap().title,
+            restored.get_row(&RowKey { id }).unwrap().title,
             format!("row {id}")
         );
     }
     for id in 100..104 {
         assert_eq!(
-            restored.get_row(&RowKey { id }).unwrap().unwrap().title,
+            restored.get_row(&RowKey { id }).unwrap().title,
             format!("after {id}")
         );
     }
@@ -152,7 +152,7 @@ fn keep_leaves_a_window_of_history_under_the_baseline() {
 
     let writer = store(log.path());
     writer.register::<RowKey, Row>().unwrap();
-    let app = Collection::<_, RowKey, Row>::captured(writer).unwrap();
+    let app = Collection::<_, RowKey, Row>::open(writer).unwrap();
     for id in 0..10 {
         app.put(&RowKey { id }, &Row { title: "x".into() }).unwrap();
     }
@@ -244,7 +244,7 @@ fn the_policy_compacts_at_a_rotation_without_being_asked() {
         },
     );
     writer.register::<RowKey, Row>().unwrap();
-    let app = Collection::<_, RowKey, Row>::captured(writer).unwrap();
+    let app = Collection::<_, RowKey, Row>::open(writer).unwrap();
 
     for id in 0..8 {
         app.put(
@@ -275,10 +275,10 @@ fn the_policy_compacts_at_a_rotation_without_being_asked() {
     }
     let target = TestStore::slatedb_mem();
     apply_log(log.path(), &header, &target, None).unwrap();
-    let restored = Collection::<_, RowKey, Row>::new(target);
+    let restored = Collection::<_, RowKey, Row>::open(target).unwrap();
     for id in 0..10 {
         assert_eq!(
-            restored.get_row(&RowKey { id }).unwrap().unwrap().title,
+            restored.get_row(&RowKey { id }).unwrap().title,
             format!("row {id}")
         );
     }
@@ -299,7 +299,7 @@ fn a_policy_of_none_never_compacts_on_its_own() {
         },
     );
     writer_store.register::<RowKey, Row>().unwrap();
-    let app = Collection::<_, RowKey, Row>::captured(writer_store).unwrap();
+    let app = Collection::<_, RowKey, Row>::open(writer_store).unwrap();
     for id in 0..8 {
         app.put(&RowKey { id }, &Row { title: "x".into() }).unwrap();
     }

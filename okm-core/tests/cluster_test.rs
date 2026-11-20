@@ -574,10 +574,10 @@ fn a_node_exists_only_as_an_endpoint() {
             "{engine}: unexpected error: {err:?}"
         );
         assert!(
-            Person::collection(store.clone())
-                .get_row(&PersonId { id: 3 })
-                .expect("read")
-                .is_none(),
+            !Person::open(store.clone())
+                .unwrap()
+                .has_row(&PersonId { id: 3 })
+                .expect("read"),
             "{engine}: no row materialized"
         );
 
@@ -773,12 +773,11 @@ fn the_three_conflict_hooks_run_in_the_write_fragment() {
         let report = g.incorporate(fragment).expect("commit");
         let cluster = report.edge_sets[0];
 
-        let people = Person::collection(store.clone());
+        let people = Person::open(store.clone()).unwrap();
         for id in [1u64, 2] {
             let row = people
                 .get_row(&PersonId { id })
-                .expect("read")
-                .unwrap_or_else(|| panic!("{engine}: person {id} was created on demand"));
+                .unwrap_or_else(|e| panic!("{engine}: read {id}: {e}"));
             assert_eq!(
                 row.seen, 1,
                 "{engine}: the node conflict hook ran for person {id}"
@@ -787,10 +786,10 @@ fn the_three_conflict_hooks_run_in_the_write_fragment() {
         // A collection with no registered hook gets no row: an endpoint
         // exists because an edge names it, not because a table was touched.
         assert!(
-            Org::collection(store.clone())
-                .get_row(&OrgId { id: 1 })
-                .expect("read")
-                .is_none(),
+            !Org::open(store.clone())
+                .unwrap()
+                .has_row(&OrgId { id: 1 })
+                .expect("read"),
             "{engine}: no hook, no row"
         );
 
@@ -808,20 +807,12 @@ fn the_three_conflict_hooks_run_in_the_write_fragment() {
         fragment.on_node_conflict::<Person>(|old, _declared| Person { seen: old.seen + 1 });
         g.incorporate(fragment).expect("second fragment");
         assert_eq!(
-            people
-                .get_row(&PersonId { id: 1 })
-                .expect("read")
-                .expect("row")
-                .seen,
+            people.get_row(&PersonId { id: 1 }).expect("row").seen,
             2,
             "{engine}: the counter accumulated"
         );
         assert_eq!(
-            people
-                .get_row(&PersonId { id: 2 })
-                .expect("read")
-                .expect("row")
-                .seen,
+            people.get_row(&PersonId { id: 2 }).expect("row").seen,
             1,
             "{engine}: an untouched node keeps its count"
         );

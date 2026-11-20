@@ -16,7 +16,7 @@
 
 use okm_async::TestStore;
 use okm_core::changelog::replay::{replay_after, replay_table};
-use okm_core::changelog::{lake_baseline, table_dir, ChangelogConfig, ChangelogStore};
+use okm_core::changelog::{ChangelogConfig, ChangelogStore, lake_baseline, table_dir};
 use okm_core::schema::CollectionSchema;
 use okm_core::{Collection, Document, DocumentEncode, KeyEncode};
 use okm_dynamic::DynamicCollection;
@@ -52,7 +52,7 @@ fn the_reference_names_the_version_and_a_replay_owes_only_the_tail() {
     let dir = table_dir(log.path(), &header);
 
     let writer = store(log.path());
-    let app: Collection<_, K, LRow> = Collection::captured(writer).expect("assemble");
+    let app: Collection<_, K, LRow> = Collection::open(writer).expect("assemble");
     for id in 0..8 {
         app.put(
             &K { id },
@@ -136,13 +136,19 @@ fn the_reference_names_the_version_and_a_replay_owes_only_the_tail() {
     assert_eq!(tail.puts, 4, "every row above the coverage: {tail:?}");
     for covered in [0u64, 7] {
         assert!(
-            target.fetch(&K { id: covered }.encode()).expect("fetch").is_none(),
+            target
+                .fetch(&K { id: covered }.encode())
+                .expect("fetch")
+                .is_none(),
             "row {covered} is covered: the lake hands it over, not the log"
         );
     }
     for owed in 100u64..104 {
         assert!(
-            target.fetch(&K { id: owed }.encode()).expect("fetch").is_some(),
+            target
+                .fetch(&K { id: owed }.encode())
+                .expect("fetch")
+                .is_some(),
             "row {owed} is owed by the log"
         );
     }

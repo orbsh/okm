@@ -58,7 +58,7 @@ fn payload_roundtrip_le() {
 
 #[test]
 fn cold_frame_roundtrip() {
-    let t: Collection<TestStore, DocKey, Doc> = Collection::new(TestStore::slatedb_mem());
+    let t: Collection<TestStore, DocKey, Doc> = Collection::open(TestStore::slatedb_mem()).unwrap();
     let k = DocKey { id: 1 };
     let r = Doc {
         id: 1,
@@ -67,7 +67,7 @@ fn cold_frame_roundtrip() {
     };
     t.put(&k, &r).unwrap();
 
-    let got = t.get_row(&k).unwrap().unwrap();
+    let got = t.get_row(&k).unwrap();
     assert_eq!(got.embed, Vector::new(vec![0.25, -3.5, 1e6]));
     assert_eq!(got.score, 7);
 }
@@ -75,7 +75,7 @@ fn cold_frame_roundtrip() {
 #[test]
 fn length_is_data_not_schema() {
     // 同一个文档类型，不同长度的向量都是合法数据（换模型 = 换帧长）。
-    let t: Collection<TestStore, DocKey, Doc> = Collection::new(TestStore::slatedb_mem());
+    let t: Collection<TestStore, DocKey, Doc> = Collection::open(TestStore::slatedb_mem()).unwrap();
     t.put(
         &DocKey { id: 1 },
         &Doc {
@@ -94,14 +94,8 @@ fn length_is_data_not_schema() {
         },
     )
     .unwrap();
-    assert_eq!(
-        t.get_row(&DocKey { id: 1 }).unwrap().unwrap().embed.len(),
-        1
-    );
-    assert_eq!(
-        t.get_row(&DocKey { id: 2 }).unwrap().unwrap().embed.len(),
-        4
-    );
+    assert_eq!(t.get_row(&DocKey { id: 1 }).unwrap().embed.len(), 1);
+    assert_eq!(t.get_row(&DocKey { id: 2 }).unwrap().embed.len(), 4);
 }
 
 #[test]
@@ -110,7 +104,7 @@ fn ok_len_contract_enforced_at_encode() {
     // 解码不检查（绕过解码器 = 乱码自负，与直接看图片字节流同理）。
     let bad = std::panic::catch_unwind(|| {
         let t: Collection<TestStore, DocKey, ContractedDoc> =
-            Collection::new(TestStore::slatedb_mem());
+            Collection::open(TestStore::slatedb_mem()).unwrap();
         t.put(
             &DocKey { id: 1 },
             &ContractedDoc {

@@ -105,7 +105,7 @@ fn debug_shows_the_length_and_never_the_bytes() {
 #[test]
 fn a_secret_round_trips_through_the_store() {
     for (engine, store) in TestStore::matrix() {
-        let col: Collection<_, VaultId, Guarded> = Collection::new(&store);
+        let col: Collection<_, VaultId, Guarded> = Collection::open(&store).unwrap();
         let key = VaultId { id: 1 };
         col.put(
             &key,
@@ -117,8 +117,7 @@ fn a_secret_round_trips_through_the_store() {
         .unwrap_or_else(|e| panic!("{engine}: put: {e}"));
         let got = col
             .get_row(&key)
-            .unwrap_or_else(|e| panic!("{engine}: get: {e}"))
-            .expect("the row is there");
+            .unwrap_or_else(|e| panic!("{engine}: get: {e}"));
         assert_eq!(got.level, 4);
         assert_eq!(got.blob.expose(), &CIPHERTEXT, "{engine}");
     }
@@ -177,7 +176,7 @@ fn stand_in_digest(token: &[u8]) -> [u8; 32] {
 #[test]
 fn a_digest_is_indexable_and_the_token_never_reaches_the_keyspace() {
     let store = TestStore::slatedb_mem();
-    let col: Collection<_, VaultId, TokenRow> = Collection::new(&store);
+    let col: Collection<_, VaultId, TokenRow> = Collection::open(&store).unwrap();
     let token = b"tok_live_0123456789abcdef";
     let digest = stand_in_digest(token);
     let row = TokenRow {
@@ -197,5 +196,5 @@ fn a_digest_is_indexable_and_the_token_never_reaches_the_keyspace() {
         !entry.windows(token.len()).any(|w| w == token.as_slice()),
         "and never the token"
     );
-    assert_eq!(col.get_row(&key).unwrap().unwrap().token_hash, digest);
+    assert_eq!(col.get_row(&key).unwrap().token_hash, digest);
 }

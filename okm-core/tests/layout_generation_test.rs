@@ -18,7 +18,7 @@
 )]
 
 use okm_async::TestStore;
-use okm_core::changelog::window::{WindowConfig, load_sidecar, read_window, sidecar_of};
+use okm_core::changelog::window::{WindowConfig, declaration_of, load_declaration, read_window};
 use okm_core::changelog::{ChangelogConfig, ChangelogStore, apply_log_in_generation, table_dir};
 use okm_core::{Collection, Document, DocumentEncode, KeyEncode};
 use okm_value::{Dict, Variant};
@@ -60,7 +60,7 @@ fn dir(root: &std::path::Path) -> std::path::PathBuf {
 /// Write one row through `Gen1` and seal it, so the directory carries a real generation 1
 /// segment and its declaration.
 fn write_generation_one(root: &std::path::Path) {
-    let c: Collection<_, K, Gen1> = Collection::captured(store(root)).expect("assemble");
+    let c: Collection<_, K, Gen1> = Collection::open(store(root)).expect("assemble");
     c.put(&K { id: 1 }, &Gen1 { level: 7 }).expect("put");
 }
 
@@ -75,7 +75,7 @@ fn a_window_stops_at_a_vocabulary_change() {
 
     // Window one: field id 1 is `note`, written under one store.
     {
-        let c: Collection<_, K, Gen1> = Collection::captured(store(log.path())).expect("assemble");
+        let c: Collection<_, K, Gen1> = Collection::open(store(log.path())).expect("assemble");
         c.put(&K { id: 1 }, &Gen1 { level: 7 }).expect("put");
         let mut open = Dict::new();
         open.insert(
@@ -88,7 +88,7 @@ fn a_window_stops_at_a_vocabulary_change() {
 
     // Window two: a fresh store numbers from 1 again, and 1 is now `tag`.
     {
-        let c: Collection<_, K, Gen1> = Collection::captured(store(log.path())).expect("assemble");
+        let c: Collection<_, K, Gen1> = Collection::open(store(log.path())).expect("assemble");
         c.put(&K { id: 1 }, &Gen1 { level: 8 }).expect("put");
         let mut open = Dict::new();
         open.insert(
@@ -135,7 +135,7 @@ fn a_new_generation_registers_and_appends_to_the_same_directory() {
     let log = tempfile::tempdir().expect("root");
     write_generation_one(log.path());
 
-    let c: Collection<_, K, Gen2> = Collection::captured(store(log.path()))
+    let c: Collection<_, K, Gen2> = Collection::open(store(log.path()))
         .expect("a directory written by another generation is exactly what an upgrade opens");
     c.put(&K { id: 2 }, &Gen2 { level: 8 }).expect("append");
     // Sealing is what a clean stop does; nothing else would put the second segment on disk
@@ -169,35 +169,43 @@ fn a_new_generation_registers_and_appends_to_the_same_directory() {
 fn every_generation_keeps_its_own_declaration() {
     let log = tempfile::tempdir().expect("root");
     write_generation_one(log.path());
-    let _: Collection<_, K, Gen2> = Collection::captured(store(log.path())).expect("assemble");
+    {
+        // A declaration is a log record (ADR-0074 §2), so generation 2's exists once
+        // generation 2 has written — not because the directory was touched.
+        let g2: Collection<_, K, Gen2> = Collection::open(store(log.path())).expect("assemble");
+        g2.put(&K { id: 2 }, &Gen2 { level: 8 }).expect("append");
+    }
 
     let d = dir(log.path());
-    assert_eq!(sidecar_of(&d, 1).expect("generation 1").layout_version, 1);
-    assert_eq!(sidecar_of(&d, 2).expect("generation 2").layout_version, 2);
+    assert_eq!(
+        declaration_of(&d, 1).expect("generation 1").layout_version,
+        1
+    );
+    assert_eq!(
+        declaration_of(&d, 2).expect("generation 2").layout_version,
+        2
+    );
     // "The newest declaration" is a different question from "this segment's declaration",
     // and it is the one a store being built today is declared with.
     assert_eq!(
-        load_sidecar(&d).expect("newest").layout_version,
+        load_declaration(&d).expect("newest").layout_version,
         2,
         "newest, by number — not by file name"
     );
 }
 
 #[test]
-fn a_generation_without_a_sidecar_is_refused_by_number() {
+fn a_generation_no_segment_declares_is_refused_by_number() {
     let log = tempfile::tempdir().expect("root");
     write_generation_one(log.path());
-    let _: Collection<_, K, Gen2> = Collection::captured(store(log.path())).expect("assemble");
+    let _: Collection<_, K, Gen2> = Collection::open(store(log.path())).expect("assemble");
     let d = dir(log.path());
-    std::fs::remove_file(d.join(okm_core::changelog::sidecar_name(2))).expect("drop it");
 
-    let err = sidecar_of(&d, 2).expect_err("no declaration for those bytes");
+    // A declaration is whatever a SEGMENT carries (ADR-0074 §2). A number no segment in the
+    // directory declares is not a guess to make: it is a stop that names the number.
+    let err = declaration_of(&d, 7).expect_err("no segment declares layout 7");
     let text = err.to_string();
-    assert!(text.contains('2'), "the generation is named: {text}");
-    assert!(
-        text.contains("schema-v2.json"),
-        "and so is the file that is missing: {text}"
-    );
+    assert!(text.contains('7'), "the generation is named: {text}");
 }
 
 /// A window is one generation: its declaration is what a sink or a replay decodes with, so
@@ -206,7 +214,7 @@ fn a_generation_without_a_sidecar_is_refused_by_number() {
 fn a_window_stops_at_a_generation_change() {
     let log = tempfile::tempdir().expect("root");
     write_generation_one(log.path());
-    let second: Collection<_, K, Gen2> = Collection::captured(store(log.path())).expect("assemble");
+    let second: Collection<_, K, Gen2> = Collection::open(store(log.path())).expect("assemble");
     second
         .put(&K { id: 2 }, &Gen2 { level: 8 })
         .expect("append");

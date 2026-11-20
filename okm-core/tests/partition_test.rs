@@ -53,8 +53,9 @@ fn partition_segment_precedes_ns_header() {
     // 无 partition 表的主键 = [ns 7 BE][slot 0][key]（无 part 段）。
     let store = TestStore::default();
     let pt: okm_core::Collection<_, PlainKey, Partitioned> =
-        okm_core::Collection::new(store.clone());
-    let pl: okm_core::Collection<_, PlainKey, Plain> = okm_core::Collection::new(store.clone());
+        okm_core::Collection::open(store.clone()).unwrap();
+    let pl: okm_core::Collection<_, PlainKey, Plain> =
+        okm_core::Collection::open(store.clone()).unwrap();
 
     let k = PlainKey { id: 1 };
     let pk = pt.primary_key(&k);
@@ -80,10 +81,10 @@ fn partition_segment_precedes_ns_header() {
 
     // 表内 put/get/scan 正常（经 partition 前缀域）。
     pt.put(&k, &Partitioned { value: 42 }).unwrap();
-    assert_eq!(pt.get_row(&k).unwrap().unwrap().value, 42);
+    assert_eq!(pt.get_row(&k).unwrap().value, 42);
     assert_eq!(pt.scan_keys(&okm_core::PrefixProbe::empty()).count(), 1);
     pl.put(&k, &Plain { value: 7 }).unwrap();
-    assert_eq!(pl.get_row(&k).unwrap().unwrap().value, 7);
+    assert_eq!(pl.get_row(&k).unwrap().value, 7);
     assert_eq!(pl.scan_keys(&okm_core::PrefixProbe::empty()).count(), 1);
 
     // 跨表字节空间独立：两表在 TestStore（无物理 partition）下靠键

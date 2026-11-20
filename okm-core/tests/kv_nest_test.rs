@@ -42,13 +42,13 @@ fn nest_derive_end_to_end() {
 
     let handle = AppStorage::serve(TestStore::slatedb_mem());
     let remote = handle.open();
-    let t: Collection<RemoteStore, ItemKey, Item> = Collection::new(remote);
+    let t: Collection<RemoteStore, ItemKey, Item> = Collection::open(remote).unwrap();
 
     t.put(&ItemKey { id: 1 }, &Item { kind: 7 }).unwrap();
 
     // Fire-and-forget write: poll until the round trip sees the document.
     for _ in 0..200 {
-        if t.get_row(&ItemKey { id: 1 }).unwrap().is_some() {
+        if t.has_row(&ItemKey { id: 1 }).unwrap() {
             break;
         }
         std::thread::sleep(std::time::Duration::from_millis(10));
@@ -56,7 +56,6 @@ fn nest_derive_end_to_end() {
 
     let document = t
         .get_row(&ItemKey { id: 1 })
-        .unwrap()
         .expect("document round-tripped");
     assert_eq!(document.kind, 7);
 

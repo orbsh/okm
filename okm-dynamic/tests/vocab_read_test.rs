@@ -38,7 +38,7 @@ fn dynamic_read_names_vocab_labels() {
 
     // The typed side writes: interning happens on the write path, so the
     // vocabulary faces exist by the time anybody reads.
-    let typed = Collection::<_, VKey, VRow>::new(store.clone());
+    let typed = Collection::<_, VKey, VRow>::open(store.clone()).unwrap();
     typed
         .put(
             &VKey { org: 1, id: 1 },

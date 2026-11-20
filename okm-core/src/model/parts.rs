@@ -209,7 +209,7 @@ pub trait PointParts<S: VirtualStorage, K: KeyEncode, R: Document<Key = K>> {
 impl<S: VirtualStorage, K: KeyEncode, R: Document<Key = K>> PointParts<S, K, R> for Row {
     type Output = Option<R>;
     fn take(col: &Collection<S, K, R>, key: &K) -> Result<Self::Output> {
-        col.get_row(key)
+        col.row_opt(key)
     }
 }
 

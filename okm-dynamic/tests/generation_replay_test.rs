@@ -60,7 +60,7 @@ fn store(root: &std::path::Path) -> ChangelogStore<TestStore> {
 fn a_mixed_directory_replays_each_segment_under_its_own_declaration() {
     let log = tempfile::tempdir().expect("root");
     {
-        let c: Collection<_, K, Gen1> = Collection::captured(store(log.path())).expect("assemble");
+        let c: Collection<_, K, Gen1> = Collection::open(store(log.path())).expect("assemble");
         c.put(
             &K { id: 1 },
             &Gen1 {
@@ -71,7 +71,7 @@ fn a_mixed_directory_replays_each_segment_under_its_own_declaration() {
         .expect("put");
     }
     {
-        let c: Collection<_, K, Gen2> = Collection::captured(store(log.path())).expect("assemble");
+        let c: Collection<_, K, Gen2> = Collection::open(store(log.path())).expect("assemble");
         c.put(
             &K { id: 2 },
             &Gen2 {

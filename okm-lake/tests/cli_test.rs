@@ -36,7 +36,7 @@ const K1: K = K { org: 1, id: 10 };
 const K2: K = K { org: 1, id: 11 };
 
 fn collection(root: &std::path::Path) -> Collection<ChangelogStore<TestStore>, K, R> {
-    Collection::captured(ChangelogStore::new(
+    Collection::open(ChangelogStore::new(
         TestStore::slatedb_mem(),
         ChangelogConfig::new(root),
     ))

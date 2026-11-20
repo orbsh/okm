@@ -1,9 +1,10 @@
 //! Table meta (ADR-0043): fixed face 0x1F — ONE name → bytes entry per table,
 //! describing the store instead of holding its data.
 //!
-//! Three names are the runtime's: `version` (the layout generation the writer
-//! speaks, `Document::LAYOUT_VERSION`), `faces` (the declaration's face
-//! fingerprint, ADR-0048) and `table` (its `#[ok_name]`). The version is the
+//! The runtime's names: `version` (the layout generation the writer speaks,
+//! `Document::LAYOUT_VERSION`), `faces` (the declaration's face fingerprint,
+//! ADR-0048), `table` (its `#[ok_name]`) and `schema` (the declaration itself, as bytes —
+//! ADR-0074 §2). `capture` appears beside them only for a declaration that opted out. The version is the
 //! load-bearing one: a layout change is a cutover, so a store stamped with a
 //! number this build does not speak is REFUSED at attach — and so is a row that
 //! records no number at all, because a row this build did not stamp is not a store
@@ -49,7 +50,7 @@ fn header() -> Vec<u8> {
 #[test]
 fn the_stamp_lives_at_the_highest_fixed_face_with_no_suffix() {
     let store = TestStore::default();
-    let table = <MetaRow as Document>::collection(store.clone());
+    let table = <MetaRow as Document>::open(store.clone()).unwrap();
 
     let stamped = table.ensure_layout().unwrap();
     assert_eq!(
@@ -72,8 +73,8 @@ fn the_stamp_lives_at_the_highest_fixed_face_with_no_suffix() {
     assert_eq!(stamped_row.faces(), Some(MetaRow::FACES));
     assert_eq!(
         stamped_row.iter().map(|(n, _)| n).collect::<Vec<_>>(),
-        vec!["faces", "table", "version"],
-        "the runtime's fingerprint, the table's own name and the layout it speaks — nothing else"
+        vec!["faces", "schema", "table", "version"],
+        "the fingerprint, the declaration itself, the table's name and the layout it speaks — nothing else"
     );
     assert_eq!(
         stamped_row.table_name(),
@@ -96,7 +97,7 @@ fn the_stamp_lives_at_the_highest_fixed_face_with_no_suffix() {
 #[test]
 fn the_stamp_is_written_once_and_read_back_without_rewriting() {
     let store = TestStore::default();
-    let table = <MetaRow as Document>::collection(store.clone());
+    let table = <MetaRow as Document>::open(store.clone()).unwrap();
     let first = table.ensure_layout().unwrap();
     let second = table.ensure_layout().unwrap();
     assert_eq!(first, second);
@@ -106,7 +107,7 @@ fn the_stamp_is_written_once_and_read_back_without_rewriting() {
 #[test]
 fn a_second_name_rides_beside_the_stamp() {
     let store = TestStore::default();
-    let table = <MetaRow as Document>::collection(store.clone());
+    let table = <MetaRow as Document>::open(store.clone()).unwrap();
 
     // The fingerprint is the first-touch verb's write, on a store that has no row yet.
     let stamped = table.ensure_layout().unwrap();
@@ -118,8 +119,8 @@ fn a_second_name_rides_beside_the_stamp() {
     assert_eq!(after.get("build"), Some(&b"20261028"[..]));
     assert_eq!(
         after.iter().map(|(n, _)| n).collect::<Vec<_>>(),
-        vec!["build", "faces", "table", "version"],
-        "the caller's map plus the three names the runtime owns"
+        vec!["build", "faces", "schema", "table", "version"],
+        "the caller's map plus the names the runtime owns"
     );
     let stored = table.meta().unwrap().unwrap();
     assert_eq!(stored, after);
@@ -141,7 +142,7 @@ fn a_second_name_rides_beside_the_stamp() {
 #[test]
 fn a_store_stamped_with_another_layout_is_refused() {
     let store = TestStore::default();
-    let table = <MetaRow as Document>::collection(store.clone());
+    let table = <MetaRow as Document>::open(store.clone()).unwrap();
 
     // A row this build did NOT write: another layout's number, no fingerprint.
     let mut foreign = TableMeta::new();
@@ -176,7 +177,7 @@ fn a_store_stamped_with_another_layout_is_refused() {
 #[test]
 fn a_row_that_records_no_layout_name_is_refused() {
     let store = TestStore::default();
-    let table = <MetaRow as Document>::collection(store.clone());
+    let table = <MetaRow as Document>::open(store.clone()).unwrap();
 
     // A row this build did not write: a caller's name and a fingerprint, no
     // generation. There is no older layout to tolerate — a row this build did not
@@ -211,7 +212,7 @@ fn a_row_that_records_no_layout_name_is_refused() {
 #[test]
 fn row_scans_never_surface_the_meta_entry() {
     let store = TestStore::default();
-    let table = <MetaRow as Document>::collection(store.clone());
+    let table = <MetaRow as Document>::open(store.clone()).unwrap();
     table.ensure_layout().unwrap();
     table
         .put(
@@ -280,11 +281,12 @@ pub struct Nameless {
 #[test]
 fn two_tables_in_one_ns_cannot_both_attach() {
     let store = TestStore::default();
-    let alpha = <Alpha as Document>::collection(store.clone());
-    let beta = <Beta as Document>::collection(store.clone());
+    let alpha = <Alpha as Document>::open(store.clone()).unwrap();
 
-    alpha.ensure_layout().unwrap();
-    match beta.ensure_layout() {
+    // The second declaration cannot even be ASSEMBLED: attach runs in the constructor
+    // (ADR-0074 §1), so the refusal arrives from `open` rather than from a verb a caller
+    // might not call. `collection` is the same attach with the refusal as a panic.
+    match <okm_core::Collection<_, MetaKey, Beta>>::open(store.clone()) {
         Err(okm_core::Error::TableNameTaken {
             ns,
             declared,
@@ -294,7 +296,8 @@ fn two_tables_in_one_ns_cannot_both_attach() {
             assert_eq!(declared, "beta");
             assert_eq!(existing, "alpha");
         }
-        other => panic!("expected TableNameTaken, got {other:?}"),
+        Ok(_) => panic!("expected TableNameTaken, got a collection"),
+        Err(other) => panic!("expected TableNameTaken, got {other}"),
     }
 
     // The refused declaration left the row alone: the first table still owns the ns.
@@ -306,10 +309,12 @@ fn two_tables_in_one_ns_cannot_both_attach() {
 #[test]
 fn the_same_table_attaches_twice() {
     let store = TestStore::default();
-    <Alpha as Document>::collection(store.clone())
+    <Alpha as Document>::open(store.clone())
+        .unwrap()
         .ensure_layout()
         .unwrap();
-    let second = <Alpha as Document>::collection(store.clone())
+    let second = <Alpha as Document>::open(store.clone())
+        .unwrap()
         .ensure_layout()
         .unwrap();
     assert_eq!(second.table_name(), Some("alpha"));
@@ -319,7 +324,8 @@ fn the_same_table_attaches_twice() {
 #[test]
 fn an_unnamed_table_records_no_name() {
     let store = TestStore::default();
-    let meta = <Nameless as Document>::collection(store.clone())
+    let meta = <Nameless as Document>::open(store.clone())
+        .unwrap()
         .ensure_layout()
         .unwrap();
     assert_eq!(meta.table_name(), None, "no name, no claim");

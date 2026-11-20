@@ -36,7 +36,8 @@ pub struct User {
 
 #[test]
 fn deprecated_slot_is_reserved_and_not_written() {
-    let t: Collection<TestStore, UserKey, User> = Collection::new(TestStore::slatedb_mem());
+    let t: Collection<TestStore, UserKey, User> =
+        Collection::open(TestStore::slatedb_mem()).unwrap();
     t.put(
         &UserKey { id: 1 },
         &User {
@@ -60,11 +61,16 @@ fn deprecated_slot_is_reserved_and_not_written() {
         1,
         "live index after the deprecated one keeps its slot"
     );
-    assert_eq!(
-        t.store().scan_suffix(&[0, 9]).unwrap().len(),
-        2,
-        "primary + one live index entry"
-    );
+    // Attach stamps the table's meta row under the same ns (ADR-0043, ADR-0074 §1), so the
+    // count below is about DATA entries: one entry describes the store, it does not hold data.
+    let data = t
+        .store()
+        .scan_suffix(&[0, 9])
+        .unwrap()
+        .into_iter()
+        .filter(|k| k.last() != Some(&(okm_core::META_SLOT as u8)))
+        .count();
+    assert_eq!(data, 2, "primary + one live index entry");
 }
 
 #[test]
@@ -81,7 +87,7 @@ fn prune_deletes_only_deprecated_prefix() {
     ]
     .concat();
     store.put(stale, Vec::new()).unwrap();
-    let t: Collection<TestStore, UserKey, User> = Collection::new(store);
+    let t: Collection<TestStore, UserKey, User> = Collection::open(store).unwrap();
     t.put(
         &UserKey { id: 1 },
         &User {
@@ -109,8 +115,8 @@ fn prune_deletes_only_deprecated_prefix() {
     );
     // Live entries untouched.
     assert_eq!(t.store().scan_suffix(&[0, 9, 0x40, 0x02]).unwrap().len(), 2);
-    assert_eq!(t.get_row(&UserKey { id: 1 }).unwrap().unwrap().level, 7);
-    assert_eq!(t.get_row(&UserKey { id: 2 }).unwrap().unwrap().level, 8);
+    assert_eq!(t.get_row(&UserKey { id: 1 }).unwrap().level, 7);
+    assert_eq!(t.get_row(&UserKey { id: 2 }).unwrap().level, 8);
 }
 
 #[test]
@@ -123,7 +129,8 @@ fn no_deprecated_declarations_prunes_nothing() {
         pub level: u32,
     }
 
-    let t: Collection<TestStore, UserKey, PlainUser> = Collection::new(TestStore::slatedb_mem());
+    let t: Collection<TestStore, UserKey, PlainUser> =
+        Collection::open(TestStore::slatedb_mem()).unwrap();
     t.put(&UserKey { id: 1 }, &PlainUser { level: 3 }).unwrap();
     assert_eq!(t.prune_deprecated_slots().unwrap(), 0);
 }

@@ -34,7 +34,7 @@ pub struct Row {
 }
 
 fn captured(root: &std::path::Path) -> Collection<ChangelogStore<TestStore>, RowKey, Row> {
-    Collection::captured(ChangelogStore::new(
+    Collection::open(ChangelogStore::new(
         TestStore::slatedb_mem(),
         ChangelogConfig::new(root),
     ))

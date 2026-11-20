@@ -35,7 +35,7 @@ fn captured<S: okm_core::VirtualStorage, K: KeyEncode, R: Document<Key = K>>(
     store: S,
     config: ChangelogConfig,
 ) -> okm_core::error::Result<Collection<ChangelogStore<S>, K, R>> {
-    Collection::captured(ChangelogStore::new(store, config))
+    Collection::open(ChangelogStore::new(store, config))
 }
 
 #[derive(KeyEncode, Clone, PartialEq, Debug, Default)]
@@ -360,7 +360,7 @@ fn the_batch_writer_verb_captures_save_into() {
         .unwrap();
     app.commit_batch(batch).expect("publish");
 
-    assert_eq!(app.get_row(&key).expect("get"), Some(row));
+    assert_eq!(app.get_row(&key).expect("get"), row);
     let frames = drain(app, dir.path());
     assert_eq!(frames.len(), 1);
     assert_eq!(
@@ -384,7 +384,7 @@ fn status_reports_a_log_that_never_took_a_write() {
         "no writer is open before the first write"
     );
 
-    let app: Collection<_, LogKey, LogRow> = Collection::new(&store);
+    let app: Collection<_, LogKey, LogRow> = Collection::open(&store).unwrap();
     app.put(
         &LogKey { id: 1 },
         &LogRow {
@@ -402,42 +402,50 @@ fn status_reports_a_log_that_never_took_a_write() {
 }
 
 /// The sidecar is the half of the declaration the log cannot carry. It is
-/// written by `with_changelog` (the one place that knows both the schema and the
-/// directory), it round-trips, and a DIFFERENT shape behind the same version is
-/// refused rather than overwritten — a version that can mean two shapes has
-/// stopped meaning anything (ADR-0042).
-#[cfg(feature = "schema-serde")]
+/// The declaration rides in the segment header (ADR-0074 §2, ADR-0056 §7): every file the log
+/// writes carries the same `CollectionSchema` bytes the store's `schema` row holds, so a
+/// segment read anywhere can turn its payloads into columns — no file beside it, no second
+/// copy that can drift.
 #[test]
-fn the_sidecar_is_written_once_per_layout_version() {
-    use okm_core::changelog::{sidecar_name, table_dir, write_sidecar};
+fn a_segment_carries_its_tables_declaration() {
+    use okm_core::changelog::{segment_info, table_dir};
     use okm_core::schema::CollectionSchema;
 
     let dir = tempfile::tempdir().expect("tempdir");
     let app: Collection<ChangelogStore<TestStore>, LogKey, LogRow> =
         captured(TestStore::slatedb_mem(), ChangelogConfig::new(dir.path())).expect("open");
+    app.put(
+        &LogKey { id: 1 },
+        &LogRow {
+            author: 2,
+            title: "x".into(),
+        },
+    )
+    .expect("put");
+    drop(app);
 
     let table = table_dir(dir.path(), LOG_NS);
-    let path = table.join(sidecar_name(<LogRow as Document>::LAYOUT_VERSION));
-    let json = std::fs::read_to_string(&path).expect("with_changelog stamps the sidecar");
-    let parsed: CollectionSchema = serde_json::from_str(&json).expect("sidecar round-trips");
-    assert_eq!(parsed, CollectionSchema::of::<LogKey, LogRow>());
+    let segments = okm_core::changelog::sealed_segments(dir.path(), LOG_NS).expect("list");
+    assert_eq!(segments.len(), 1, "one clean shutdown, one segment");
+    let info = segment_info(&segments[0]).expect("header");
+
+    let declared = CollectionSchema::decode(&info.meta.schema);
+    assert_eq!(declared, CollectionSchema::of::<LogKey, LogRow>());
     assert_eq!(
-        parsed.key_fields.len(),
+        declared.key_fields.len(),
         1,
-        "the sidecar carries the KEY layout, which no log byte does"
+        "the header carries the KEY layout, which no log byte does"
     );
 
-    // Same schema again: idempotent, same path, no error.
-    assert_eq!(write_sidecar(&table, &parsed).expect("same schema"), path);
-
-    // A different shape behind the same number: refused.
-    let mut other = parsed.clone();
-    other.key_len += 1;
+    // Nothing beside the segments is consulted, and nothing beside them is written.
     assert!(
-        write_sidecar(&table, &other).is_err(),
-        "one version must not describe two shapes"
+        std::fs::read_dir(&table).expect("dir").flatten().all(|e| e
+            .path()
+            .extension()
+            .and_then(|x| x.to_str())
+            == Some("segment")),
+        "the directory holds segments and nothing else"
     );
-    drop(app);
 }
 
 /// A batch that spans two tables, committed ONCE: the store splits it by key
@@ -455,8 +463,8 @@ fn a_cross_table_batch_captures_each_tables_own_share() {
             ChangelogStore::new(TestStore::slatedb_mem(), ChangelogConfig::new(root.path()));
         store.register::<LogKey, LogRow>().expect("register a");
         store.register::<LogKey, OtherRow>().expect("register b");
-        let a: Collection<_, LogKey, LogRow> = Collection::new(&store);
-        let b: Collection<_, LogKey, OtherRow> = Collection::new(&store);
+        let a: Collection<_, LogKey, LogRow> = Collection::open(&store).unwrap();
+        let b: Collection<_, LogKey, OtherRow> = Collection::open(&store).unwrap();
 
         // One batch carrying both tables' keys.
         let mut batch = Batch::default();
@@ -572,7 +580,7 @@ fn every_slot_is_classified_and_only_the_truth_half_is_carried() {
 /// can carry once the directory it was written in is gone.
 #[cfg(feature = "schema-serde")]
 #[test]
-fn the_sidecar_carries_the_tables_declared_name() {
+fn a_segments_declaration_carries_the_tables_name() {
     use okm_core::schema::CollectionSchema;
 
     let root = tempfile::tempdir().expect("root");
@@ -589,34 +597,20 @@ fn the_sidecar_carries_the_tables_declared_name() {
         )
         .expect("put");
     }
-    let dir = std::fs::read_dir(root.path())
-        .expect("root dirs")
-        .filter_map(|e| e.ok().map(|e| e.path()))
-        .find(|p| p.is_dir())
-        .expect("one table directory");
-    let path = dir.join(format!(
-        "schema-v{}.json",
-        <LogRow as Document>::LAYOUT_VERSION
-    ));
-    let json = std::fs::read_to_string(&path).expect("the assembly wrote a sidecar");
+    let segments = okm_core::changelog::sealed_segments(root.path(), LOG_NS).expect("list");
+    let info = okm_core::changelog::segment_info(&segments[0]).expect("header");
+    let declared = CollectionSchema::decode(&info.meta.schema);
 
-    assert!(
-        json.contains("\"name\": \"log_rows\""),
-        "the declaration's name is in the file: {json}"
-    );
-    let parsed: CollectionSchema = serde_json::from_str(&json).expect("parses");
-    assert_eq!(parsed.name, <LogRow as Document>::TABLE_NAME);
-    assert_eq!(parsed.name, "log_rows");
+    assert_eq!(declared.name, <LogRow as Document>::TABLE_NAME);
+    assert_eq!(declared.name, "log_rows");
 
-    // A sidecar written before the name travelled still loads, and reads as
-    // unnamed rather than failing — the export is what refuses an empty name.
-    let mut value: serde_json::Value = serde_json::from_str(&json).expect("value");
-    let object = value.as_object_mut().expect("an object");
-    object.remove("name");
-    let older: CollectionSchema =
-        serde_json::from_str(&value.to_string()).expect("an older sidecar loads");
-    assert_eq!(older.name, "");
-    assert_eq!(older.ns_prefix, parsed.ns_prefix, "nothing else moved");
+    // A declaration whose name is empty still decodes, and reads as unnamed rather than
+    // failing — the export is what refuses an empty name.
+    let mut older = declared.clone();
+    older.name = String::new();
+    let round = CollectionSchema::decode(&older.encode());
+    assert_eq!(round.name, "");
+    assert_eq!(round.ns_prefix, declared.ns_prefix, "nothing else moved");
 }
 
 /// Seal one row into a table's log and hand back the sealed file's path.

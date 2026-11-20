@@ -133,7 +133,7 @@ pub fn read_window(dir: &Path, cfg: &WindowConfig) -> Result<Option<Window>> {
     // window and starts the next one. The changelog directory never changes, so this is
     // the normal case after an upgrade, not a corruption (ADR-0056 §5/§6).
     let generation = super::segment_info(first)?.meta.layout_version;
-    let schema = sidecar_of(dir, generation)?;
+    let schema = declaration_of(dir, generation)?;
     let header = &header;
     let mut window: Vec<PathBuf> = Vec::new();
     let mut labels: HashMap<(u16, Vec<u8>), String> = HashMap::new();
@@ -337,71 +337,71 @@ pub fn header_of(dir: &Path) -> Result<Vec<u8>> {
 
 /// Every declaration this directory carries, by generation.
 ///
-/// A directory accumulates one sidecar per generation and keeps all of them: the changelog
-/// path never changes (ADR-0056 §5/§6), so an upgrade leaves `schema-v2.json` beside
-/// `schema-v1.json` and every older segment keeps its own declaration beside it.
-fn sidecars(dir: &Path) -> Result<Vec<(u8, PathBuf)>> {
-    let mut found: Vec<(u8, PathBuf)> = std::fs::read_dir(dir)
-        .map_err(|e| io_err(dir, e))?
-        .filter_map(|e| e.ok().map(|e| e.path()))
-        .filter_map(|p| {
-            let name = p.file_name()?.to_str()?.to_owned();
-            let digits = name.strip_prefix("schema-v")?.strip_suffix(".json")?;
-            Some((digits.parse::<u8>().ok()?, p))
-        })
-        .collect();
-    found.sort_by_key(|(generation, _)| *generation);
-    Ok(found)
+/// Every segment file in a table directory — baselines included — in name order, which is
+/// log order (a baseline's number is the number of the segment it outranks).
+fn segment_files(dir: &Path) -> Result<Vec<PathBuf>> {
+    let entries = match std::fs::read_dir(dir) {
+        Ok(entries) => entries,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(Vec::new()),
+        Err(e) => return Err(io_err(dir, e)),
+    };
+    let mut out: Vec<PathBuf> = Vec::new();
+    for entry in entries {
+        let path = entry.map_err(|e| io_err(dir, e))?.path();
+        let is_segment = path.extension().and_then(|e| e.to_str()) == Some(super::SEALED_EXT);
+        if is_segment {
+            out.push(path);
+        }
+    }
+    out.sort();
+    Ok(out)
 }
 
-/// The declaration for ONE generation: `schema-v<N>.json`, where `N` is the number the
-/// bytes say they were written under (the segment header's `layout_version`).
+/// The declaration for ONE generation, read from the segment that carries it.
 ///
-/// This is the per-segment half of ADR-0056 §5's "a replay reads each op under the version
-/// it was written with". A generation whose sidecar is not beside it is a stop: the bytes
-/// are readable and their columns would be invented, and no neighbouring declaration may
-/// stand in for the missing one — that is how a row gets read as the wrong shape.
-pub fn sidecar_of(dir: &Path, generation: u8) -> Result<CollectionSchema> {
-    let all = sidecars(dir)?;
-    let Some((_, path)) = all.iter().find(|(v, _)| *v == generation) else {
-        let names: Vec<String> = all
-            .iter()
-            .filter_map(|(_, p)| p.file_name().map(|n| n.to_string_lossy().into_owned()))
-            .collect();
-        return Err(corrupt(
-            dir,
-            &format!(
-                "layout {generation}: no sidecar — expected {} beside the segments \
-                 (found {names:?})",
-                super::sidecar_name(generation)
-            ),
-        ));
-    };
-    read_sidecar(path)
+/// Every segment header holds the schema (ADR-0074 §2), so the answer travels with the file
+/// that needs it: a generation whose segment is not in the directory has no declaration, and
+/// no neighbouring generation may stand in for it — that is how a row gets read as the wrong
+/// shape.
+pub fn declaration_of(dir: &Path, generation: u8) -> Result<CollectionSchema> {
+    let files = segment_files(dir)?;
+    for path in &files {
+        let info = super::segment_info(path)?;
+        if info.meta.layout_version == generation {
+            return declaration_in(path, &info.meta.schema);
+        }
+    }
+    Err(corrupt(
+        dir,
+        &format!("layout {generation}: no segment in this directory declares it"),
+    ))
 }
 
-/// The NEWEST declaration a directory carries: the one a store built today is written
-/// under, and therefore the one a replay's target is declared with. Not the same question
-/// as [`sidecar_of`] — reading history asks per segment, building a store asks for the
-/// latest.
-pub fn load_sidecar(dir: &Path) -> Result<CollectionSchema> {
-    let found = sidecars(dir)?;
-    let Some((_, path)) = found.last() else {
+/// The NEWEST declaration a directory carries: the one a store built today is written under,
+/// and therefore the one a replay's target is declared with. Not the same question as
+/// [`declaration_of`] — reading history asks per segment, building a store asks for the latest.
+pub fn load_declaration(dir: &Path) -> Result<CollectionSchema> {
+    let files = segment_files(dir)?;
+    let Some(path) = files.last() else {
         return Err(corrupt(
             dir,
-            "no schema sidecar — nothing can turn these bytes into columns",
+            "no segments — nothing can turn these bytes into columns",
         ));
     };
-    read_sidecar(path)
+    let info = super::segment_info(path)?;
+    declaration_in(path, &info.meta.schema)
 }
 
-/// Parse one sidecar. A sidecar that does not parse is a stop: the bytes are readable
-/// and the columns would be invented.
-fn read_sidecar(path: &Path) -> Result<CollectionSchema> {
-    let text = std::fs::read_to_string(path).map_err(|e| io_err(path, e))?;
-    serde_json::from_str(&text).map_err(|e| Error::Changelog {
-        what: format!("{}: sidecar: {e}", path.display()),
-    })
+/// Decode the schema bytes a header carries. Empty means the file was written before the
+/// declaration rode in the header — a stop, not a guess.
+fn declaration_in(path: &Path, bytes: &[u8]) -> Result<CollectionSchema> {
+    if bytes.is_empty() {
+        return Err(corrupt(
+            path,
+            "this segment carries no declaration (written before ADR-0074)",
+        ));
+    }
+    Ok(CollectionSchema::decode(bytes))
 }
 
 /// `key = header + slot + suffix`. The slot is one byte on the fixed faces and two

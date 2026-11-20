@@ -63,7 +63,7 @@ fn document(label: &str) -> Dict {
 #[test]
 fn the_dynamic_stamp_is_the_row_the_typed_path_writes() {
     let typed_store = TestStore::default();
-    let typed = <MetaRow as Document>::collection(typed_store.clone());
+    let typed = <MetaRow as Document>::open(typed_store.clone()).unwrap();
     let typed_meta = typed.ensure_layout().unwrap();
     assert!(
         typed_meta.faces().is_some(),
@@ -88,7 +88,7 @@ fn the_dynamic_stamp_is_the_row_the_typed_path_writes() {
 fn either_mode_answers_the_other_modes_stamp() {
     let store = TestStore::default();
     dynamic(store.clone()).ensure_layout().unwrap();
-    let typed = <MetaRow as Document>::collection(store.clone());
+    let typed = <MetaRow as Document>::open(store.clone()).unwrap();
     assert_eq!(
         typed.ensure_layout().unwrap().faces(),
         Some(MetaRow::FACES),
@@ -96,7 +96,7 @@ fn either_mode_answers_the_other_modes_stamp() {
     );
 
     let store = TestStore::default();
-    let typed = <MetaRow as Document>::collection(store.clone());
+    let typed = <MetaRow as Document>::open(store.clone()).unwrap();
     typed.ensure_layout().unwrap();
     assert_eq!(
         dynamic(store.clone()).ensure_layout().unwrap().faces(),

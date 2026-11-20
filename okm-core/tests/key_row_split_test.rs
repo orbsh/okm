@@ -88,7 +88,7 @@ fn map_of(pairs: &[(&str, Variant)]) -> Dict {
 #[test]
 fn a_name_may_live_in_the_key_and_in_the_payload() {
     let store = TestStore::default();
-    let table = <Profile as Document>::collection(store.clone());
+    let table = <Profile as Document>::open(store.clone()).unwrap();
     // The address says 101; the payload says 999. Both are legal and unrelated.
     table
         .put(
@@ -100,10 +100,10 @@ fn a_name_may_live_in_the_key_and_in_the_payload() {
         )
         .unwrap();
 
-    let row = table.get_row(&key(101)).unwrap().unwrap();
+    let row = table.get_row(&key(101)).unwrap();
     assert_eq!(row.user_id, 999, "the payload copy is its own field");
     assert!(
-        table.get_row(&key(999)).unwrap().is_none(),
+        !table.has_row(&key(999)).unwrap(),
         "the key's value still addresses"
     );
 
@@ -118,8 +118,8 @@ fn a_name_may_live_in_the_key_and_in_the_payload() {
 #[test]
 fn the_same_key_type_addresses_a_side_table() {
     let store = TestStore::default();
-    let main = <Profile as Document>::collection(store.clone());
-    let side = <ProfileStats as Document>::collection(store.clone());
+    let main = <Profile as Document>::open(store.clone()).unwrap();
+    let side = <ProfileStats as Document>::open(store.clone()).unwrap();
     let k = key(42);
 
     main.put(
@@ -143,14 +143,14 @@ fn the_same_key_type_addresses_a_side_table() {
         "the key payload is the same bytes by construction"
     );
 
-    assert_eq!(main.get_row(&k).unwrap().unwrap().bio, "hello");
-    assert_eq!(side.get_row(&k).unwrap().unwrap().views, 3);
+    assert_eq!(main.get_row(&k).unwrap().bio, "hello");
+    assert_eq!(side.get_row(&k).unwrap().views, 3);
 }
 
 #[test]
 fn a_map_name_that_matches_a_payload_field_writes_the_row() {
     let store = TestStore::default();
-    let table = <Profile as Document>::collection(store.clone());
+    let table = <Profile as Document>::open(store.clone()).unwrap();
     let k = key(7);
     table
         .put(
@@ -168,7 +168,7 @@ fn a_map_name_that_matches_a_payload_field_writes_the_row() {
         .put(&k, &Variant::Map(map_of(&[("user_id", Variant::U64(50))])))
         .unwrap();
 
-    let row = table.get_row(&k).unwrap().unwrap();
+    let row = table.get_row(&k).unwrap();
     assert_eq!(row.user_id, 50);
     assert_eq!(row.bio, "a", "other payload fields are untouched");
 

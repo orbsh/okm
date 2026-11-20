@@ -48,7 +48,7 @@ fn status_reports_the_log_and_compact_checkpoints_it() {
             compact: None,
             ..ChangelogConfig::new(log.path())
         };
-        let app = Collection::<_, RowKey, Row>::captured(ChangelogStore::new(store, cfg)).unwrap();
+        let app = Collection::<_, RowKey, Row>::open(ChangelogStore::new(store, cfg)).unwrap();
         for id in 0..6 {
             app.put(
                 &RowKey { id },
@@ -106,10 +106,10 @@ fn status_reports_the_log_and_compact_checkpoints_it() {
     let restored_dir = tempfile::tempdir().unwrap();
     let target = FjallStore::open(restored_dir.path(), "okm").unwrap();
     apply_log(log.path(), &header, &target, None).unwrap();
-    let restored = Collection::<_, RowKey, Row>::new(target);
+    let restored = Collection::<_, RowKey, Row>::open(target).unwrap();
     for id in 0..6 {
         assert_eq!(
-            restored.get_row(&RowKey { id }).unwrap().unwrap().title,
+            restored.get_row(&RowKey { id }).unwrap().title,
             format!("row {id}")
         );
     }

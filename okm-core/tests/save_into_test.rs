@@ -68,7 +68,7 @@ pub struct AuthorPostRow {
 fn a_batch_defers_until_commit() {
     let store = TestStore::slatedb_mem();
     let mut batch = okm_core::Batch::default();
-    let t: Collection<TestStore, PostKey, Post> = Collection::new(store.clone());
+    let t: Collection<TestStore, PostKey, Post> = Collection::open(store.clone()).unwrap();
 
     // Building the batch writes nothing: it is ops in memory until the commit.
     t.save_with_prev_into(
@@ -82,15 +82,15 @@ fn a_batch_defers_until_commit() {
     )
     .unwrap();
     assert!(
-        t.get_row(&PostKey { id: 1 }).unwrap().is_none(),
+        !t.has_row(&PostKey { id: 1 }).unwrap(),
         "an uncommitted batch must not write"
     );
 
     // Commit: primary + index entries land together.
     store.commit_batch(batch).expect("commit");
-    let t2: Collection<TestStore, PostKey, Post> = Collection::new(store.clone());
+    let t2: Collection<TestStore, PostKey, Post> = Collection::open(store.clone()).unwrap();
     assert!(
-        t2.get_row(&PostKey { id: 1 }).unwrap().is_some(),
+        t2.has_row(&PostKey { id: 1 }).unwrap(),
         "document lands at commit"
     );
 }
@@ -102,7 +102,7 @@ fn cross_collection_one_batch() {
     let mut batch = okm_core::Batch::default();
 
     {
-        let t: Collection<TestStore, PostKey, Post> = Collection::new(store.clone());
+        let t: Collection<TestStore, PostKey, Post> = Collection::open(store.clone()).unwrap();
         t.save_with_prev_into(
             &mut batch,
             &PostKey { id: 1 },
@@ -114,7 +114,7 @@ fn cross_collection_one_batch() {
         )
         .unwrap();
         let edges: Collection<TestStore, AuthorPostKey, AuthorPostRow> =
-            Collection::new(store.clone());
+            Collection::open(store.clone()).unwrap();
         edges
             .save_with_prev_into(
                 &mut batch,
@@ -131,13 +131,14 @@ fn cross_collection_one_batch() {
     store.commit_batch(batch).expect("commit");
 
     // Both landed through the ONE committed store instance.
-    let t: Collection<TestStore, PostKey, Post> = Collection::new(store.clone());
+    let t: Collection<TestStore, PostKey, Post> = Collection::open(store.clone()).unwrap();
     let scanned = t
         .scan::<Post_ByAuthor>(&7u64.to_be_bytes())
         .collect::<okm_core::error::Result<Vec<_>>>()
         .unwrap();
     assert_eq!(scanned.len(), 1);
-    let edges: Collection<TestStore, AuthorPostKey, AuthorPostRow> = Collection::new(store);
+    let edges: Collection<TestStore, AuthorPostKey, AuthorPostRow> =
+        Collection::open(store).unwrap();
     let probe = okm_core::PrefixProbe::<AuthorPostKey>::new(7u64.to_be_bytes().to_vec());
     let keys: Vec<AuthorPostKey> = edges.scan_keys(&probe).map(|k| k.unwrap()).collect();
     assert_eq!(keys.len(), 1);
@@ -188,7 +189,7 @@ fn same_group_twice_in_one_batch_accumulates() {
     // The double-count the ADR removes: without read-through both writes
     // would fold from the pre-batch accumulator and the group would end at 1.
     let store = TestStore::slatedb_mem();
-    let t = <Entry as Document>::collection(store.clone());
+    let t = <Entry as Document>::open(store.clone()).unwrap();
     let mut batch = okm_core::Batch::default();
 
     let (k1, r1) = entry(1, 7, 10);
@@ -211,7 +212,7 @@ fn overwrite_in_one_batch_reads_the_pending_old_row() {
     // prev = None reads through the adapter, so the row THIS batch produced
     // is the old row: its fold is undone before the new fold lands.
     let store = TestStore::slatedb_mem();
-    let t = <Entry as Document>::collection(store.clone());
+    let t = <Entry as Document>::open(store.clone()).unwrap();
     let (k, v1) = entry(1, 7, 10);
     let v2 = Entry {
         account: 8,
@@ -244,7 +245,7 @@ fn overwrite_in_one_batch_reads_the_pending_old_row() {
 fn caller_supplied_prev_drives_the_unfold_and_the_cleanup() {
     // The common shape: the caller already read the old row in a prior batch.
     let store = TestStore::slatedb_mem();
-    let t = <Entry as Document>::collection(store.clone());
+    let t = <Entry as Document>::open(store.clone()).unwrap();
     let (k, v1) = entry(1, 7, 10);
 
     let mut batch = okm_core::Batch::default();
@@ -274,7 +275,7 @@ fn caller_supplied_prev_drives_the_unfold_and_the_cleanup() {
 #[test]
 fn an_uncommitted_batch_moves_neither_the_row_nor_the_ledger() {
     let store = TestStore::slatedb_mem();
-    let t = <Entry as Document>::collection(store.clone());
+    let t = <Entry as Document>::open(store.clone()).unwrap();
     let (k, v1) = entry(1, 7, 1);
     let mut batch = okm_core::Batch::default();
     t.save_with_prev_into(&mut batch, &k, &v1, None).unwrap();
@@ -296,7 +297,7 @@ fn an_uncommitted_batch_moves_neither_the_row_nor_the_ledger() {
 
     assert_eq!(ledger(&t, 7), Some(1), "the unfold never landed");
     assert_eq!(ledger(&t, 8), None, "the fold never landed");
-    assert_eq!(t.get_row(&k).unwrap().expect("row").account, 7);
+    assert_eq!(t.get_row(&k).expect("row").account, 7);
 }
 
 #[test]
@@ -304,8 +305,9 @@ fn atomic_write_and_reduce_in_one_commit() {
     // The ADR's headline: multi-table atomicity AND a ledger, together.
     let store = TestStore::slatedb_mem();
     let mut batch = okm_core::Batch::default();
-    let t = <Entry as Document>::collection(store.clone());
-    let edges: Collection<TestStore, AuthorPostKey, AuthorPostRow> = Collection::new(store.clone());
+    let t = <Entry as Document>::open(store.clone()).unwrap();
+    let edges: Collection<TestStore, AuthorPostKey, AuthorPostRow> =
+        Collection::open(store.clone()).unwrap();
 
     let (k, r) = entry(1, 7, 3);
     t.save_with_prev_into(&mut batch, &k, &r, None).unwrap();
@@ -404,8 +406,9 @@ pub struct Card {
 #[test]
 fn embedded_children_are_written_and_released_in_the_batch() {
     let store = TestStore::slatedb_mem();
-    let cards = <Card as Document>::collection(store.clone());
-    let contacts: Collection<TestStore, ContactKey, Contact> = Collection::new(store.clone());
+    let cards = <Card as Document>::open(store.clone()).unwrap();
+    let contacts: Collection<TestStore, ContactKey, Contact> =
+        Collection::open(store.clone()).unwrap();
     let k = CardKey { id: 1 };
     let c1 = ContactKey {
         card_id: 1,
@@ -435,13 +438,13 @@ fn embedded_children_are_written_and_released_in_the_batch() {
         .unwrap();
     store.commit_batch(batch).expect("commit");
     assert!(
-        contacts.get_row(&c1).unwrap().is_some(),
+        contacts.has_row(&c1).unwrap(),
         "child lands with the parent"
     );
 
     // Overwrite pointing somewhere else: the old child is released in the
     // same batch, exactly as put's overwrite pass does.
-    let old = cards.get_row(&k).expect("store").expect("old card");
+    let old = cards.get_row(&k).expect("old card");
     let mut batch = okm_core::Batch::default();
     cards
         .save_with_prev_into(
@@ -462,13 +465,10 @@ fn embedded_children_are_written_and_released_in_the_batch() {
     store.commit_batch(batch).expect("commit");
 
     assert!(
-        contacts.get_row(&c1).unwrap().is_none(),
+        !contacts.has_row(&c1).unwrap(),
         "the dropped child is released"
     );
-    assert_eq!(
-        contacts.get_row(&c2).unwrap().map(|c| c.number),
-        Some("222".to_string())
-    );
+    assert_eq!(contacts.get_row(&c2).unwrap().number, "222".to_string());
 }
 
 // ---------- vocabulary growth rides the batch (ADR-0032 × ADR-0031) ----------
@@ -495,7 +495,7 @@ pub struct LogRow {
 #[test]
 fn save_with_prev_into_interns_inside_the_batch() {
     let store = TestStore::slatedb_mem();
-    let c = Collection::<_, LogKey, LogRow>::new(store.clone());
+    let c = Collection::<_, LogKey, LogRow>::open(store.clone()).unwrap();
     let k = LogKey { id: 1 };
 
     let row = LogRow {
@@ -512,14 +512,14 @@ fn save_with_prev_into_interns_inside_the_batch() {
     let mut batch = okm_core::Batch::default();
     c.save_with_prev_into(&mut batch, &k, &row, None).unwrap();
     assert!(
-        c.get_row(&k).unwrap().is_none(),
+        !c.has_row(&k).unwrap(),
         "an uncommitted batch moves nothing"
     );
     store.commit_batch(batch).expect("commit");
 
     // After the commit the row reads back with LABELS: the id → label entries
     // travelled in the same batch as the payload.
-    let back = c.get_row(&k).unwrap().expect("row landed");
+    let back = c.get_row(&k).expect("row landed");
     assert_eq!(back.event.as_str(), Some("http.request"));
     assert_eq!(back.status.as_str(), Some("warn"));
     assert_eq!(back.level, 3);
@@ -543,7 +543,7 @@ fn save_with_prev_into_interns_inside_the_batch() {
     .unwrap();
     store.commit_batch(batch).expect("commit");
 
-    let second = c.get_row(&LogKey { id: 2 }).unwrap().expect("row landed");
+    let second = c.get_row(&LogKey { id: 2 }).expect("row landed");
     assert_eq!(second.event.as_str(), Some("db.timeout"));
     assert_eq!(second.status.as_str(), Some("error"));
     assert_ne!(
@@ -553,7 +553,7 @@ fn save_with_prev_into_interns_inside_the_batch() {
     );
 
     // And the first row still names both of its own labels.
-    let again = c.get_row(&k).unwrap().expect("row still there");
+    let again = c.get_row(&k).expect("row still there");
     assert_eq!(again.event.as_str(), Some("http.request"));
     assert_eq!(again.status.as_str(), Some("warn"));
 }
@@ -563,7 +563,7 @@ fn save_with_prev_into_interns_inside_the_batch() {
 #[test]
 fn purge_into_defers_until_the_commit() {
     let store = TestStore::slatedb_mem();
-    let t = <Entry as Document>::collection(store.clone());
+    let t = <Entry as Document>::open(store.clone()).unwrap();
     let (k, v) = entry(1, 7, 10);
     t.put(&k, &v).unwrap();
     assert_eq!(ledger(&t, 7), Some(1));
@@ -571,16 +571,13 @@ fn purge_into_defers_until_the_commit() {
     let mut batch = okm_core::Batch::default();
     assert!(t.purge_into(&mut batch, &k).unwrap(), "there was a row");
     assert!(
-        t.get_row(&k).unwrap().is_some(),
+        t.has_row(&k).unwrap(),
         "an uncommitted batch removes nothing"
     );
     assert_eq!(ledger(&t, 7), Some(1), "the fold is still in the store");
 
     t.commit_batch(batch).unwrap();
-    assert!(
-        t.get_row(&k).unwrap().is_none(),
-        "the commit removes the row"
-    );
+    assert!(!t.has_row(&k).unwrap(), "the commit removes the row");
     assert_eq!(ledger(&t, 7), Some(0), "the removal unfolds the ledger");
     assert!(
         t.scan::<Entry_ByAccount>(&7u64.to_be_bytes())
@@ -597,7 +594,7 @@ fn purge_into_reads_the_batch_it_is_building() {
     // answer `false`, and the commit would land a row whose face it never
     // removed and whose fold it never unfolded.
     let store = TestStore::slatedb_mem();
-    let t = <Entry as Document>::collection(store.clone());
+    let t = <Entry as Document>::open(store.clone()).unwrap();
     let (k, v) = entry(1, 7, 10);
     let mut batch = okm_core::Batch::default();
     t.save_with_prev_into(&mut batch, &k, &v, None).unwrap();
@@ -607,7 +604,7 @@ fn purge_into_reads_the_batch_it_is_building() {
     );
     t.commit_batch(batch).unwrap();
 
-    assert!(t.get_row(&k).unwrap().is_none());
+    assert!(!t.has_row(&k).unwrap());
     assert_eq!(ledger(&t, 7), Some(0), "the staged fold was unfolded");
     assert!(
         t.scan::<Entry_ByAccount>(&7u64.to_be_bytes())
@@ -621,7 +618,7 @@ fn purge_into_reads_the_batch_it_is_building() {
 #[test]
 fn purge_into_of_a_missing_key_writes_nothing() {
     let store = TestStore::slatedb_mem();
-    let t = <Entry as Document>::collection(store.clone());
+    let t = <Entry as Document>::open(store.clone()).unwrap();
     let mut batch = okm_core::Batch::default();
     assert!(!t.purge_into(&mut batch, &EntryKey { id: 99 }).unwrap());
     assert!(
@@ -634,8 +631,8 @@ fn purge_into_of_a_missing_key_writes_nothing() {
 #[test]
 fn two_tables_leave_in_one_commit() {
     let store = TestStore::slatedb_mem();
-    let posts: Collection<TestStore, PostKey, Post> = Collection::new(store.clone());
-    let entries = <Entry as Document>::collection(store.clone());
+    let posts: Collection<TestStore, PostKey, Post> = Collection::open(store.clone()).unwrap();
+    let entries = <Entry as Document>::open(store.clone()).unwrap();
     posts
         .put(
             &PostKey { id: 1 },
@@ -652,14 +649,14 @@ fn two_tables_leave_in_one_commit() {
     assert!(posts.purge_into(&mut batch, &PostKey { id: 1 }).unwrap());
     assert!(entries.purge_into(&mut batch, &ek).unwrap());
     assert!(
-        posts.get_row(&PostKey { id: 1 }).unwrap().is_some(),
+        posts.has_row(&PostKey { id: 1 }).unwrap(),
         "the batch owns the removals until it lands"
     );
 
     // ONE commit, through either collection's door.
     posts.commit_batch(batch).unwrap();
-    assert!(posts.get_row(&PostKey { id: 1 }).unwrap().is_none());
-    assert!(entries.get_row(&ek).unwrap().is_none());
+    assert!(!posts.has_row(&PostKey { id: 1 }).unwrap());
+    assert!(!entries.has_row(&ek).unwrap());
     assert!(
         posts
             .scan::<Post_ByAuthor>(&7u64.to_be_bytes())

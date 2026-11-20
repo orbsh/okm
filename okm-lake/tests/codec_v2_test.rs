@@ -145,7 +145,7 @@ fn parquet_roundtrip_with_string_columns() {
     let dir = tempfile::tempdir().unwrap();
     let path = dir.path().join("snapshot.parquet");
 
-    let t1: Collection<TestStore, SKey, SRow> = Collection::new(TestStore::slatedb_mem());
+    let t1: Collection<TestStore, SKey, SRow> = Collection::open(TestStore::slatedb_mem()).unwrap();
     let names = ["", "alice", "多字节 ✓ 名称"];
     for (i, name) in names.iter().enumerate() {
         t1.put(
@@ -164,7 +164,8 @@ fn parquet_roundtrip_with_string_columns() {
     }
     parquet_io::export_parquet(&t1, &path).unwrap();
 
-    let mut t2: Collection<TestStore, SKey, SRow> = Collection::new(TestStore::slatedb_mem());
+    let mut t2: Collection<TestStore, SKey, SRow> =
+        Collection::open(TestStore::slatedb_mem()).unwrap();
     let n = parquet_io::import_parquet(&mut t2, &path).unwrap();
     assert_eq!(n, 3);
     for (i, name) in names.iter().enumerate() {
@@ -173,7 +174,6 @@ fn parquet_roundtrip_with_string_columns() {
                 shard: 1,
                 id: i as u64,
             })
-            .unwrap()
             .expect("document");
         assert_eq!(&r.name, name);
         assert_eq!(r.note, format!("note-{i}"));

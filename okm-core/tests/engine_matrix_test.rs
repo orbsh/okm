@@ -95,11 +95,11 @@ pub struct MRow {
 #[test]
 fn engine_matrix_table_round_trip() {
     for (name, store) in TestStore::matrix() {
-        let t: okm_core::Collection<TestStore, MKey, MRow> = okm_core::Collection::new(store);
+        let t: okm_core::Collection<TestStore, MKey, MRow> =
+            okm_core::Collection::open(store).unwrap();
         t.put(&MKey { id: 7 }, &MRow { score: 55 }).unwrap();
         let back = t
             .get_row(&MKey { id: 7 })
-            .expect("a store read")
             .expect("{name}: document round trip");
         assert_eq!(back.score, 55, "{name}");
         let keys: Vec<MKey> = t

@@ -69,7 +69,7 @@ fn parquet_export_import_roundtrip_restores_rows_and_indexes() {
     let dir = tempfile::tempdir().unwrap();
     let path = dir.path().join("snapshot.parquet");
 
-    let t1: Collection<TestStore, TKey, TRow> = Collection::new(TestStore::slatedb_mem());
+    let t1: Collection<TestStore, TKey, TRow> = Collection::open(TestStore::slatedb_mem()).unwrap();
     for i in 0..5u64 {
         let k = TKey {
             org_id: 1,
@@ -87,7 +87,8 @@ fn parquet_export_import_roundtrip_restores_rows_and_indexes() {
 
     // Import into a FRESH table: document and index entries must both come back
     // (put contract) and the scan over the index must find all 5 rows.
-    let mut t2: Collection<TestStore, TKey, TRow> = Collection::new(TestStore::slatedb_mem());
+    let mut t2: Collection<TestStore, TKey, TRow> =
+        Collection::open(TestStore::slatedb_mem()).unwrap();
     let n = parquet_io::import_parquet(&mut t2, &path).unwrap();
     assert_eq!(n, 5, "restored document count");
 
@@ -96,7 +97,7 @@ fn parquet_export_import_roundtrip_restores_rows_and_indexes() {
             org_id: 1,
             user_id: i,
         };
-        let r = t2.get_row(&k).unwrap().expect("document restored");
+        let r = t2.get_row(&k).expect("document restored");
         assert_eq!(r.reputation, (i * 100) as u32);
         assert_eq!(r.level, (i as u16) + 7);
         assert_eq!(r.tag, [i as u8, 0, 0xFF, 0x42]);
@@ -214,7 +215,7 @@ fn parquet_roundtrip_carries_labels_not_ids() {
 
     let statuses = ["active", "suspended", "active", ""];
     let colors = ["red", "green", "多字节 ✓", "red"];
-    let t1: Collection<TestStore, VKey, VRow> = Collection::new(TestStore::slatedb_mem());
+    let t1: Collection<TestStore, VKey, VRow> = Collection::open(TestStore::slatedb_mem()).unwrap();
     for (i, (s, c)) in statuses.iter().zip(colors.iter()).enumerate() {
         t1.put(
             &VKey { id: i as u64 },
@@ -250,14 +251,12 @@ fn parquet_roundtrip_carries_labels_not_ids() {
 
     // Restore into a FRESH table: labels come back through the destination's own
     // vocabulary (which the import rebuilds), and the restored rows resolve.
-    let mut t2: Collection<TestStore, VKey, VRow> = Collection::new(TestStore::slatedb_mem());
+    let mut t2: Collection<TestStore, VKey, VRow> =
+        Collection::open(TestStore::slatedb_mem()).unwrap();
     let n = parquet_io::import_parquet(&mut t2, &path).unwrap();
     assert_eq!(n, 4);
     for (i, (s, c)) in statuses.iter().zip(colors.iter()).enumerate() {
-        let r = t2
-            .get_row(&VKey { id: i as u64 })
-            .unwrap()
-            .expect("row restored");
+        let r = t2.get_row(&VKey { id: i as u64 }).expect("row restored");
         assert_eq!(r.status.as_str(), Some(*s));
         assert_eq!(r.color.as_str(), Some(*c));
         assert_eq!(r.score, i as u32);
@@ -280,7 +279,7 @@ fn an_unnamed_id_exports_as_null_and_import_refuses_it() {
     // `from_id` names an id directly; the vocabulary was never told about it, so
     // the row carries a value nothing can name (the state the old id-based
     // export→import produced by design).
-    let t1: Collection<TestStore, VKey, VRow> = Collection::new(TestStore::slatedb_mem());
+    let t1: Collection<TestStore, VKey, VRow> = Collection::open(TestStore::slatedb_mem()).unwrap();
     t1.put(
         &VKey { id: 0 },
         &VRow {
@@ -304,7 +303,8 @@ fn an_unnamed_id_exports_as_null_and_import_refuses_it() {
     );
 
     parquet_io::export_parquet(&t1, &path).unwrap();
-    let mut t2: Collection<TestStore, VKey, VRow> = Collection::new(TestStore::slatedb_mem());
+    let mut t2: Collection<TestStore, VKey, VRow> =
+        Collection::open(TestStore::slatedb_mem()).unwrap();
     let err = parquet_io::import_parquet(&mut t2, &path).unwrap_err();
     assert!(
         err.to_string().contains("NULL label"),
@@ -323,7 +323,8 @@ fn parquet_with_variant_restores_both_halves_and_segment_only_documents() {
     let dir = tempfile::tempdir().unwrap();
     let path = dir.path().join("backup.parquet");
 
-    let mut t1: Collection<TestStore, TKey, TRow> = Collection::new(TestStore::slatedb_mem());
+    let mut t1: Collection<TestStore, TKey, TRow> =
+        Collection::open(TestStore::slatedb_mem()).unwrap();
     let with_row = TKey {
         org_id: 1,
         user_id: 1,
@@ -348,30 +349,25 @@ fn parquet_with_variant_restores_both_halves_and_segment_only_documents() {
 
     parquet_io::export_parquet_with_variant(&mut t1, &path).unwrap();
 
-    let mut t2: Collection<TestStore, TKey, TRow> = Collection::new(TestStore::slatedb_mem());
+    let mut t2: Collection<TestStore, TKey, TRow> =
+        Collection::open(TestStore::slatedb_mem()).unwrap();
     let n = parquet_io::import_parquet(&mut t2, &path).unwrap();
     assert_eq!(n, 1, "one document has a row; the other is segment-only");
 
     assert_eq!(
-        t2.get_row(&with_row)
-            .unwrap()
-            .expect("the row came back")
-            .reputation,
+        t2.get_row(&with_row).expect("the row came back").reputation,
         100
     );
     assert_eq!(
         doc_of(&t2, &with_row)
-            .unwrap()
             .expect("the document")
+            .expect("a document is there")
             .get("note"),
         Some(&Variant::Str("hello".into())),
         "the open half came back"
     );
 
-    assert!(
-        t2.get_row(&segment_only).unwrap().is_none(),
-        "no row was invented"
-    );
+    assert!(!t2.has_row(&segment_only).unwrap(), "no row was invented");
     assert_eq!(
         doc_of(&t2, &segment_only)
             .unwrap()

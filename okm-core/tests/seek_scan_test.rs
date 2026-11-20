@@ -223,7 +223,7 @@ fn verify(store: TestStore) {
         inner: store,
         calls: calls.clone(),
     };
-    let col: Collection<_, RowId, Row> = Collection::new(counted);
+    let col: Collection<_, RowId, Row> = Collection::open(counted).unwrap();
 
     for id in 0..ROWS {
         let row = Row {
@@ -398,10 +398,7 @@ fn verify(store: TestStore) {
             0,
             "{name}: an answered entry outside the key set"
         );
-        let row = col
-            .get_row(&id)
-            .unwrap()
-            .expect("an answered key has a row");
+        let row = col.get_row(&id).expect("an answered key has a row");
         assert_eq!(row.tag, tag_of(id.id), "{name}: the row behind the key");
         fetched += 1;
     }
@@ -437,7 +434,7 @@ fn verify(store: TestStore) {
 /// cursor is a real one.
 fn verify_cursor(store: TestStore) {
     let name = store.name();
-    let col: Collection<_, RowId, Row> = Collection::new(store);
+    let col: Collection<_, RowId, Row> = Collection::open(store).unwrap();
     for id in 0..50u64 {
         let row = Row {
             tag: tag_of(id),

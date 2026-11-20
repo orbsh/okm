@@ -83,7 +83,7 @@ fn the_declaration_order_survives_the_hot_cold_split() {
 
 #[test]
 fn the_schema_driven_batch_equals_the_typed_one() {
-    let t: Collection<TestStore, K, R> = Collection::new(TestStore::slatedb_mem());
+    let t: Collection<TestStore, K, R> = Collection::open(TestStore::slatedb_mem()).unwrap();
     let schema = CollectionSchema::of::<K, R>();
     let mut keys: Vec<Vec<u8>> = Vec::new();
     let mut payloads = Vec::new();

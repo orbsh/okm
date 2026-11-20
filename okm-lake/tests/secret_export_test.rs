@@ -38,7 +38,7 @@ pub struct Row {
 
 #[test]
 fn a_secret_column_is_ciphertext_and_a_redacted_one_is_null() {
-    let t: Collection<TestStore, K, Row> = Collection::new(TestStore::slatedb_mem());
+    let t: Collection<TestStore, K, Row> = Collection::open(TestStore::slatedb_mem()).unwrap();
     for id in 1..=3u64 {
         t.put(
             &K { id },

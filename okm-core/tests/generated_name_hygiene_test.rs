@@ -77,9 +77,9 @@ fn key() -> ShadowKey {
 
 #[test]
 fn payload_and_key_round_trip() {
-    let col: Collection<_, ShadowKey, Shadow> = Collection::new(TestStore::default());
+    let col: Collection<_, ShadowKey, Shadow> = Collection::open(TestStore::default()).unwrap();
     col.put(&key(), &row()).unwrap();
-    assert_eq!(col.get_row(&key()).unwrap(), Some(row()));
+    assert_eq!(col.get_row(&key()).unwrap(), row());
 
     // KeyEncode::decode binds one local per key field in the same scope.
     let encoded = key().encode();
@@ -95,7 +95,7 @@ fn the_map_bridge_round_trips() {
 
 #[test]
 fn index_scans_reach_the_hostile_named_fields() {
-    let col: Collection<_, ShadowKey, Shadow> = Collection::new(TestStore::default());
+    let col: Collection<_, ShadowKey, Shadow> = Collection::open(TestStore::default()).unwrap();
     col.put(&key(), &row()).unwrap();
 
     // A typed probe over a field called `b` (the builder method takes that name).
@@ -122,7 +122,7 @@ fn index_scans_reach_the_hostile_named_fields() {
 
 #[test]
 fn the_dynamic_segment_still_takes_unknown_names() {
-    let col: Collection<_, ShadowKey, Shadow> = Collection::new(TestStore::default());
+    let col: Collection<_, ShadowKey, Shadow> = Collection::open(TestStore::default()).unwrap();
     col.put(&key(), &row()).unwrap();
 
     let mut patch = Dict::new();
@@ -130,7 +130,7 @@ fn the_dynamic_segment_still_takes_unknown_names() {
     patch.insert("b".to_string(), Variant::U64(99));
     col.put(&key(), &Variant::Map(patch)).unwrap();
 
-    let stored = col.get_row(&key()).unwrap().unwrap();
+    let stored = col.get_row(&key()).unwrap();
     assert_eq!(stored.b, 99, "a declared name routes to the row");
     assert_eq!(stored.name, "cold", "the rest of the row is untouched");
 }

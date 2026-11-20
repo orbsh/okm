@@ -77,7 +77,7 @@ fn a_log_waiting_for_its_successor(
     a.register::<RowKey, Row>().unwrap();
     a.take_over("A", "/data/a", None, Duration::from_secs(5))
         .unwrap();
-    let a = Collection::<_, RowKey, Row>::captured(a).unwrap();
+    let a = Collection::<_, RowKey, Row>::open(a).unwrap();
     write_a_row(&a, 1);
 
     owner::announce_drain(&dir, "B", "/data/b").unwrap();
@@ -166,9 +166,9 @@ fn a_hook_that_says_no_does_not_undo_the_claim() {
     assert_eq!(claim.state, State::Writing);
 
     // And writing works — what is missing is the routing, not the right to write.
-    let b = Collection::<_, RowKey, Row>::captured(b).unwrap();
+    let b = Collection::<_, RowKey, Row>::open(b).unwrap();
     write_a_row(&b, 2);
-    assert_eq!(b.get_row(&RowKey { id: 2 }).unwrap().unwrap().title, "x");
+    assert_eq!(b.get_row(&RowKey { id: 2 }).unwrap().title, "x");
 }
 
 #[test]

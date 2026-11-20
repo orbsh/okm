@@ -423,14 +423,15 @@ pub trait Document: Sized + Clone {
     /// the emitting collection's monotonic write-batch counter.
     fn __okm_emit_event(_op: crate::subscribe::Op, _epoch: u64, _key: &Self::Key, _row: &Self) {}
 
-    /// Assembly-point constructor: builds the document's `Collection`
-    /// binding this document type to its `#[ok_ref]` key. The key type
-    /// never appears at the call site — it is already pinned by
-    /// `Self::Key`.
-    fn collection<S: VirtualStorage>(
+    /// Assembly-point constructor: builds the document's `Collection` and ATTACHES it
+    /// (ADR-0074 §1) — the store's meta row is written or checked before the caller sees a
+    /// collection, so there is no assembled-but-unattached state to write through, and a
+    /// refusal is an `Err` rather than a later surprise. The key type never appears at the
+    /// call site — it is already pinned by `Self::Key`.
+    fn open<S: VirtualStorage>(
         store: S,
-    ) -> crate::model::document::Collection<S, Self::Key, Self> {
-        crate::model::document::Collection::new(store)
+    ) -> crate::error::Result<crate::model::document::Collection<S, Self::Key, Self>> {
+        crate::model::document::Collection::open(store)
     }
 
     /// The structural faces this declaration owns (ADR-0048): every declared

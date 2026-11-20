@@ -49,25 +49,24 @@ pub struct NoteWithOneMoreIndex {
 #[test]
 fn a_fresh_store_is_stamped_with_its_declarations_faces() {
     let store = TestStore::default();
-    let table = Note::collection(store.clone());
-
-    assert_eq!(
-        table.faces_status().unwrap(),
-        FaceStatus::Unknown {
-            current: Note::FACES
-        },
-        "nothing is stamped before the first-touch verb runs"
-    );
-
-    table.ensure_layout().unwrap();
+    // Assembly attaches (ADR-0074 §1): by the time the caller holds a collection the store has
+    // been stamped, because a constructor that could be skipped is what made "assembled but
+    // never attached" possible in the first place.
+    let table = Note::open(store.clone()).unwrap();
     assert_eq!(table.faces_status().unwrap(), FaceStatus::Match);
     assert!(table.faces_status().unwrap().is_current());
+
+    // The second assembly — every process start — finds the stamp and changes nothing.
+    assert_eq!(
+        Note::open(store).unwrap().faces_status().unwrap(),
+        FaceStatus::Match
+    );
 }
 
 #[test]
 fn a_store_with_no_fingerprint_opens_but_answers_unknown() {
     let store = TestStore::default();
-    let table = Note::collection(store.clone());
+    let table = Note::open(store.clone()).unwrap();
     // A row of THIS generation with no fingerprint: the version matches and the
     // faces were never stamped — an interrupted rebuild looks exactly like this.
     let mut unstamped = TableMeta::new();
@@ -91,7 +90,7 @@ fn a_store_with_no_fingerprint_opens_but_answers_unknown() {
 #[test]
 fn another_declaration_in_the_same_ns_answers_stale() {
     let store = TestStore::default();
-    let one = Note::collection(store.clone());
+    let one = Note::open(store.clone()).unwrap();
     one.ensure_layout().unwrap();
     one.put(
         &NoteKey { id: 1 },
@@ -103,7 +102,7 @@ fn another_declaration_in_the_same_ns_answers_stale() {
     .unwrap();
 
     let two: Collection<_, NoteKey, NoteWithOneMoreIndex> =
-        NoteWithOneMoreIndex::collection(store.clone());
+        NoteWithOneMoreIndex::open(store.clone()).unwrap();
     assert_eq!(
         two.faces_status().unwrap(),
         FaceStatus::Stale {
@@ -121,17 +120,19 @@ fn another_declaration_in_the_same_ns_answers_stale() {
 #[test]
 fn a_declaration_with_more_faces_is_not_the_one_that_stamped_the_store() {
     let store = TestStore::default();
-    Note::collection(store.clone()).ensure_layout().unwrap();
+    Note::open(store.clone()).unwrap().ensure_layout().unwrap();
     assert_ne!(Note::FACES, NoteWithOneMoreIndex::FACES);
     assert!(
-        Note::collection(store.clone())
+        Note::open(store.clone())
+            .unwrap()
             .faces_status()
             .unwrap()
             .is_current(),
         "the declaration that stamped it recognises its own faces"
     );
     assert!(
-        !NoteWithOneMoreIndex::collection(store.clone())
+        !NoteWithOneMoreIndex::open(store.clone())
+            .unwrap()
             .faces_status()
             .unwrap()
             .is_current(),
@@ -156,7 +157,7 @@ fn the_export_carries_the_same_number_the_store_is_stamped_with() {
     // The store agrees, which is what makes the export useful to an outside
     // reader: same number, same verdict.
     let store = TestStore::default();
-    let table = Note::collection(store.clone());
+    let table = Note::open(store.clone()).unwrap();
     table.ensure_layout().unwrap();
     assert_eq!(table.faces_status().unwrap(), FaceStatus::Match);
 }

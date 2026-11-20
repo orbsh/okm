@@ -227,6 +227,10 @@ impl<S: VirtualStorage> DynamicCollection<S> {
                 Some(_) => {}
                 None => {
                     meta.set(okm_core::meta::TABLE, self.schema.name.as_bytes().to_vec());
+                    // The declaration itself, in the same bytes the typed path writes
+                    // (ADR-0074 §2): one format, two modes — a dynamic table's store is as
+                    // self-describing as a derived one's.
+                    meta.set(okm_core::meta::SCHEMA, self.schema.encode());
                     changed = true;
                 }
             }

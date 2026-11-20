@@ -67,11 +67,11 @@ pub struct Org {
 #[test]
 fn two_level_embed_roundtrip() {
     let orgs: okm_core::Collection<TestStore, OrgKey, Org> =
-        okm_core::Collection::new(TestStore::slatedb_mem());
+        okm_core::Collection::open(TestStore::slatedb_mem()).unwrap();
     let depts: okm_core::Collection<TestStore, DeptKey, DeptV2> =
-        okm_core::Collection::new(orgs.store().clone());
+        okm_core::Collection::open(orgs.store().clone()).unwrap();
     let floors: okm_core::Collection<TestStore, FloorKey, Floor> =
-        okm_core::Collection::new(orgs.store().clone());
+        okm_core::Collection::open(orgs.store().clone()).unwrap();
 
     let org_key = OrgKey { org_id: 7 };
     let dept_key = DeptKey {
@@ -100,7 +100,7 @@ fn two_level_embed_roundtrip() {
     orgs.put(&org_key, &org).unwrap();
 
     // Top-level get dereferences the whole chain.
-    let got = orgs.get_row(&org_key).expect("store").expect("org");
+    let got = orgs.get_row(&org_key).expect("org");
     let hq = got.hq.value.expect("dept dereferenced");
     assert_eq!(hq.name, "platform");
     let fl = hq.main_floor.value.expect("floor dereferenced");
@@ -115,10 +115,10 @@ fn two_level_embed_roundtrip() {
     depts.put(&dept_key, &dept2).unwrap();
     assert_eq!(
         floors.get_row(&floor_key).unwrap(),
-        Some(Floor { room_count: 20 })
+        Floor { room_count: 20 }
     );
     // And the org still dereferences to the updated dept.
-    let got2 = orgs.get_row(&org_key).expect("store").expect("org2");
+    let got2 = orgs.get_row(&org_key).expect("org2");
     let hq2 = got2.hq.value.expect("dept2");
     assert_eq!(hq2.main_floor.value.expect("floor2").room_count, 20);
 }

@@ -170,7 +170,8 @@ fn dynamic_encode_equals_rust_derive_bytes() {
 #[test]
 fn rust_write_dynamic_read_and_reverse() {
     let schema = CollectionSchema::of::<UserKey, User>();
-    let t: Collection<TestStore, UserKey, User> = Collection::new(TestStore::slatedb_mem());
+    let t: Collection<TestStore, UserKey, User> =
+        Collection::open(TestStore::slatedb_mem()).unwrap();
     let key = UserKey {
         org_id: 1,
         user_id: 2,
@@ -188,7 +189,11 @@ fn rust_write_dynamic_read_and_reverse() {
     // Rust wrote; dynamic reads through schema + the SAME physical bytes
     // (primary entry value = payload; primary key suffix = key encoding).
     let pkey = t.primary_key(&key);
-    let payload_bytes = t.store().get(&pkey).unwrap().expect("rust write landed");
+    let payload_bytes = t
+        .store()
+        .get(&pkey)
+        .expect("rust write landed")
+        .expect("the primary entry holds a payload");
     let values = decode_payload(&schema, &payload_bytes).expect("dynamic payload decode");
     assert_eq!(values.get("level"), Some(&Value::U32(4)));
     assert_eq!(values.get("score"), Some(&Value::U16(77)));
@@ -216,7 +221,6 @@ fn rust_write_dynamic_read_and_reverse() {
     t.put(&rust_key, &rust_decoded).unwrap();
     let document = t
         .get_row(&rust_key)
-        .unwrap()
         .expect("rust reads dynamic-encoded bytes");
     assert_eq!(document.name, "alice");
     assert_eq!(document.level, 9);
@@ -340,7 +344,8 @@ fn defaults_are_data_and_a_hot_append_is_a_generation_break() {
 fn a_key_name_in_a_map_is_a_value_field_in_both_modes() {
     use okm_value::Variant;
 
-    let typed: Collection<TestStore, UserKey, User> = Collection::new(TestStore::slatedb_mem());
+    let typed: Collection<TestStore, UserKey, User> =
+        Collection::open(TestStore::slatedb_mem()).unwrap();
     let dynamic = okm_dynamic::DynamicCollection::new(
         TestStore::slatedb_mem(),
         41,
@@ -364,10 +369,7 @@ fn a_key_name_in_a_map_is_a_value_field_in_both_modes() {
 
     // No payload name was given, so no row is written on either side: the value
     // stands alone, addressed by the pkey.
-    assert!(
-        typed.get_row(&key).unwrap().is_none(),
-        "no payload name = no row"
-    );
+    assert!(!typed.has_row(&key).unwrap(), "no payload name = no row");
     assert!(
         doc_of(&typed, &key)
             .unwrap()
@@ -405,7 +407,8 @@ fn a_key_name_in_a_map_is_a_value_field_in_both_modes() {
 fn the_two_enumeration_modes_see_the_two_kinds_of_document() {
     use okm_value::Variant;
 
-    let typed: Collection<TestStore, UserKey, User> = Collection::new(TestStore::slatedb_mem());
+    let typed: Collection<TestStore, UserKey, User> =
+        Collection::open(TestStore::slatedb_mem()).unwrap();
     let with_row = UserKey {
         org_id: 1,
         user_id: 1,
@@ -450,7 +453,11 @@ fn the_two_enumeration_modes_see_the_two_kinds_of_document() {
         .scan_document_keys(&okm_core::PrefixProbe::empty())
         .unwrap()
         .iter()
-        .map(|k| doc_of(&typed, k).unwrap().expect("a document"))
+        .map(|k| {
+            doc_of(&typed, k)
+                .expect("a document")
+                .expect("a fetched one")
+        })
         .collect();
     assert_eq!(docs.len(), 2, "the adapter is a map over keys + fetch");
     assert!(

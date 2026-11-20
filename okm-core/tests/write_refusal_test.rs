@@ -50,6 +50,10 @@ impl RefusingStore {
     }
 
     fn refuse_after(&self, n: usize) {
+        // `n` counts writes from NOW, not from the process start: attach writes the table's
+        // meta row on the way in (ADR-0074 §1), and a test about the write path must not be
+        // measuring the constructor's I/O.
+        self.writes.set(0);
         self.limit.set(Some(n));
     }
 
@@ -107,7 +111,7 @@ pub struct RefuseRow {
 }
 
 fn table() -> Collection<RefusingStore, RefuseKey, RefuseRow> {
-    Collection::new(RefusingStore::new())
+    Collection::open(RefusingStore::new()).unwrap()
 }
 
 /// The claim ADR-0039 makes: a refused commit is a value carrying the engine's own
@@ -129,7 +133,7 @@ fn a_refused_write_comes_back_as_the_engines_text() {
     // Nothing landed: the primary put is the batch's first op, and it was refused.
     t.store().accept_everything();
     assert!(
-        t.get_row(&RefuseKey { id: 1 }).unwrap().is_none(),
+        !t.has_row(&RefuseKey { id: 1 }).unwrap(),
         "a refused write left a row behind"
     );
 }
@@ -149,7 +153,7 @@ fn a_replayed_batch_leaves_the_ops_before_the_refusal() {
 
     t.store().accept_everything();
     assert!(
-        t.get_row(&RefuseKey { id: 2 }).unwrap().is_some(),
+        t.has_row(&RefuseKey { id: 2 }).unwrap(),
         "the accepted prefix of a replayed batch stays written — that is the boundary"
     );
 }

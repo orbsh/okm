@@ -48,7 +48,8 @@ fn every_point_verb_announces_the_row_it_leaves() {
         true
     });
 
-    let t: Collection<TestStore, AccountKey, Account> = Collection::new(TestStore::slatedb_mem());
+    let t: Collection<TestStore, AccountKey, Account> =
+        Collection::open(TestStore::slatedb_mem()).unwrap();
     let key = AccountKey { id: 1 };
 
     t.put(&key, &Account { balance: 10 }).unwrap();
@@ -72,7 +73,7 @@ fn every_point_verb_announces_the_row_it_leaves() {
     t.put(&key, (&Variant::Map(dmap(&[])),)).unwrap();
     // Nothing left to remove, so nothing announced.
     t.put(&key, (&Variant::Map(dmap(&[])),)).unwrap();
-    assert!(t.get_row(&key).unwrap().is_none());
+    assert!(!t.has_row(&key).unwrap());
 
     t.put(&key, &Account { balance: 40 }).unwrap();
     t.purge(&key).unwrap();

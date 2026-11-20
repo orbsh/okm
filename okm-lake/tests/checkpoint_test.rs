@@ -125,7 +125,7 @@ pub struct R {
 }
 
 fn collection(root: &std::path::Path) -> Collection<ChangelogStore<TestStore>, K, R> {
-    Collection::captured(ChangelogStore::new(
+    Collection::open(ChangelogStore::new(
         TestStore::slatedb_mem(),
         ChangelogConfig::new(root),
     ))

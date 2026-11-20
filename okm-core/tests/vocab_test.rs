@@ -42,14 +42,14 @@ fn row(status: &str, color: &str, n: u32) -> VRow {
 #[test]
 fn labels_round_trip_through_per_field_vocabularies() {
     let store = TestStore::slatedb_mem();
-    let c = Collection::<_, VKey, VRow>::new(store);
+    let c = Collection::<_, VKey, VRow>::open(store).unwrap();
 
     c.put(&VKey { org: 1, id: 1 }, &row("active", "red", 7))
         .unwrap();
     c.put(&VKey { org: 1, id: 2 }, &row("closed", "red", 8))
         .unwrap();
 
-    let a = c.get_row(&VKey { org: 1, id: 1 }).unwrap().unwrap();
+    let a = c.get_row(&VKey { org: 1, id: 1 }).unwrap();
     assert_eq!(a.status.as_str(), Some("active"));
     assert_eq!(a.color.as_str(), Some("red"));
     assert_eq!(a.n, 7);
@@ -57,7 +57,7 @@ fn labels_round_trip_through_per_field_vocabularies() {
     assert_eq!(a.status.id(), Some(0u8));
     assert_eq!(a.color.id(), Some(0u16));
 
-    let b = c.get_row(&VKey { org: 1, id: 2 }).unwrap().unwrap();
+    let b = c.get_row(&VKey { org: 1, id: 2 }).unwrap();
     assert_eq!(b.status.as_str(), Some("closed"));
     assert_eq!(b.status.id(), Some(1u8), "second label in the status field");
     assert_eq!(
@@ -81,7 +81,7 @@ fn labels_round_trip_through_per_field_vocabularies() {
     let mut d = VRow::try_from_map(&m).unwrap();
     d.status = Vocab::of("suspended");
     c.put(&VKey { org: 1, id: 3 }, &d).unwrap();
-    let e = c.get_row(&VKey { org: 1, id: 3 }).unwrap().unwrap();
+    let e = c.get_row(&VKey { org: 1, id: 3 }).unwrap();
     assert_eq!(e.status.as_str(), Some("suspended"));
     assert_eq!(e.status.id(), Some(2u8));
     assert_eq!(
@@ -142,7 +142,7 @@ impl VirtualStorage for NoScan {
 
 #[test]
 fn a_put_on_a_categorical_table_never_scans() {
-    let c = Collection::<_, VKey, VRow>::new(NoScan(TestStore::slatedb_mem()));
+    let c = Collection::<_, VKey, VRow>::open(NoScan(TestStore::slatedb_mem())).unwrap();
 
     // First write allocates two labels; the second reuses them (label-face
     // probe); the third allocates two more through the cursor.
@@ -153,7 +153,7 @@ fn a_put_on_a_categorical_table_never_scans() {
     c.put(&VKey { org: 1, id: 2 }, &row("closed", "blue", 3))
         .unwrap();
 
-    let two = c.get_row(&VKey { org: 1, id: 2 }).unwrap().expect("row");
+    let two = c.get_row(&VKey { org: 1, id: 2 }).expect("row");
     assert_eq!(two.status.as_str(), Some("closed"));
     assert_eq!(two.color.as_str(), Some("blue"));
     assert_eq!(
@@ -227,7 +227,7 @@ impl VirtualStorage for VocabProbes {
 #[test]
 fn a_label_is_probed_once_per_handle_not_once_per_document() {
     let store = VocabProbes::default();
-    let c = Collection::<_, VKey, VRow>::new(store.clone());
+    let c = Collection::<_, VKey, VRow>::open(store.clone()).unwrap();
 
     // First sighting costs the probes: the cursor, the label, the id.
     c.put(&VKey { org: 1, id: 1 }, &row("admin", "red", 1))
@@ -248,7 +248,7 @@ fn a_label_is_probed_once_per_handle_not_once_per_document() {
 
     // A second HANDLE over the same store starts empty: the cache is the
     // collection's, and there is nothing global to inherit from.
-    let fresh = Collection::<_, VKey, VRow>::new(store.clone());
+    let fresh = Collection::<_, VKey, VRow>::open(store.clone()).unwrap();
     store.reset();
     fresh
         .put(&VKey { org: 1, id: 3 }, &row("admin", "red", 3))

@@ -69,7 +69,7 @@ fn the_successor_asks_applies_and_then_claims() {
         Role::First,
         "nothing claimed the log yet"
     );
-    let holder = Collection::<_, RowKey, Row>::captured(holder_store).unwrap();
+    let holder = Collection::<_, RowKey, Row>::open(holder_store).unwrap();
     write(&holder, 1, "one");
     write(&holder, 2, "two");
 
@@ -102,22 +102,13 @@ fn the_successor_asks_applies_and_then_claims() {
     assert_eq!(claim.state, State::Writing);
     assert_eq!(claim.data, "/data/b");
 
-    let successor = Collection::<_, RowKey, Row>::captured(successor_store).unwrap();
-    assert_eq!(
-        successor.get_row(&RowKey { id: 1 }).unwrap().unwrap().title,
-        "one"
-    );
-    assert_eq!(
-        successor.get_row(&RowKey { id: 2 }).unwrap().unwrap().title,
-        "two"
-    );
+    let successor = Collection::<_, RowKey, Row>::open(successor_store).unwrap();
+    assert_eq!(successor.get_row(&RowKey { id: 1 }).unwrap().title, "one");
+    assert_eq!(successor.get_row(&RowKey { id: 2 }).unwrap().title, "two");
 
     // And it keeps writing to the same log, above what A left behind.
     write(&successor, 3, "three");
-    assert_eq!(
-        successor.get_row(&RowKey { id: 3 }).unwrap().unwrap().title,
-        "three"
-    );
+    assert_eq!(successor.get_row(&RowKey { id: 3 }).unwrap().title, "three");
 }
 
 #[test]
@@ -153,7 +144,7 @@ fn capture_off_opens_nothing_and_writes_nothing() {
         },
     );
     off.register::<RowKey, Row>().unwrap();
-    let app = Collection::<_, RowKey, Row>::captured(off).unwrap();
+    let app = Collection::<_, RowKey, Row>::open(off).unwrap();
     write(&app, 1, "one");
 
     assert_eq!(app.store().dir(), None, "no root, so nothing to open");
@@ -167,8 +158,5 @@ fn capture_off_opens_nothing_and_writes_nothing() {
         "the log directory is untouched"
     );
     // The write itself still happened: capture is a hint, the store is the record.
-    assert_eq!(
-        app.get_row(&RowKey { id: 1 }).unwrap().unwrap().title,
-        "one"
-    );
+    assert_eq!(app.get_row(&RowKey { id: 1 }).unwrap().title, "one");
 }

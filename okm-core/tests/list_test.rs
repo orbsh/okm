@@ -40,9 +40,9 @@ pub struct DeptKey {
 #[test]
 fn list_roundtrip_and_stale_release() {
     let depts: okm_core::Collection<TestStore, DeptKey, Dept> =
-        okm_core::Collection::new(TestStore::slatedb_mem());
+        okm_core::Collection::open(TestStore::slatedb_mem()).unwrap();
     let rooms: okm_core::Collection<TestStore, RoomKey, Room> =
-        okm_core::Collection::new(depts.store().clone());
+        okm_core::Collection::open(depts.store().clone()).unwrap();
 
     let dept_key = DeptKey { dept_id: 1 };
     let k1 = RoomKey { dept_id: 1, seq: 1 };
@@ -73,9 +73,9 @@ fn list_roundtrip_and_stale_release() {
         )
         .unwrap();
     for k in [&k1, &k2, &k3] {
-        assert!(rooms.get_row(k).unwrap().is_some(), "child written");
+        assert!(rooms.has_row(k).unwrap(), "child written");
     }
-    let d = depts.get_row(&dept_key).expect("store").expect("dept");
+    let d = depts.get_row(&dept_key).expect("dept");
     assert_eq!(d.rooms.values.len(), 3);
     assert_eq!(d.rooms.values[0].as_ref().unwrap().label, "alpha");
     assert_eq!(d.rooms.values[2].as_ref().unwrap().label, "gamma");
@@ -100,11 +100,8 @@ fn list_roundtrip_and_stale_release() {
             },
         )
         .unwrap();
-    assert!(
-        rooms.get_row(&k3).unwrap().is_none(),
-        "stale child released"
-    );
-    assert_eq!(rooms.get_row(&k2).unwrap().unwrap().label, "beta2");
+    assert!(!rooms.has_row(&k3).unwrap(), "stale child released");
+    assert_eq!(rooms.get_row(&k2).unwrap().label, "beta2");
 
     // Reference-only: list of keys, children untouched.
     depts
@@ -116,12 +113,12 @@ fn list_roundtrip_and_stale_release() {
             },
         )
         .unwrap();
-    assert_eq!(rooms.get_row(&k1).unwrap().unwrap().label, "alpha");
-    assert!(rooms.get_row(&k2).unwrap().is_some());
+    assert_eq!(rooms.get_row(&k1).unwrap().label, "alpha");
+    assert!(rooms.has_row(&k2).unwrap());
 
     // Dangling reference reads back as None.
     rooms.purge(&k1).unwrap();
-    let d2 = depts.get_row(&dept_key).expect("store").expect("dept2");
+    let d2 = depts.get_row(&dept_key).expect("dept2");
     assert!(d2.rooms.values[0].is_none(), "dangling -> None");
     assert!(d2.rooms.values[1].is_some());
 }
