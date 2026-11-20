@@ -679,3 +679,449 @@ mod serde_impls {
         }
     }
 }
+
+// ---------------------------------------------------------------------------
+// The binary form (ADR-0074 §2)
+// ---------------------------------------------------------------------------
+
+/// Format byte of the schema record itself — NOT the table's `layout_version`.
+///
+/// Two different questions: `layout_version` says which payload shape a store was written
+/// in (ADR-0042); this byte says which encoding the *description* is in. A reader that does
+/// not know the number cannot decode far enough to compare anything, which is why "just
+/// compare the bytes" cannot replace it — and why the two failures a human actually cares
+/// about (another build's encoder vs. a declaration that disagrees with the store) stay
+/// distinguishable in the error.
+pub const SCHEMA_FORMAT: u8 = 1;
+
+impl CollectionSchema {
+    /// This declaration as bytes, in the crate's own codec family: `put_len` for every
+    /// length, big-endian for fixed-width numbers, and no serde anywhere on the path.
+    pub fn encode(&self) -> Vec<u8> {
+        bin::encode(self)
+    }
+
+    /// The inverse. Panics on bytes this build could not have written (ADR-0040) instead of
+    /// parsing forgivingly: a truncated field list or an unknown type tag is a bug or a
+    /// foreign build, never data to be guessed at.
+    pub fn decode(bytes: &[u8]) -> Self {
+        bin::decode(bytes)
+    }
+}
+
+mod bin {
+    use super::{CollectionSchema, DefaultValue, FieldSchema, FieldType, IndexSchema, SlotMap};
+    use crate::model::field::Elem;
+    use crate::model::wrappers::wire::{put_len, take_len};
+
+    fn put_str(buf: &mut Vec<u8>, s: &str) {
+        put_len(buf, s.len());
+        buf.extend_from_slice(s.as_bytes());
+    }
+
+    fn put_bytes(buf: &mut Vec<u8>, b: &[u8]) {
+        put_len(buf, b.len());
+        buf.extend_from_slice(b);
+    }
+
+    fn put_u16(buf: &mut Vec<u8>, v: u16) {
+        buf.extend_from_slice(&v.to_be_bytes());
+    }
+
+    fn field_type_tag(ty: &FieldType) -> u8 {
+        match ty {
+            FieldType::U8 => 0,
+            FieldType::U16 => 1,
+            FieldType::U32 => 2,
+            FieldType::U64 => 3,
+            FieldType::FixedBytes => 4,
+            FieldType::Str => 5,
+            FieldType::Bytes => 6,
+            FieldType::VarInt => 7,
+            FieldType::Quant(_) => 8,
+            FieldType::Vocab(_) => 9,
+            FieldType::Offset(_) => 10,
+            FieldType::Uuid4 => 11,
+            FieldType::Uuid7 => 12,
+            FieldType::Vector(_) => 13,
+        }
+    }
+
+    fn elem_tag(e: Elem) -> u8 {
+        match e {
+            Elem::F32 => 0,
+            Elem::U32 => 1,
+            Elem::I32 => 2,
+            Elem::U64 => 3,
+            Elem::I64 => 4,
+            Elem::Str => 5,
+        }
+    }
+
+    fn encode_field(buf: &mut Vec<u8>, f: &FieldSchema) {
+        put_str(buf, &f.name);
+        buf.push(field_type_tag(&f.ty));
+        match f.ty {
+            FieldType::Quant(scale) => buf.extend_from_slice(&scale.to_be_bytes()),
+            FieldType::Vocab(face) => put_u16(buf, face),
+            FieldType::Offset(base) => buf.extend_from_slice(&base.to_be_bytes()),
+            FieldType::Vector(e) => buf.push(elem_tag(e)),
+            _ => {}
+        }
+        put_len(buf, f.width);
+        put_len(buf, f.offset);
+        match f.tag {
+            Some(t) => {
+                buf.push(1);
+                buf.push(t);
+            }
+            None => buf.push(0),
+        }
+        match &f.default {
+            Some(d) => {
+                buf.push(1);
+                encode_default(buf, d);
+            }
+            None => buf.push(0),
+        }
+        match f.expect_len {
+            Some(n) => {
+                buf.push(1);
+                put_len(buf, n);
+            }
+            None => buf.push(0),
+        }
+    }
+
+    fn encode_default(buf: &mut Vec<u8>, d: &DefaultValue) {
+        match d {
+            DefaultValue::U64(v) => {
+                buf.push(0);
+                buf.extend_from_slice(&v.to_be_bytes());
+            }
+            DefaultValue::I64(v) => {
+                buf.push(1);
+                buf.extend_from_slice(&v.to_be_bytes());
+            }
+            DefaultValue::F64(v) => {
+                buf.push(2);
+                buf.extend_from_slice(&v.to_bits().to_be_bytes());
+            }
+            DefaultValue::Bool(v) => {
+                buf.push(3);
+                buf.push(u8::from(*v));
+            }
+            DefaultValue::Str(v) => {
+                buf.push(4);
+                put_str(buf, v);
+            }
+            DefaultValue::ZeroBytes(n) => {
+                buf.push(5);
+                put_len(buf, *n);
+            }
+        }
+    }
+
+    fn encode_index(buf: &mut Vec<u8>, i: &IndexSchema) {
+        put_str(buf, &i.name);
+        put_u16(buf, i.slot);
+        put_u16(buf, i.fields.len() as u16);
+        for f in &i.fields {
+            put_str(buf, f);
+        }
+        put_u16(buf, i.includes.len() as u16);
+        for f in &i.includes {
+            put_str(buf, f);
+        }
+        put_str(buf, &i.func);
+        buf.push(u8::from(i.deprecated));
+    }
+
+    pub(super) fn encode(s: &CollectionSchema) -> Vec<u8> {
+        let mut buf = Vec::with_capacity(256);
+        buf.push(super::SCHEMA_FORMAT);
+        buf.push(s.layout_version);
+        put_str(&mut buf, &s.name);
+        put_bytes(&mut buf, &s.ns_prefix);
+        put_len(&mut buf, s.key_len);
+        put_u16(&mut buf, s.key_fields.len() as u16);
+        for f in &s.key_fields {
+            encode_field(&mut buf, f);
+        }
+        put_len(&mut buf, s.hot_width);
+        put_u16(&mut buf, s.hot_fields.len() as u16);
+        for f in &s.hot_fields {
+            encode_field(&mut buf, f);
+        }
+        put_u16(&mut buf, s.cold_fields.len() as u16);
+        for f in &s.cold_fields {
+            encode_field(&mut buf, f);
+        }
+        put_u16(&mut buf, s.members.len() as u16);
+        for m in &s.members {
+            put_u16(&mut buf, *m);
+        }
+        put_u16(&mut buf, s.member_widths.len() as u16);
+        for (ns, w) in &s.member_widths {
+            put_u16(&mut buf, *ns);
+            put_len(&mut buf, *w);
+        }
+        for v in [
+            s.slots.primary,
+            s.slots.dynamic,
+            s.slots.field_vocab_id,
+            s.slots.field_vocab_name,
+            s.slots.predicate_vocab_id,
+            s.slots.predicate_vocab_name,
+            s.slots.declared_index_base,
+            s.slots.declared_reduce_base,
+            s.slots.declared_lead_base,
+        ] {
+            put_u16(&mut buf, v);
+        }
+        put_u16(&mut buf, s.indexes.len() as u16);
+        for i in &s.indexes {
+            encode_index(&mut buf, i);
+        }
+        put_bytes(&mut buf, &s.faces);
+        put_u16(&mut buf, s.redacted.len() as u16);
+        for r in &s.redacted {
+            put_str(&mut buf, r);
+        }
+        buf
+    }
+
+    struct Cursor<'a> {
+        b: &'a [u8],
+    }
+
+    impl<'a> Cursor<'a> {
+        fn new(b: &'a [u8]) -> Self {
+            Self { b }
+        }
+
+        fn u8(&mut self) -> u8 {
+            let v = *self.b.first().expect("schema: truncated at a tag byte");
+            self.b = &self.b[1..];
+            v
+        }
+
+        fn u16(&mut self) -> u16 {
+            assert!(self.b.len() >= 2, "schema: truncated at a u16");
+            let v = u16::from_be_bytes([self.b[0], self.b[1]]);
+            self.b = &self.b[2..];
+            v
+        }
+
+        fn len(&mut self) -> usize {
+            let (v, n) = take_len(self.b).expect("schema: truncated at a length");
+            self.b = &self.b[n..];
+            v
+        }
+
+        fn str(&mut self) -> String {
+            let n = self.len();
+            assert!(self.b.len() >= n, "schema: truncated inside a string");
+            let s = String::from_utf8(self.b[..n].to_vec()).expect("schema: name is not UTF-8");
+            self.b = &self.b[n..];
+            s
+        }
+
+        fn bytes(&mut self) -> Vec<u8> {
+            let n = self.len();
+            assert!(self.b.len() >= n, "schema: truncated inside a byte string");
+            let v = self.b[..n].to_vec();
+            self.b = &self.b[n..];
+            v
+        }
+
+        fn opt(&mut self) -> bool {
+            match self.u8() {
+                0 => false,
+                1 => true,
+                other => panic!("schema: option byte {other} is not 0 or 1"),
+            }
+        }
+
+        fn field_type(&mut self) -> FieldType {
+            match self.u8() {
+                0 => FieldType::U8,
+                1 => FieldType::U16,
+                2 => FieldType::U32,
+                3 => FieldType::U64,
+                4 => FieldType::FixedBytes,
+                5 => FieldType::Str,
+                6 => FieldType::Bytes,
+                7 => FieldType::VarInt,
+                8 => {
+                    let n = self.b.len();
+                    assert!(n >= 4, "schema: truncated Quant payload");
+                    let v = u32::from_be_bytes([self.b[0], self.b[1], self.b[2], self.b[3]]);
+                    self.b = &self.b[4..];
+                    FieldType::Quant(v)
+                }
+                9 => FieldType::Vocab(self.u16()),
+                10 => {
+                    let n = self.b.len();
+                    assert!(n >= 8, "schema: truncated Offset payload");
+                    let mut w = [0u8; 8];
+                    w.copy_from_slice(&self.b[..8]);
+                    self.b = &self.b[8..];
+                    FieldType::Offset(i64::from_be_bytes(w))
+                }
+                11 => FieldType::Uuid4,
+                12 => FieldType::Uuid7,
+                13 => FieldType::Vector(match self.u8() {
+                    0 => Elem::F32,
+                    1 => Elem::U32,
+                    2 => Elem::I32,
+                    3 => Elem::U64,
+                    4 => Elem::I64,
+                    5 => Elem::Str,
+                    other => panic!("schema: vector element tag {other} is not a declared kind"),
+                }),
+                other => panic!("schema: field type tag {other} is not a declared kind"),
+            }
+        }
+
+        fn default_value(&mut self) -> DefaultValue {
+            match self.u8() {
+                0 => {
+                    let n = self.b.len();
+                    assert!(n >= 8, "schema: truncated u64 default");
+                    let mut w = [0u8; 8];
+                    w.copy_from_slice(&self.b[..8]);
+                    self.b = &self.b[8..];
+                    DefaultValue::U64(u64::from_be_bytes(w))
+                }
+                1 => {
+                    let n = self.b.len();
+                    assert!(n >= 8, "schema: truncated i64 default");
+                    let mut w = [0u8; 8];
+                    w.copy_from_slice(&self.b[..8]);
+                    self.b = &self.b[8..];
+                    DefaultValue::I64(i64::from_be_bytes(w))
+                }
+                2 => {
+                    let n = self.b.len();
+                    assert!(n >= 8, "schema: truncated f64 default");
+                    let mut w = [0u8; 8];
+                    w.copy_from_slice(&self.b[..8]);
+                    self.b = &self.b[8..];
+                    DefaultValue::F64(f64::from_bits(u64::from_be_bytes(w)))
+                }
+                3 => DefaultValue::Bool(self.u8() != 0),
+                4 => DefaultValue::Str(self.str()),
+                5 => DefaultValue::ZeroBytes(self.len()),
+                other => panic!("schema: default tag {other} is not a declared kind"),
+            }
+        }
+
+        fn field(&mut self) -> FieldSchema {
+            let name = self.str();
+            let ty = self.field_type();
+            let width = self.len();
+            let offset = self.len();
+            let tag = if self.opt() { Some(self.u8()) } else { None };
+            let default = if self.opt() {
+                Some(self.default_value())
+            } else {
+                None
+            };
+            let expect_len = if self.opt() { Some(self.len()) } else { None };
+            FieldSchema {
+                name,
+                ty,
+                width,
+                offset,
+                tag,
+                default,
+                expect_len,
+            }
+        }
+
+        fn fields(&mut self) -> Vec<FieldSchema> {
+            let n = self.u16() as usize;
+            (0..n).map(|_| self.field()).collect()
+        }
+
+        fn index(&mut self) -> IndexSchema {
+            let name = self.str();
+            let slot = self.u16();
+            let n = self.u16() as usize;
+            let fields: Vec<String> = (0..n).map(|_| self.str()).collect();
+            let n = self.u16() as usize;
+            let includes: Vec<String> = (0..n).map(|_| self.str()).collect();
+            let func = self.str();
+            let deprecated = self.u8() != 0;
+            IndexSchema {
+                name,
+                slot,
+                fields,
+                includes,
+                func,
+                deprecated,
+            }
+        }
+    }
+
+    pub(super) fn decode(bytes: &[u8]) -> CollectionSchema {
+        let mut c = Cursor::new(bytes);
+        let fmt = c.u8();
+        assert_eq!(
+            fmt,
+            super::SCHEMA_FORMAT,
+            "schema: format {fmt}, this build writes {}",
+            super::SCHEMA_FORMAT
+        );
+        let layout_version = c.u8();
+        let name = c.str();
+        let ns_prefix = c.bytes();
+        let key_len = c.len();
+        let key_fields = c.fields();
+        let hot_width = c.len();
+        let hot_fields = c.fields();
+        let cold_fields = c.fields();
+        let n = c.u16() as usize;
+        let members: Vec<u16> = (0..n).map(|_| c.u16()).collect();
+        let n = c.u16() as usize;
+        let member_widths: Vec<(u16, usize)> = (0..n).map(|_| (c.u16(), c.len())).collect();
+        let slots = SlotMap {
+            primary: c.u16(),
+            dynamic: c.u16(),
+            field_vocab_id: c.u16(),
+            field_vocab_name: c.u16(),
+            predicate_vocab_id: c.u16(),
+            predicate_vocab_name: c.u16(),
+            declared_index_base: c.u16(),
+            declared_reduce_base: c.u16(),
+            declared_lead_base: c.u16(),
+        };
+        let n = c.u16() as usize;
+        let indexes: Vec<IndexSchema> = (0..n).map(|_| c.index()).collect();
+        let faces = c.bytes();
+        let n = c.u16() as usize;
+        let redacted: Vec<String> = (0..n).map(|_| c.str()).collect();
+        assert!(
+            c.b.is_empty(),
+            "schema: {} trailing bytes this build did not write",
+            c.b.len()
+        );
+        CollectionSchema {
+            name,
+            key_len,
+            key_fields,
+            ns_prefix,
+            layout_version,
+            hot_width,
+            hot_fields,
+            cold_fields,
+            members,
+            member_widths,
+            slots,
+            indexes,
+            faces,
+            redacted,
+        }
+    }
+}
