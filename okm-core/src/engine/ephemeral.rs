@@ -1279,7 +1279,7 @@ impl VirtualStorage for EphemeralStore {
     /// or all of it. The trait default would take the lock per op, which for
     /// this engine is a real difference — the ops are already in memory and the
     /// only cost is the guard.
-    fn commit_batch(&self, batch: crate::engine::storage::Batch) -> crate::error::Result<()> {
+    fn commit_batch(&self, batch: &crate::engine::storage::Batch) -> crate::error::Result<()> {
         let mut g = self.write();
         for (key, value) in batch.iter() {
             match value {
@@ -1753,11 +1753,11 @@ mod tests {
             let mut batch = crate::engine::storage::Batch::default();
             batch.put(key(1), b"1".to_vec());
             batch.put(key(1), b"2".to_vec());
-            s.commit_batch(batch).unwrap();
+            s.commit_batch(&batch).unwrap();
             // Reset for the next round, in its own batch.
             let mut reset = crate::engine::storage::Batch::default();
             reset.put(key(1), b"a".to_vec());
-            s.commit_batch(reset).unwrap();
+            s.commit_batch(&reset).unwrap();
             assert_eq!(round, round);
         }
         flag.store(true, Ordering::Relaxed);

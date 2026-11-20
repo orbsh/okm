@@ -127,7 +127,7 @@ pub trait VirtualStorage {
     /// (fjall `Batch`, redb one write txn) override to execute the list
     /// as ONE engine-level atomic unit — the single WAL commit is real,
     /// not a replay.
-    fn commit_batch(&self, batch: Batch) -> crate::error::Result<()> {
+    fn commit_batch(&self, batch: &Batch) -> crate::error::Result<()> {
         for (k, v) in batch.iter() {
             match v {
                 Some(v) => self.put_bytes(k, v)?,
@@ -421,7 +421,7 @@ impl<S: VirtualStorage + ?Sized> VirtualStorage for &S {
         (**self).scan_range(begin, end)
     }
 
-    fn commit_batch(&self, batch: Batch) -> crate::error::Result<()> {
+    fn commit_batch(&self, batch: &Batch) -> crate::error::Result<()> {
         (**self).commit_batch(batch)
     }
 }
@@ -450,6 +450,13 @@ pub struct OpSpan {
 }
 
 impl Batch {
+    /// Empty the op list, KEEPING the buffer: the next write of a collection that owns its
+    /// batch reuses it (ADR-0074 §3 — the buffer is the write's, not the row's).
+    pub fn clear(&mut self) {
+        self.bytes.clear();
+        self.ops.clear();
+    }
+
     pub fn put(&mut self, key: Vec<u8>, value: Vec<u8>) {
         self.put_bytes(&key, &value);
     }

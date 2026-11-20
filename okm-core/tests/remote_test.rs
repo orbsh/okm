@@ -170,7 +170,7 @@ fn commit_batch_is_one_frame_one_commit() {
     batch.put(b"k1".to_vec(), b"v1".to_vec());
     batch.put(b"k2".to_vec(), b"v2".to_vec());
     batch.del(b"k0");
-    remote.commit_batch(batch).expect("frame ships");
+    remote.commit_batch(&batch).expect("frame ships");
 
     wait_for(
         || remote.get(b"k1").unwrap().is_some(),
@@ -274,7 +274,7 @@ fn remote_unbounded_stream_crosses_pages() {
     }
     // second endpoint on the SAME handle: writes commit through it
     let writer = handle.open();
-    writer.commit_batch(batch).expect("batch frame accepted");
+    writer.commit_batch(&batch).expect("batch frame accepted");
     wait_for(
         || remote.scan_suffix(b"k/").map(|s| s.len()).unwrap_or(0) == 600,
         "600 writes to land",

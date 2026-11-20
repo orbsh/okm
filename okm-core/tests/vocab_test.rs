@@ -135,7 +135,7 @@ impl VirtualStorage for NoScan {
     ) -> okm_core::engine::storage::ScanIter {
         panic!("the categorical hot path must not scan");
     }
-    fn commit_batch(&self, batch: Batch) -> okm_core::error::Result<()> {
+    fn commit_batch(&self, batch: &Batch) -> okm_core::error::Result<()> {
         self.0.commit_batch(batch)
     }
 }

@@ -101,7 +101,7 @@ fn a_caller_owned_batch_is_captured_at_the_store() {
         c.save_with_prev_into(&mut batch, &K { id: 9 }, &Row { level: 7 }, None)
             .expect("into the caller's batch");
         // Straight to the engine: the collection never sees a commit.
-        c.store().commit_batch(batch).expect("commit");
+        c.store().commit_batch(&batch).expect("commit");
     }
 
     let segments = sealed_segments(root.path(), NS).expect("list segments");

@@ -221,7 +221,8 @@ fn post_failure_dies_immediately() {
         _ => panic!("expected immediate Err, got a park"),
     }
     let c2 = WireClient::new(Dead);
-    let mut cb = Box::pin(c2.commit_batch(Batch::default()));
+    let empty = Batch::default();
+    let mut cb = Box::pin(c2.commit_batch(&empty));
     match cb.as_mut().poll(&mut cx) {
         Poll::Ready(Err(e)) => assert_eq!(e.to_string(), "socket gone"),
         Poll::Ready(Ok(())) => panic!("dead transport accepted a batch"),
@@ -287,7 +288,7 @@ fn scan_range_iter_pages_to_completion() {
         batch.put(format!("k/{i:04}").into_bytes(), b"v".to_vec());
     }
     let cm = client.clone();
-    drive(cm.commit_batch(batch), &host, &client, &loop_t).expect("batch on a live loop");
+    drive(cm.commit_batch(&batch), &host, &client, &loop_t).expect("batch on a live loop");
     let pairs = drive(client.scan_range_iter(b"k", None), &host, &client, &loop_t);
     let items: Vec<_> = pairs.collect();
     assert_eq!(items.len(), 600);
@@ -306,7 +307,7 @@ fn commit_batch_is_one_frame_one_pass() {
     // commit_batch takes &mut self (sync-trait mirror): run it on a
     // handle clone, pump through the other handle (same inner Rc).
     let cm = client.clone();
-    drive(cm.commit_batch(batch), &host, &client, &loop_t).expect("batch on a live loop");
+    drive(cm.commit_batch(&batch), &host, &client, &loop_t).expect("batch on a live loop");
     // exactly one outbound write frame (no per-op frames, no leftovers)
     assert!(loop_t.out.borrow().is_empty());
     assert_eq!(

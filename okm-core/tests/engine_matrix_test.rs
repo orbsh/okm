@@ -51,7 +51,7 @@ fn verify_engine(store: TestStore) {
         batch.put(format!("batch:{i}").into_bytes(), b"ok".to_vec());
     }
     batch.del(b"k1");
-    s.commit_batch(batch).expect("{name}: batch commit");
+    s.commit_batch(&batch).expect("{name}: batch commit");
     assert_eq!(
         s.get(b"batch:50").unwrap().as_deref(),
         Some(b"ok".as_slice()),
@@ -68,7 +68,7 @@ fn verify_engine(store: TestStore) {
 
     // Batch failure handling: empty batch commits clean.
     let empty = okm_core::Batch::default();
-    s.commit_batch(empty).expect("{name}: empty batch");
+    s.commit_batch(&empty).expect("{name}: empty batch");
 }
 
 #[test]

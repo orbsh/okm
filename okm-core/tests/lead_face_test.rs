@@ -228,7 +228,7 @@ fn a_lead_only_collection_rebuilds_without_decoding_a_row() {
     for k in primary_keys(&col) {
         batch.put(k, vec![0xffu8; 5]);
     }
-    col.store().commit_batch(batch).unwrap();
+    col.store().commit_batch(&batch).unwrap();
 
     let report = col.rebuild_faces(64).unwrap();
     assert_eq!(report.documents, 4, "the rows are found by key alone");

@@ -38,6 +38,9 @@ pub struct Collection<S, K: KeyEncode, R: Document<Key = K>> {
     /// makes (ADR-0074 §3): the entries are appended into it and handed to the store as
     /// spans, so a collection that has written once writes again without allocating for them.
     entries: std::cell::RefCell<crate::model::entries::Entries>,
+    /// The write's op list, one buffer reused by every write this collection makes: the batch
+    /// used to be created per write, so its buffer grew from nothing every time.
+    batch: std::cell::RefCell<crate::engine::storage::Batch>,
     /// The table's field-name vocabulary mirror (ADR-0012), alive for the
     /// COLLECTION's lifetime. The dynamic segment resolves one name per frame;
     /// a cache built per operation turned every dynamic field into an engine
@@ -96,6 +99,7 @@ impl<S: VirtualStorage, K: KeyEncode, R: Document<Key = K>> Collection<S, K, R> 
             store,
             epoch: std::cell::Cell::new(0),
             entries: std::cell::RefCell::new(crate::model::entries::Entries::new()),
+            batch: std::cell::RefCell::new(crate::engine::storage::Batch::default()),
             fields_vocab: std::cell::RefCell::new(Vocabulary::new()),
             vocabs: std::cell::RefCell::new(<R::Vocabs as ::core::default::Default>::default()),
             ns_override: None,
@@ -193,6 +197,7 @@ impl<S: VirtualStorage, K: KeyEncode, R: Document<Key = K>> Collection<S, K, R> 
             store,
             epoch: std::cell::Cell::new(0),
             entries: std::cell::RefCell::new(crate::model::entries::Entries::new()),
+            batch: std::cell::RefCell::new(crate::engine::storage::Batch::default()),
             fields_vocab: std::cell::RefCell::new(Vocabulary::new()),
             vocabs: std::cell::RefCell::new(<R::Vocabs as ::core::default::Default>::default()),
             ns_override: Some(ns),
@@ -210,6 +215,7 @@ impl<S: VirtualStorage, K: KeyEncode, R: Document<Key = K>> Collection<S, K, R> 
             store: self.store.clone(),
             epoch: std::cell::Cell::new(0),
             entries: std::cell::RefCell::new(crate::model::entries::Entries::new()),
+            batch: std::cell::RefCell::new(crate::engine::storage::Batch::default()),
             fields_vocab: std::cell::RefCell::new(Vocabulary::new()),
             vocabs: std::cell::RefCell::new(<R::Vocabs as ::core::default::Default>::default()),
             ns_override: Some(ns),
@@ -408,14 +414,14 @@ impl<S: VirtualStorage, K: KeyEncode, R: Document<Key = K>> Collection<S, K, R> 
                 batch.del(&key);
                 report.entries_deleted += 1;
                 if batch.ops.len() >= chunk {
-                    self.store.commit_batch(std::mem::take(&mut batch))?;
+                    self.store.commit_batch(&std::mem::take(&mut batch))?;
                     report.chunks += 1;
                 }
             }
             report.faces_swept += 1;
         }
         if !batch.ops.is_empty() {
-            self.store.commit_batch(std::mem::take(&mut batch))?;
+            self.store.commit_batch(&std::mem::take(&mut batch))?;
             report.chunks += 1;
         }
 
@@ -462,12 +468,12 @@ impl<S: VirtualStorage, K: KeyEncode, R: Document<Key = K>> Collection<S, K, R> 
             }
             report.documents += 1;
             if batch.ops.len() >= chunk {
-                self.store.commit_batch(std::mem::take(&mut batch))?;
+                self.store.commit_batch(&std::mem::take(&mut batch))?;
                 report.chunks += 1;
             }
         }
         if !batch.ops.is_empty() {
-            self.store.commit_batch(std::mem::take(&mut batch))?;
+            self.store.commit_batch(&std::mem::take(&mut batch))?;
             report.chunks += 1;
         }
 
@@ -577,7 +583,8 @@ impl<S: VirtualStorage, K: KeyEncode, R: Document<Key = K>> Collection<S, K, R> 
         // the ledgers land in one engine commit or not at all.
         let header = self.header();
         let pkey = self.primary_key(key);
-        let mut batch = crate::engine::storage::Batch::default();
+        let mut batch = self.batch.borrow_mut();
+        batch.clear();
         // Categorical values (ADR-0032): a `Vocab<N>` field holds a NAME until
         // the write path interns it, and the payload byte is the id. Tables
         // with no Vocab field hand the caller's document straight through; the
@@ -626,7 +633,7 @@ impl<S: VirtualStorage, K: KeyEncode, R: Document<Key = K>> Collection<S, K, R> 
             // group.
             R::__okm_apply_reduces(&mut store, key, document, &header, true)?;
         }
-        self.commit(batch)?;
+        self.commit(&batch)?;
         R::__okm_emit_event(
             crate::subscribe::Op::Put,
             self.epoch.get(),
@@ -1020,7 +1027,7 @@ impl<S: VirtualStorage, K: KeyEncode, R: Document<Key = K>> Collection<S, K, R> 
         // One commit for the whole sweep: the deletes land together, and the
         // engine's refusal comes back instead of dying inside a per-entry `del`.
         if removed > 0 {
-            self.commit(batch)?;
+            self.commit(&batch)?;
         }
         Ok(removed)
     }
@@ -1216,7 +1223,7 @@ impl<S: VirtualStorage, K: KeyEncode, R: Document<Key = K>> Collection<S, K, R> 
             stored.extend(dynamic);
             self.slot1_into(&mut batch, key, &stored)?;
         }
-        self.commit(batch)?;
+        self.commit(&batch)?;
         if let Some(document) = &announced {
             R::__okm_emit_event(crate::subscribe::Op::Put, self.epoch.get(), key, document);
         }
@@ -1259,7 +1266,7 @@ impl<S: VirtualStorage, K: KeyEncode, R: Document<Key = K>> Collection<S, K, R> 
             announced = Some((crate::subscribe::Op::Put, document));
         }
         self.slot1_into(&mut batch, key, &dynamic)?;
-        self.commit(batch)?;
+        self.commit(&batch)?;
         if let Some((op, document)) = &announced {
             R::__okm_emit_event(*op, self.epoch.get(), key, document);
         }
@@ -1301,7 +1308,7 @@ impl<S: VirtualStorage, K: KeyEncode, R: Document<Key = K>> Collection<S, K, R> 
         if has_segment {
             batch.del(&self.fields_key(key));
         }
-        self.commit(batch)?;
+        self.commit(&batch)?;
         // Subscribe: deletion event (same best-effort contract as put),
         // stamped with the table's post-write epoch. A segment-only document
         // has no row to hand the event, so it emits nothing.
@@ -1460,7 +1467,7 @@ impl<S: VirtualStorage, K: KeyEncode, R: Document<Key = K>> Collection<S, K, R> 
     /// Commit one semantic write and advance the epoch — fallible, so a verb
     /// that promises a `Result` can hand the engine's refusal up. The error
     /// carries the engine's OWN text, never a generic message that hides it.
-    fn commit(&self, batch: crate::engine::storage::Batch) -> crate::error::Result<()> {
+    fn commit(&self, batch: &crate::engine::storage::Batch) -> crate::error::Result<()> {
         // Vocabulary ids this batch allocated are not evidence until it lands:
         // take the promotion candidates BEFORE the commit consumes the batch,
         // and trust them only after it returned Ok (a refused commit leaves the
@@ -1468,7 +1475,7 @@ impl<S: VirtualStorage, K: KeyEncode, R: Document<Key = K>> Collection<S, K, R> 
         let header = self.header();
         let promoted = {
             let vocab = self.fields_vocab.borrow();
-            pending_in(&vocab, &header, FIELD_VOCAB, &batch)
+            pending_in(&vocab, &header, FIELD_VOCAB, batch)
         };
         self.store.commit_batch(batch)?;
         self.fields_vocab.borrow_mut().landed(&promoted);
@@ -1488,7 +1495,7 @@ impl<S: VirtualStorage, K: KeyEncode, R: Document<Key = K>> Collection<S, K, R> 
     /// committing it straight to the store are now the same thing as far as
     /// capture goes — the store is the boundary — but this verb also advances this
     /// collection's own state.
-    pub fn commit_batch(&self, batch: crate::engine::storage::Batch) -> crate::error::Result<()> {
+    pub fn commit_batch(&self, batch: &crate::engine::storage::Batch) -> crate::error::Result<()> {
         self.commit(batch)
     }
 }

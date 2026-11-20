@@ -207,7 +207,7 @@ fn measure_fjall(dir: &Path, rows: u64) -> Line {
             let k = make_key(2_000_000 + round * 100 + i);
             batch.put(k.encode(), make_row(i).encode_payload());
         }
-        store.commit_batch(batch).expect("commit");
+        store.commit_batch(&batch).expect("commit");
     }
     let batch_ns = med_ns(started.elapsed(), 100);
 

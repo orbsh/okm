@@ -27,7 +27,7 @@ async fn slatedb_async_surface_alignment() {
     batch.put(b"a/1".to_vec(), b"v1".to_vec());
     batch.put(b"a/2".to_vec(), b"v2".to_vec());
     batch.del(b"a/1"); // a mixed op list commits as ONE frame of work
-    db.commit_batch(batch).await.expect("native batch commit");
+    db.commit_batch(&batch).await.expect("native batch commit");
 
     assert_eq!(db.get(b"a/1").await.unwrap(), None, "delete op landed");
     assert_eq!(

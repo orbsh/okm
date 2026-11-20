@@ -511,7 +511,7 @@ fn same_head_reassert_retires_the_old_face_entry() {
     );
     let mut batch = okm_core::Batch::default();
     g.replace_into(&mut batch, &k, &attrs).unwrap();
-    store.commit_batch(batch).unwrap();
+    store.commit_batch(&batch).unwrap();
 
     // Same head, new payload: the conflict hook answers the new since_year, and
     // the face follows.
@@ -609,7 +609,7 @@ fn a_fragment_is_one_commit_and_a_document_is_another() {
     nodes
         .save_with_prev_into(&mut batch, &UserId { id: 1 }, &User { active: 1 }, None)
         .unwrap();
-    store.commit_batch(batch).unwrap();
+    store.commit_batch(&batch).unwrap();
     let k = link(
         &mut g,
         head(user(1), org(9), "employs"),
@@ -1015,7 +1015,7 @@ fn the_edge_set_exports_as_a_table_with_named_endpoints() {
     );
     let mut batch = okm_core::Batch::default();
     g.replace_into(&mut batch, &k, &attrs).unwrap();
-    store.commit_batch(batch).unwrap();
+    store.commit_batch(&batch).unwrap();
     assert_eq!(
         g.attrs(&k).unwrap().map(|f| f.len()),
         Some(1),

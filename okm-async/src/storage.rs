@@ -62,7 +62,7 @@ pub trait VirtualStorageAsync {
     /// write over all accumulated ops. Default replays through put/del;
     /// engines with a native batch override (SlatedbStore ships slatedb's
     /// `WriteBatch` as ONE `db.write` + durable wait).
-    async fn commit_batch(&self, batch: Batch) -> okm_core::error::Result<()> {
+    async fn commit_batch(&self, batch: &Batch) -> okm_core::error::Result<()> {
         for (k, v) in batch.iter() {
             match v {
                 Some(v) => self.put(k.to_vec(), v.to_vec()).await?,

@@ -70,7 +70,7 @@ impl VirtualStorage for FjallStore {
     /// fjall native: the op list executes in fjall's own cross-keyspace
     /// `Batch` — one `Batch::commit()` = one real WAL write; the carrier
     /// stays engine-agnostic (Batch), the atomicity is fjall's.
-    fn commit_batch(&self, batch: Batch) -> crate::error::Result<()> {
+    fn commit_batch(&self, batch: &Batch) -> crate::error::Result<()> {
         let mut wb = self.db.batch();
         for (k, v) in batch.iter() {
             match v {

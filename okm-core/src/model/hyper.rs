@@ -1037,13 +1037,13 @@ impl<S: VirtualStorage> Hyperedges<S> {
                 let (key, _) = item?;
                 batch.del(&key);
                 if batch.ops.len() >= chunk {
-                    self.store.commit_batch(std::mem::take(&mut batch))?;
+                    self.store.commit_batch(&std::mem::take(&mut batch))?;
                     report.chunks += 1;
                 }
             }
         }
         if !batch.ops.is_empty() {
-            self.store.commit_batch(std::mem::take(&mut batch))?;
+            self.store.commit_batch(&std::mem::take(&mut batch))?;
             report.chunks += 1;
         }
 
@@ -1071,7 +1071,7 @@ impl<S: VirtualStorage> Hyperedges<S> {
             }
             report.clusters += 1;
             if batch.ops.len() >= chunk {
-                self.store.commit_batch(std::mem::take(&mut batch))?;
+                self.store.commit_batch(&std::mem::take(&mut batch))?;
                 report.chunks += 1;
             }
         }
@@ -1106,7 +1106,7 @@ impl<S: VirtualStorage> Hyperedges<S> {
             batch.put(edge_cluster_key(&self.ns, &row, cluster), Vec::new());
             report.members += 1;
             if batch.ops.len() >= chunk {
-                self.store.commit_batch(std::mem::take(&mut batch))?;
+                self.store.commit_batch(&std::mem::take(&mut batch))?;
                 report.chunks += 1;
             }
         }
@@ -1143,14 +1143,14 @@ impl<S: VirtualStorage> Hyperedges<S> {
             );
             report.node_members += 1;
             if batch.ops.len() >= chunk {
-                self.store.commit_batch(std::mem::take(&mut batch))?;
+                self.store.commit_batch(&std::mem::take(&mut batch))?;
                 report.chunks += 1;
             }
         }
         // The tail of phase 3 — a partial batch is still a batch, and phase 4
         // commits through its own verb, so nothing may be left in this one.
         if !batch.ops.is_empty() {
-            self.store.commit_batch(std::mem::take(&mut batch))?;
+            self.store.commit_batch(&std::mem::take(&mut batch))?;
             report.chunks += 1;
         }
 
@@ -2667,7 +2667,7 @@ impl<S: VirtualStorage, G: GraphEncode + Default> Graph<S, G> {
         fragment.check_incorporable()?;
         let mut rows = Batch::default();
         let report = fragment.write_into(self, &mut rows, BTreeMap::new())?;
-        self.store().commit_batch(rows)?;
+        self.store().commit_batch(&rows)?;
         Ok(report)
     }
 
@@ -2833,7 +2833,7 @@ impl<S: VirtualStorage, G: GraphEncode + Default> Graph<S, G> {
 
         // ---- 4. The cluster faces, through the same path a write uses ----
         report.memberships = fragment.apply_plan(self, &ns, &BTreeSet::new(), plan, &mut batch)?;
-        self.store().commit_batch(batch)?;
+        self.store().commit_batch(&batch)?;
         report.nodes = nodes.len();
         Ok(report)
     }
@@ -2964,7 +2964,7 @@ impl<S: VirtualStorage, G: GraphEncode + Default> Graph<S, G> {
             edges += 1;
         }
         let written = fragment.write_into(self, &mut batch, plan)?;
-        self.store().commit_batch(batch)?;
+        self.store().commit_batch(&batch)?;
         Ok(ReplaceReport {
             nodes: nodes.len(),
             edges,

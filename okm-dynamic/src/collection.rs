@@ -400,7 +400,7 @@ impl<S: VirtualStorage> DynamicCollection<S> {
                 report.entries_deleted += 1;
                 if batch.ops.len() >= chunk {
                     self.store
-                        .commit_batch(std::mem::take(&mut batch))
+                        .commit_batch(&std::mem::take(&mut batch))
                         .map_err(codec)?;
                     report.chunks += 1;
                 }
@@ -409,7 +409,7 @@ impl<S: VirtualStorage> DynamicCollection<S> {
         }
         if !batch.ops.is_empty() {
             self.store
-                .commit_batch(std::mem::take(&mut batch))
+                .commit_batch(&std::mem::take(&mut batch))
                 .map_err(codec)?;
             report.chunks += 1;
         }
@@ -454,7 +454,7 @@ impl<S: VirtualStorage> DynamicCollection<S> {
                 report.documents += 1;
                 if batch.ops.len() >= chunk {
                     self.store
-                        .commit_batch(std::mem::take(&mut batch))
+                        .commit_batch(&std::mem::take(&mut batch))
                         .map_err(codec)?;
                     report.chunks += 1;
                 }
@@ -462,7 +462,7 @@ impl<S: VirtualStorage> DynamicCollection<S> {
         }
         if !batch.ops.is_empty() {
             self.store
-                .commit_batch(std::mem::take(&mut batch))
+                .commit_batch(&std::mem::take(&mut batch))
                 .map_err(codec)?;
             report.chunks += 1;
         }
@@ -608,7 +608,7 @@ impl<S: VirtualStorage> DynamicCollection<S> {
         // `String` channel every other dynamic verb answers on, carrying the
         // engine's own text rather than a generic message.
         self.store
-            .commit_batch(batch)
+            .commit_batch(&batch)
             .map_err(|e| format!("dynamic write failed: {e}"))
     }
 

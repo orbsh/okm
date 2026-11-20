@@ -506,7 +506,7 @@ impl VirtualStorageAsync for SlatedbStore {
     /// durable wait mirrors the sync engines' WAL boundary.
     async fn commit_batch(
         &self,
-        batch: okm_core::engine::storage::Batch,
+        batch: &okm_core::engine::storage::Batch,
     ) -> okm_core::error::Result<()> {
         let mut wb = slatedb::WriteBatch::new();
         for (k, v) in batch.iter() {

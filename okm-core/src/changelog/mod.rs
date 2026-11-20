@@ -2372,8 +2372,8 @@ impl<S: VirtualStorage> VirtualStorage for ChangelogStore<S> {
         self.inner.scan_range(begin, end)
     }
 
-    fn commit_batch(&self, batch: Batch) -> Result<()> {
-        let touched = self.stage(&batch);
+    fn commit_batch(&self, batch: &Batch) -> Result<()> {
+        let touched = self.stage(batch);
         // Only a commit that returned Ok may append: a frame naming a refused
         // write would be a phantom row (ADR-0045 §7).
         self.inner.commit_batch(batch)?;

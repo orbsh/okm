@@ -124,7 +124,7 @@ impl<S: VirtualStorage> VirtualStorage for Reads<S> {
         self.inner.scan_range(begin, end)
     }
 
-    fn commit_batch(&self, batch: Batch) -> okm_core::error::Result<()> {
+    fn commit_batch(&self, batch: &Batch) -> okm_core::error::Result<()> {
         self.inner.commit_batch(batch)
     }
 }

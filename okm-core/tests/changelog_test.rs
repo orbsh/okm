@@ -358,7 +358,7 @@ fn the_batch_writer_verb_captures_save_into() {
     let mut batch = Batch::default();
     app.save_with_prev_into(&mut batch, &key, &row, None)
         .unwrap();
-    app.commit_batch(batch).expect("publish");
+    app.commit_batch(&batch).expect("publish");
 
     assert_eq!(app.get_row(&key).expect("get"), row);
     let frames = drain(app, dir.path());
@@ -493,7 +493,7 @@ fn a_cross_table_batch_captures_each_tables_own_share() {
         pa = a.primary_key(&ka);
         pb = b.primary_key(&kb);
 
-        a.commit_batch(batch).expect("one commit");
+        a.commit_batch(&batch).expect("one commit");
     }
 
     let frames_a = frames_in(root.path(), LOG_NS);

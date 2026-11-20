@@ -129,7 +129,7 @@ impl<S: VirtualStorage> VirtualStorage for Counting<S> {
         self.inner.scan_range(begin, end)
     }
 
-    fn commit_batch(&self, batch: Batch) -> okm_core::error::Result<()> {
+    fn commit_batch(&self, batch: &Batch) -> okm_core::error::Result<()> {
         self.commits.set(self.commits.get() + 1);
         self.ops_committed
             .set(self.ops_committed.get() + batch.ops.len());

@@ -702,7 +702,7 @@ impl<S: VirtualStorage> Graph<S> {
                 batch.del(&key);
                 if batch.ops.len() >= chunk {
                     store
-                        .commit_batch(std::mem::take(&mut batch))
+                        .commit_batch(&std::mem::take(&mut batch))
                         .map_err(|e| e.to_string())?;
                     report.chunks += 1;
                 }
@@ -710,7 +710,7 @@ impl<S: VirtualStorage> Graph<S> {
         }
         if !batch.ops.is_empty() {
             store
-                .commit_batch(std::mem::take(&mut batch))
+                .commit_batch(&std::mem::take(&mut batch))
                 .map_err(|e| e.to_string())?;
             report.chunks += 1;
         }
@@ -738,7 +738,7 @@ impl<S: VirtualStorage> Graph<S> {
             report.clusters += 1;
             if batch.ops.len() >= chunk {
                 store
-                    .commit_batch(std::mem::take(&mut batch))
+                    .commit_batch(&std::mem::take(&mut batch))
                     .map_err(|e| e.to_string())?;
                 report.chunks += 1;
             }
@@ -774,7 +774,7 @@ impl<S: VirtualStorage> Graph<S> {
             report.members += 1;
             if batch.ops.len() >= chunk {
                 store
-                    .commit_batch(std::mem::take(&mut batch))
+                    .commit_batch(&std::mem::take(&mut batch))
                     .map_err(|e| e.to_string())?;
                 report.chunks += 1;
             }
@@ -810,14 +810,14 @@ impl<S: VirtualStorage> Graph<S> {
             report.node_members += 1;
             if batch.ops.len() >= chunk {
                 store
-                    .commit_batch(std::mem::take(&mut batch))
+                    .commit_batch(&std::mem::take(&mut batch))
                     .map_err(|e| e.to_string())?;
                 report.chunks += 1;
             }
         }
         if !batch.ops.is_empty() {
             store
-                .commit_batch(std::mem::take(&mut batch))
+                .commit_batch(&std::mem::take(&mut batch))
                 .map_err(|e| e.to_string())?;
             report.chunks += 1;
         }

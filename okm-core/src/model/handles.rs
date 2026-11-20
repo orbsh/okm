@@ -399,7 +399,7 @@ impl<'a, S: VirtualStorage> Handles<'a, S> {
         {
             batch.put(cursor_key(&self.ns), after.to_be_bytes().to_vec());
         }
-        self.store.commit_batch(batch)?;
+        self.store.commit_batch(&batch)?;
         Ok(entries.len())
     }
 }

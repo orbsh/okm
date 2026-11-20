@@ -319,7 +319,7 @@ fn bench_write_mock(c: &mut Criterion) {
                 }
                 (store, batch)
             },
-            |(store, batch)| black_box(store.commit_batch(batch).is_ok()),
+            |(store, batch)| black_box(store.commit_batch(&batch).is_ok()),
             BatchSize::SmallInput,
         )
     });

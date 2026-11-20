@@ -87,7 +87,7 @@ fn a_batch_defers_until_commit() {
     );
 
     // Commit: primary + index entries land together.
-    store.commit_batch(batch).expect("commit");
+    store.commit_batch(&batch).expect("commit");
     let t2: Collection<TestStore, PostKey, Post> = Collection::open(store.clone()).unwrap();
     assert!(
         t2.has_row(&PostKey { id: 1 }).unwrap(),
@@ -128,7 +128,7 @@ fn cross_collection_one_batch() {
             .unwrap();
     }
 
-    store.commit_batch(batch).expect("commit");
+    store.commit_batch(&batch).expect("commit");
 
     // Both landed through the ONE committed store instance.
     let t: Collection<TestStore, PostKey, Post> = Collection::open(store.clone()).unwrap();
@@ -203,7 +203,7 @@ fn same_group_twice_in_one_batch_accumulates() {
         "an uncommitted batch owns no accumulator"
     );
 
-    store.commit_batch(batch).expect("commit");
+    store.commit_batch(&batch).expect("commit");
     assert_eq!(ledger(&t, 7), Some(2), "both writes folded, in batch order");
 }
 
@@ -221,7 +221,7 @@ fn overwrite_in_one_batch_reads_the_pending_old_row() {
     let mut batch = okm_core::Batch::default();
     t.save_with_prev_into(&mut batch, &k, &v1, None).unwrap();
     t.save_with_prev_into(&mut batch, &k, &v2, None).unwrap();
-    store.commit_batch(batch).expect("commit");
+    store.commit_batch(&batch).expect("commit");
 
     assert_eq!(ledger(&t, 7), Some(0), "the stale fold was unfolded");
     assert_eq!(ledger(&t, 8), Some(1), "the new fold counted once");
@@ -250,7 +250,7 @@ fn caller_supplied_prev_drives_the_unfold_and_the_cleanup() {
 
     let mut batch = okm_core::Batch::default();
     t.save_with_prev_into(&mut batch, &k, &v1, None).unwrap();
-    store.commit_batch(batch).expect("commit");
+    store.commit_batch(&batch).expect("commit");
     assert_eq!(ledger(&t, 7), Some(1));
 
     let v2 = Entry {
@@ -260,7 +260,7 @@ fn caller_supplied_prev_drives_the_unfold_and_the_cleanup() {
     let mut batch = okm_core::Batch::default();
     t.save_with_prev_into(&mut batch, &k, &v2, Some(&v1))
         .unwrap();
-    store.commit_batch(batch).expect("commit");
+    store.commit_batch(&batch).expect("commit");
 
     assert_eq!(ledger(&t, 7), Some(0));
     assert_eq!(ledger(&t, 8), Some(1));
@@ -279,7 +279,7 @@ fn an_uncommitted_batch_moves_neither_the_row_nor_the_ledger() {
     let (k, v1) = entry(1, 7, 1);
     let mut batch = okm_core::Batch::default();
     t.save_with_prev_into(&mut batch, &k, &v1, None).unwrap();
-    store.commit_batch(batch).expect("commit");
+    store.commit_batch(&batch).expect("commit");
 
     // Abandoned: the unfold and the fold both live only in the dropped batch.
     let mut batch = okm_core::Batch::default();
@@ -322,7 +322,7 @@ fn atomic_write_and_reduce_in_one_commit() {
             None,
         )
         .unwrap();
-    store.commit_batch(batch).expect("commit");
+    store.commit_batch(&batch).expect("commit");
 
     assert_eq!(ledger(&t, 7), Some(1));
     let probe = okm_core::PrefixProbe::<AuthorPostKey>::new(7u64.to_be_bytes().to_vec());
@@ -436,7 +436,7 @@ fn embedded_children_are_written_and_released_in_the_batch() {
             None,
         )
         .unwrap();
-    store.commit_batch(batch).expect("commit");
+    store.commit_batch(&batch).expect("commit");
     assert!(
         contacts.has_row(&c1).unwrap(),
         "child lands with the parent"
@@ -462,7 +462,7 @@ fn embedded_children_are_written_and_released_in_the_batch() {
             Some(&old),
         )
         .unwrap();
-    store.commit_batch(batch).expect("commit");
+    store.commit_batch(&batch).expect("commit");
 
     assert!(
         !contacts.has_row(&c1).unwrap(),
@@ -515,7 +515,7 @@ fn save_with_prev_into_interns_inside_the_batch() {
         !c.has_row(&k).unwrap(),
         "an uncommitted batch moves nothing"
     );
-    store.commit_batch(batch).expect("commit");
+    store.commit_batch(&batch).expect("commit");
 
     // After the commit the row reads back with LABELS: the id → label entries
     // travelled in the same batch as the payload.
@@ -541,7 +541,7 @@ fn save_with_prev_into_interns_inside_the_batch() {
         None,
     )
     .unwrap();
-    store.commit_batch(batch).expect("commit");
+    store.commit_batch(&batch).expect("commit");
 
     let second = c.get_row(&LogKey { id: 2 }).expect("row landed");
     assert_eq!(second.event.as_str(), Some("db.timeout"));
@@ -576,7 +576,7 @@ fn purge_into_defers_until_the_commit() {
     );
     assert_eq!(ledger(&t, 7), Some(1), "the fold is still in the store");
 
-    t.commit_batch(batch).unwrap();
+    t.commit_batch(&batch).unwrap();
     assert!(!t.has_row(&k).unwrap(), "the commit removes the row");
     assert_eq!(ledger(&t, 7), Some(0), "the removal unfolds the ledger");
     assert!(
@@ -602,7 +602,7 @@ fn purge_into_reads_the_batch_it_is_building() {
         t.purge_into(&mut batch, &k).unwrap(),
         "the pending write IS the state being removed"
     );
-    t.commit_batch(batch).unwrap();
+    t.commit_batch(&batch).unwrap();
 
     assert!(!t.has_row(&k).unwrap());
     assert_eq!(ledger(&t, 7), Some(0), "the staged fold was unfolded");
@@ -654,7 +654,7 @@ fn two_tables_leave_in_one_commit() {
     );
 
     // ONE commit, through either collection's door.
-    posts.commit_batch(batch).unwrap();
+    posts.commit_batch(&batch).unwrap();
     assert!(!posts.has_row(&PostKey { id: 1 }).unwrap());
     assert!(!entries.has_row(&ek).unwrap());
     assert!(

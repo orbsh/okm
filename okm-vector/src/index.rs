@@ -124,7 +124,7 @@ impl VectorIndex {
             shard.encode_into(&mut w);
             batch.put(self.slot_key(id), w);
         }
-        store.commit_batch(batch).map_err(|e| e.to_string())
+        store.commit_batch(&batch).map_err(|e| e.to_string())
     }
 
     /// Read the snapshot back. `Ok(None)` when any shard is missing or the blob
@@ -181,7 +181,7 @@ impl VectorIndex {
         if removed == 0 {
             return Ok(0);
         }
-        store.commit_batch(batch).map_err(|e| e.to_string())?;
+        store.commit_batch(&batch).map_err(|e| e.to_string())?;
         Ok(removed)
     }
 

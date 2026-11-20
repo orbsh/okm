@@ -350,7 +350,7 @@ impl<S: VirtualStorage + ?Sized, I: Id> Names<I> for Faces<'_, S, I> {
             label.as_bytes().to_vec(),
         );
         batch.put(cursor_key(self.header, self.faces), next.be_bytes());
-        self.store.commit_batch(batch)?;
+        self.store.commit_batch(&batch)?;
         Ok(id)
     }
 }
@@ -496,7 +496,7 @@ mod tests {
             key(HEADER, FIELD_VOCAB_NAME_SLOT, b"big"),
             0x1234u16.to_be_bytes().to_vec(),
         );
-        let _ = store.commit_batch(batch);
+        let _ = store.commit_batch(&batch);
         let mut door = Faces::<_, FieldNameId>::new(&store, HEADER, FIELD_VOCAB);
         assert_eq!(d.name_of(&mut door, 0x1234).unwrap().unwrap(), "big");
     }

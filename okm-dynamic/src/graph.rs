@@ -127,7 +127,7 @@ impl<S: VirtualStorage> Graph<S> {
     /// `incorporate` and `retract` cannot drift apart on how a batch lands.
     pub(crate) fn commit(&self, batch: Batch) -> Result<(), String> {
         self.store
-            .commit_batch(batch)
+            .commit_batch(&batch)
             .map_err(|e| format!("dynamic graph commit failed: {e}"))
     }
 
@@ -399,7 +399,7 @@ impl<S: VirtualStorage> Graph<S> {
         let mut batch = Batch::default();
         let key = self.write_into(&mut batch, edge)?;
         self.store
-            .commit_batch(batch)
+            .commit_batch(&batch)
             .map_err(|e| format!("dynamic graph link commit failed: {e}"))?;
         Ok(key)
     }
@@ -491,7 +491,7 @@ impl<S: VirtualStorage> Graph<S> {
         let mut batch = Batch::default();
         self.unlink_into(&mut batch, key)?;
         self.store
-            .commit_batch(batch)
+            .commit_batch(&batch)
             .map_err(|e| format!("dynamic graph unlink commit failed: {e}"))
     }
 

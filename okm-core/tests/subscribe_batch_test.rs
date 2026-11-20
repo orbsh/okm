@@ -66,7 +66,7 @@ fn a_batch_emits_no_event_and_still_lands() {
         None,
     )
     .unwrap();
-    t.commit_batch(batch).unwrap();
+    t.commit_batch(&batch).unwrap();
 
     assert!(
         t.has_row(&AccountKey { id: 1 }).unwrap(),

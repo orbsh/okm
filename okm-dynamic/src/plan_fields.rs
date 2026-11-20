@@ -515,7 +515,7 @@ mod tests {
             k.extend_from_slice(&id.to_be_bytes());
             batch.put(k, name.as_bytes().to_vec());
         }
-        store.commit_batch(batch).unwrap();
+        store.commit_batch(&batch).unwrap();
 
         let m = VocabMirror::load(&store, &ns()).unwrap();
         assert_eq!(m.by_id.get(&0), Some(&"note".to_string()));

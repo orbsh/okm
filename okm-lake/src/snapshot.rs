@@ -846,7 +846,7 @@ pub mod parquet_io {
                 let mut batch = okm_core::engine::storage::Batch::default();
                 self.replace_into(&mut batch, &key, fields)
                     .map_err(|e| e.to_string())?;
-                self.store_mut().commit_batch(batch).map_err(|e| {
+                self.store_mut().commit_batch(&batch).map_err(|e| {
                     format!(
                         "edge (ns {} predicate {} ns {}): {e}",
                         key.src.ns_id(),

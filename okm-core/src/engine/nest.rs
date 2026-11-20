@@ -174,7 +174,7 @@ impl VirtualStorage for RemoteStore {
     /// One `commit_batch` = one frame = one receiver execution pass: the
     /// cross-assembly-point atomic path (ADR-0003) survives remoteness
     /// because the receiver commits the whole op list in one call.
-    fn commit_batch(&self, batch: Batch) -> crate::error::Result<()> {
+    fn commit_batch(&self, batch: &Batch) -> crate::error::Result<()> {
         // The frame is bytes on a socket: it owns its copy, taken once here.
         self.round_trip(&OpFrame::write_batch(&batch.collect_pairs()))
             .map(|_ack| ())
@@ -630,7 +630,7 @@ impl<S: VirtualStorage> ExecCore<S> {
         // commit that cannot land fails the caller's whole frame, so it answers
         // a fault even when the frame carried no query: a write has no other
         // way to report anything, and silence would read as success.
-        if let Err(e) = engine.commit_batch(batch) {
+        if let Err(e) = engine.commit_batch(&batch) {
             resp.fault = Some(e.to_string());
             return Some(resp);
         }
@@ -646,7 +646,7 @@ fn flush_pending<S: VirtualStorage>(engine: &S, batch: &mut Batch) -> Option<Str
         return None;
     }
     engine
-        .commit_batch(std::mem::take(batch))
+        .commit_batch(&std::mem::take(batch))
         .err()
         .map(|e| e.to_string())
 }
@@ -820,7 +820,7 @@ mod tests {
         fn scan_range(&self, begin: &[u8], end: Option<&[u8]>) -> crate::engine::storage::ScanIter {
             self.0.scan_range(begin, end)
         }
-        fn commit_batch(&self, _batch: Batch) -> crate::error::Result<()> {
+        fn commit_batch(&self, _batch: &Batch) -> crate::error::Result<()> {
             Err(crate::error::Error::Engine("the batch was refused".into()))
         }
     }

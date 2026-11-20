@@ -1647,12 +1647,12 @@ impl<S: VirtualStorage, E: GraphEncode> Graph<S, E> {
                 let (key, _) = item?;
                 batch.del(&key);
                 if batch.ops.len() >= chunk {
-                    self.store.commit_batch(std::mem::take(&mut batch))?;
+                    self.store.commit_batch(&std::mem::take(&mut batch))?;
                 }
             }
         }
         if !batch.ops.is_empty() {
-            self.store.commit_batch(std::mem::take(&mut batch))?;
+            self.store.commit_batch(&std::mem::take(&mut batch))?;
         }
 
         // Phase 2 — derive from 0x06, lazily: the rows come from the walk, not
@@ -1665,11 +1665,11 @@ impl<S: VirtualStorage, E: GraphEncode> Graph<S, E> {
             batch.put(self.predicate_in_key(&row), Vec::new());
             rebuilt += 1;
             if batch.ops.len() >= chunk {
-                self.store.commit_batch(std::mem::take(&mut batch))?;
+                self.store.commit_batch(&std::mem::take(&mut batch))?;
             }
         }
         if !batch.ops.is_empty() {
-            self.store.commit_batch(batch)?;
+            self.store.commit_batch(&batch)?;
         }
         Ok(rebuilt)
     }

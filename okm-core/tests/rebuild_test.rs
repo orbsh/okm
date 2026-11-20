@@ -228,7 +228,7 @@ impl VirtualStorage for Flaky {
     fn scan_range(&self, begin: &[u8], end: Option<&[u8]>) -> okm_core::storage::ScanIter {
         self.inner.scan_range(begin, end)
     }
-    fn commit_batch(&self, batch: Batch) -> okm_core::Result<()> {
+    fn commit_batch(&self, batch: &Batch) -> okm_core::Result<()> {
         let left = self.commits_left.get();
         if left == 0 {
             return Err(okm_core::Error::Engine(

@@ -148,7 +148,7 @@ impl VirtualStorage for RedbStore {
     /// redb native: ONE write transaction over the whole batch — redb's
     /// own atomicity carries the mapping (the carrier stays
     /// engine-agnostic, Batch, same as fjall).
-    fn commit_batch(&self, batch: Batch) -> crate::error::Result<()> {
+    fn commit_batch(&self, batch: &Batch) -> crate::error::Result<()> {
         let txn = self.db.begin_write().map_err(eng)?;
         {
             let mut table = txn.open_table(TABLE).map_err(eng)?;

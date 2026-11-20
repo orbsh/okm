@@ -153,7 +153,7 @@ fn an_edge_table_restores_into_a_fresh_graph() {
     attrs.insert("note".to_string(), Variant::Str("hi".into()));
     let mut batch = Batch::default();
     g.replace_into(&mut batch, &leads, &attrs).unwrap();
-    g.store_mut().commit_batch(batch).unwrap();
+    g.store_mut().commit_batch(&batch).unwrap();
 
     // Export, write, and READ THE FILE BACK — the restore's real input.
     let table = g.to_record_batch_table(name_of).unwrap();
