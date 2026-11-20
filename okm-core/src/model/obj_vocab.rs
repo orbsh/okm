@@ -389,7 +389,7 @@ pub fn pending_in<I: Id>(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::engine::mem_store::MemStore;
+    use crate::engine::ephemeral::EphemeralStore;
 
     const HEADER: &[u8] = &[0x00, 0x21]; // ns 33, no partition
 
@@ -402,7 +402,7 @@ mod tests {
 
     #[test]
     fn allocates_sequentially_and_is_cached() {
-        let store = MemStore::new();
+        let store = EphemeralStore::new();
         let mut door = Faces::<_, FieldNameId>::new(&store, HEADER, FIELD_VOCAB);
         let mut d = Vocabulary::<u16>::new();
         let a = d.ensure(&mut door, "alpha").unwrap();
@@ -433,7 +433,7 @@ mod tests {
 
     #[test]
     fn the_two_vocabularies_never_share_an_id_space() {
-        let store = MemStore::new();
+        let store = EphemeralStore::new();
         let mut fields = Vocabulary::<u16>::new();
         let mut kinds = Vocabulary::<u16>::new();
         // The same label allocates in both; the same number names two
@@ -463,7 +463,7 @@ mod tests {
 
     #[test]
     fn fresh_cache_loads_from_engine_and_resumes_numbering() {
-        let store = MemStore::new();
+        let store = EphemeralStore::new();
         {
             let mut d = Vocabulary::<u16>::new();
             let mut door = Faces::<_, FieldNameId>::new(&store, HEADER, PREDICATE_VOCAB);
@@ -484,7 +484,7 @@ mod tests {
 
     #[test]
     fn a_sparse_seeded_id_still_reads_back() {
-        let store = MemStore::new();
+        let store = EphemeralStore::new();
         let mut d = Vocabulary::<u16>::new();
         // Seed a high id directly, then read it through the cache.
         let mut batch = Batch::default();
@@ -516,7 +516,7 @@ mod tests {
 
         // Two fields no longer share an id space: the same number in two
         // fields names two different labels.
-        let store = MemStore::new();
+        let store = EphemeralStore::new();
         let mut status = Vocabulary::<u8>::new();
         let mut color = Vocabulary::<u8>::new();
         let mut sd = Faces::<_, u8>::new(&store, HEADER, data_vocab(0));
@@ -529,7 +529,7 @@ mod tests {
 
     #[test]
     fn a_u8_vocabulary_stops_after_256_labels() {
-        let store = MemStore::new();
+        let store = EphemeralStore::new();
         let mut d = Vocabulary::<u8>::new();
         let mut door = Faces::<_, u8>::new(&store, HEADER, data_vocab(0));
         // Ids 0..=254 fit: allocation needs `succ()` to exist so the cursor can
@@ -554,7 +554,7 @@ mod tests {
 
     #[test]
     fn an_allocated_id_is_only_evidence_after_the_commit_carrying_it() {
-        let store = MemStore::new();
+        let store = EphemeralStore::new();
         let mut d = Vocabulary::<u16>::new();
         let mut door = Faces::<_, FieldNameId>::new(&store, HEADER, FIELD_VOCAB);
         assert_eq!(d.ensure(&mut door, "alpha").unwrap(), 0);
@@ -584,7 +584,7 @@ mod tests {
         // The observable difference between "the mirror says so" and "the store
         // says so": delete the engine's entry behind the cache's back. A probe
         // re-allocates; the fast path answers the mirror.
-        let store = MemStore::new();
+        let store = EphemeralStore::new();
         let mut d = Vocabulary::<u16>::new();
         let mut door = Faces::<_, FieldNameId>::new(&store, HEADER, FIELD_VOCAB);
         assert_eq!(d.ensure(&mut door, "alpha").unwrap(), 0);

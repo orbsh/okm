@@ -77,7 +77,7 @@ core 要改的地方：`Cargo.toml`（去掉 `slatedb` 与 `test-engines` 两个
 
 下游不动：okm 之外没有任何 crate 用到这个 crate 带走的那几个类型。
 
-纸上看不到、落地才付的一笔代价：**`okm-core` 自己的单元测试用不了 `okm_async::TestStore`**。一个会指回本包的 dev-dependency 会让 cargo 把这个包编译两遍——一遍给测试、一遍给依赖边——两份的 `VirtualStorage` 是不同的类型，矩阵永远满足不了那个 bound。集成测试没有这个问题（那里 lib 是依赖而不是被测单元），继续跑真实引擎。所以 core 的单元测试跑在 `engine::mem_store::MemStore` 上：`BTreeMap` 加一把锁，`#[cfg(test)]`，约五十行。它不覆盖引擎行为——异步适配器的线程与信道、fjall 的快照语义——那些正好在 `okm-async` 自己的测试与集成矩阵里。
+纸上看不到、落地才付的一笔代价：**`okm-core` 自己的单元测试用不了 `okm_async::TestStore`**。一个会指回本包的 dev-dependency 会让 cargo 把这个包编译两遍——一遍给测试、一遍给依赖边——两份的 `VirtualStorage` 是不同的类型，矩阵永远满足不了那个 bound。集成测试没有这个问题（那里 lib 是依赖而不是被测单元），继续跑真实引擎。所以 core 的单元测试跑在 `engine::ephemeral::EphemeralStore` 上（原先是 `MemStore`，`BTreeMap` 加一把锁的约五十行；现在是打包 B+tree 加三块分块表，见 ADR-0072）。它不覆盖引擎行为——异步适配器的线程与信道、fjall 的快照语义——那些正好在 `okm-async` 自己的测试与集成矩阵里。
 
 按证据重开，而不是按口味：
 

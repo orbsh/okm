@@ -2,13 +2,13 @@
 //! The synchronous engine contract plus the shared batch carrier. Every backend
 //! (fjall / redb / localStorage / the remote sender) implements it; the async
 //! mirror and the engines that speak it live in `okm-async` (ADR-0059).
-//! Unit tests run on [`crate::engine::mem_store::MemStore`]; the real-engine
+//! Unit tests run on [`crate::engine::ephemeral::EphemeralStore`]; the real-engine
 //! matrix is `okm_async::TestStore`, used by integration tests.
 
 /// Minimal KV engine interface: one ordered-read primitive (`scan_range`)
 /// plus point reads and batches. The `fjall` / `redb` features
 /// each provide an implementation; unit tests run on
-/// [`crate::engine::mem_store::MemStore`], and the real-engine matrix is
+/// [`crate::engine::ephemeral::EphemeralStore`], and the real-engine matrix is
 /// `okm_async::TestStore` (ADR-0059).
 /// The exclusive upper bound of a prefix as a FULL key: increment the
 /// last byte with carry (`[0x01, 0x7F]` -> `[0x01, 0x80]`). `None` when
@@ -176,6 +176,9 @@ pub enum ScanIter {
     Remote(super::nest::RemoteScanIter),
     /// Owning buffer: a non-streaming source, and any test map.
     Buffered(std::vec::IntoIter<crate::error::Result<(Vec<u8>, Vec<u8>)>>),
+    /// The ephemeral engine's cursor (ADR-0071): a skip-list position that
+    /// re-locks the store per item, so a scan never materializes the range.
+    Ephemeral(crate::engine::ephemeral::EphemeralScan),
     /// An engine that lives OUTSIDE this crate (ADR-0059): type-erased because
     /// the iterator's type belongs to a crate core must not name. It is what
     /// keeps a scan lazy for engines that left — buffering would delete the
@@ -276,6 +279,9 @@ impl ScanIter {
     /// - **remote** — the paged stream is repositioned and one page is
     ///   requested, so the answer is a real request and not a guess. Chunk
     ///   consistency is unchanged (ADR-0021: no snapshot across pages).
+    /// - **ephemeral** (ADR-0071) — the skip-list cursor re-descends from the
+    ///   key it last handed out, so a seek is a real cursor move and costs one
+    ///   descent.
     /// - **buffered** (`ScanIter::Buffered`: mem/test maps, the slatedb sync
     ///   facade, a remote failure) — drain forward over the buffer. This is
     ///   NOT a real seek: it costs one step per skipped entry, and it exists
@@ -292,6 +298,7 @@ impl ScanIter {
             ScanIter::Redb(it) => it.seek(lower),
             ScanIter::Remote(it) => it.seek(lower),
             ScanIter::Buffered(it) => buffered_seek(it, lower),
+            ScanIter::Ephemeral(it) => it.seek(lower),
             ScanIter::External(it) => it.seek(lower),
         }
     }
@@ -333,6 +340,7 @@ impl Iterator for ScanIter {
             ScanIter::Redb(it) => it.next(),
             ScanIter::Remote(it) => it.next(),
             ScanIter::Buffered(it) => it.next(),
+            ScanIter::Ephemeral(it) => it.next(),
             ScanIter::External(it) => it.next(),
         }
     }
@@ -347,6 +355,7 @@ impl DoubleEndedIterator for ScanIter {
             ScanIter::Redb(it) => it.next_back(),
             ScanIter::Remote(it) => it.next_back(),
             ScanIter::Buffered(it) => it.next_back(),
+            ScanIter::Ephemeral(it) => it.next_back(),
             ScanIter::External(it) => it.next_back(),
         }
     }

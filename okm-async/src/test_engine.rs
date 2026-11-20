@@ -1,13 +1,16 @@
-//! Test engine matrix: `TestStore` is a concrete enum over the real
-//! backends, so logic tests run against actual engines — no mock, no
-//! parallel implementation to drift.
+//! Test engine matrix: `TestStore` is a concrete enum over the backends, so
+//! logic tests run against actual engines — no mock, no parallel implementation
+//! to drift.
 //!
-//! Matrix: slatedb in-memory (zero fs, default), fjall temp-dir, redb
-//! temp-file. A test calls `TestStore::matrix()`
-//! (or the `for_each_engine!` helper) and its body runs once per engine.
+//! Matrix: the ephemeral engine (ADR-0072 — in memory, zero fs, always
+//! present), slatedb in-memory (zero fs, default), fjall temp-dir, redb
+//! temp-file. A test calls `TestStore::matrix()` (or the `for_each_engine!`
+//! helper) and its body runs once per engine. The ephemeral arm is what holds
+//! the engine that a temporary realm runs on to the same contract as the ones
+//! that write to disk.
 //!
-//! Not gated behind a feature: tests compile against whatever engines the
-//! build has; the matrix is simply the engines available.
+//! Only the engine arms are gated: tests compile against whatever engines the
+//! build has, and the ephemeral arm is always one of them.
 
 use okm_core::engine::storage::VirtualStorage;
 
@@ -15,6 +18,9 @@ use okm_core::engine::storage::VirtualStorage;
 /// semantics as real engine handles).
 #[derive(Clone)]
 pub enum TestStore {
+    /// The ephemeral engine (ADR-0072): a packed B+tree over chunked tables.
+    /// Always in the matrix — it is a supported engine, not a test double.
+    Ephemeral(okm_core::engine::ephemeral::EphemeralStore),
     /// slatedb over the in-memory object store. Zero fs.
     #[cfg(feature = "slatedb")]
     Slatedb(std::sync::Arc<crate::slatedb_backend::SlatedbSync>),
@@ -41,6 +47,7 @@ impl TestStore {
     #[allow(unused_mut, clippy::vec_init_then_push)]
     pub fn matrix() -> Vec<(&'static str, Self)> {
         let mut out: Vec<(&'static str, Self)> = Vec::new();
+        out.push(("ephemeral", Self::ephemeral()));
         #[cfg(feature = "slatedb")]
         out.push(("slatedb-mem", Self::slatedb_mem()));
         #[cfg(feature = "fjall")]
@@ -48,6 +55,10 @@ impl TestStore {
         #[cfg(feature = "redb")]
         out.push(("redb", Self::redb_tmp()));
         out
+    }
+
+    pub fn ephemeral() -> Self {
+        Self::Ephemeral(okm_core::engine::ephemeral::EphemeralStore::new())
     }
 
     #[cfg(feature = "slatedb")]
@@ -107,14 +118,13 @@ impl TestStore {
 
     pub fn name(&self) -> &'static str {
         match self {
+            Self::Ephemeral(_) => "ephemeral",
             #[cfg(feature = "slatedb")]
             Self::Slatedb(_) => "slatedb-mem",
             #[cfg(feature = "fjall")]
             Self::Fjall { .. } => "fjall",
             #[cfg(feature = "redb")]
             Self::Redb { .. } => "redb",
-            #[cfg(not(any(feature = "slatedb", feature = "fjall", feature = "redb")))]
-            _ => unreachable!("no engines enabled"),
         }
     }
 }
@@ -149,73 +159,60 @@ impl okm_core::engine::storage::SharedVirtualStorage for TestStore {
     }
 }
 
-#[cfg_attr(
-    not(any(feature = "slatedb", feature = "fjall", feature = "redb")),
-    allow(unused_variables)
-)]
 impl VirtualStorage for TestStore {
     fn put(&self, key: Vec<u8>, value: Vec<u8>) -> okm_core::error::Result<()> {
         match self {
+            Self::Ephemeral(store) => store.put(key, value),
             #[cfg(feature = "slatedb")]
             Self::Slatedb(s) => s.put_sync(key, value),
             #[cfg(feature = "fjall")]
             Self::Fjall { store, .. } => store.clone().put(key, value),
             #[cfg(feature = "redb")]
             Self::Redb { store, .. } => store.clone().put(key, value),
-            #[cfg(not(any(feature = "slatedb", feature = "fjall", feature = "redb")))]
-            _ => Err(okm_core::error::Error::Engine(
-                "TestStore: no engine features enabled".into(),
-            )),
         }
     }
     fn get(&self, key: &[u8]) -> okm_core::error::Result<Option<Vec<u8>>> {
         match self {
+            Self::Ephemeral(store) => store.get(key),
             #[cfg(feature = "slatedb")]
             Self::Slatedb(s) => s.get_sync(key),
             #[cfg(feature = "fjall")]
             Self::Fjall { store, .. } => store.get(key),
             #[cfg(feature = "redb")]
             Self::Redb { store, .. } => store.get(key),
-            #[cfg(not(any(feature = "slatedb", feature = "fjall", feature = "redb")))]
-            _ => unreachable!("TestStore: no engine features enabled"),
         }
     }
     fn del(&self, key: &[u8]) -> okm_core::error::Result<()> {
         match self {
+            Self::Ephemeral(store) => store.del(key),
             #[cfg(feature = "slatedb")]
             Self::Slatedb(s) => s.del_sync(key),
             #[cfg(feature = "fjall")]
             Self::Fjall { store, .. } => store.clone().del(key),
             #[cfg(feature = "redb")]
             Self::Redb { store, .. } => store.clone().del(key),
-            #[cfg(not(any(feature = "slatedb", feature = "fjall", feature = "redb")))]
-            _ => Err(okm_core::error::Error::Engine(
-                "TestStore: no engine features enabled".into(),
-            )),
         }
     }
     fn scan_suffix(&self, prefix: &[u8]) -> okm_core::error::Result<Vec<Vec<u8>>> {
         match self {
+            Self::Ephemeral(store) => store.scan_suffix(prefix),
             #[cfg(feature = "slatedb")]
             Self::Slatedb(s) => s.scan_suffix_sync(prefix),
             #[cfg(feature = "fjall")]
             Self::Fjall { store, .. } => store.scan_suffix(prefix),
             #[cfg(feature = "redb")]
             Self::Redb { store, .. } => store.scan_suffix(prefix),
-            #[cfg(not(any(feature = "slatedb", feature = "fjall", feature = "redb")))]
-            _ => unreachable!("TestStore: no engine features enabled"),
         }
     }
     fn scan_range(&self, begin: &[u8], end: Option<&[u8]>) -> okm_core::engine::storage::ScanIter {
         match self {
+            Self::Ephemeral(store) => store.scan_range(begin, end),
             #[cfg(feature = "slatedb")]
             Self::Slatedb(s) => s.scan_range_iter_sync(begin, end),
             #[cfg(feature = "fjall")]
             Self::Fjall { store, .. } => store.scan_range(begin, end),
             #[cfg(feature = "redb")]
             Self::Redb { store, .. } => store.scan_range(begin, end),
-            #[cfg(not(any(feature = "slatedb", feature = "fjall", feature = "redb")))]
-            _ => unreachable!("TestStore: no engine features enabled"),
         }
     }
 }

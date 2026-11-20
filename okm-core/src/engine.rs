@@ -10,9 +10,10 @@ pub mod nest;
 pub mod redb_backend;
 pub mod storage;
 
-/// The in-memory engine: a `BTreeMap` behind a mutex. Published because it is
-/// the store a host's memory mode binds to (aura's `Engine::Memory`) — a host
-/// must not grow its own stand-in — and, separately, the store this crate's
-/// unit tests run on (see the module docs for why the test side cannot use the
-/// real-engine matrix).
-pub mod mem_store;
+/// The ephemeral engine: okm's NON-PERSISTENT MODE — the same declarations over
+/// an engine that keeps everything and promises nothing (ADR-0072). aura's
+/// temporary realm is its first consumer; this crate's unit tests are a second,
+/// for a cargo reason rather than a design one. A packed B+tree over chunked
+/// tables, with no journal, no compaction and no snapshot — see the module docs
+/// for the obligations that follow from that.
+pub mod ephemeral;
