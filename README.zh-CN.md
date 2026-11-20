@@ -87,14 +87,14 @@ let rows: Vec<Users> = users.fetch(&target);
 // 生产：持久化 LSM
 let users: Collection<_, UserKey, User> = Collection::new(Fjall::open("data/users")?);
 
-// 测试：纯内存，零 I/O
-let users: Collection<_, UserKey, User> = Collection::new(Mem::default());
+// 不持久化：同一种声明，存储随句柄生灭
+let scratch: Collection<_, UserKey, User> = Collection::new(EphemeralStore::new());
 
 // 归档：同一种声明，另一个引擎实例
 let archive: Collection<_, UserKey, User> = Collection::new(Fjall::open("data/archive")?);
 ```
 
-所有引擎实现同一套行为契约（见 `engine_matrix_test`），换引擎不改应用逻辑——存储在哪是实现细节，位置不在类型里。
+所有引擎实现同一套行为契约（见 `engine_matrix_test`，每个逻辑测试都对每一臂跑一遍），换引擎不改应用逻辑——存储在哪是实现细节，位置不在类型里。**持久性也是这类细节之一**：`EphemeralStore` 是同一套声明跑在一个「什么都收下、什么都不保证」的引擎上，于是一个模型可以被赋予存储而不被赋予持久性，不必为它长出第二份实现。
 
 ## 引擎之外的分层
 
@@ -311,9 +311,10 @@ users.purge(&key)?;
 okm-core = { version = "0.1", features = ["fjall"] }    # 或 "redb"；异步引擎在 okm-async
 ```
 
+- **ephemeral**（同步，始终可用）：`EphemeralStore::new()` — okm 的非持久化模式（ADR-0072）。无文件、无 journal、无恢复、无压缩：读写锁后面一棵建立在一块块定长 chunk 上的打包 B+tree，随句柄创建与销毁。键空间、扫描、面、reduce 与任何其他引擎相同；放弃的只有持久性，`len()` / `bytes()` 留给需要给它设上限的宿主。
 - **fjall**（同步）：`FjallStore::open(path)` — 本地 LSM 引擎，单 `Database` 句柄，按需 `persist`。
 - **slatedb**（异步）：`SlatedbStore::open(path, Arc<dyn ObjectStore>)` — 对象存储后端；构造 store 用 `slatedb::object_store` 的 re-export，版本永远和 slatedb 内部一致。异步遍历走对应的 async 迭代器。
-- **TestStore**：测试用的引擎矩阵，跑的是真实引擎（slatedb 内存、fjall 临时目录、redb 临时文件）——没有会与真实实现漂移的 mock。
+- **TestStore**：测试用的引擎矩阵，跑的是真实引擎（ephemeral、slatedb 内存、fjall 临时目录、redb 临时文件）——没有会与真实实现漂移的 mock，每个逻辑测试对每一臂都跑。
 
 ### 4. 运行时：关系（图）
 

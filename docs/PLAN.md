@@ -63,6 +63,17 @@ Design decisions live in `docs/adr/`; this file is the index — what shipped, w
 - [x] 2026-11-12 — a point read answers parts, not one assembled map — ADR-0035
 - [x] 2026-11-12 — one write verb, and no assembly function — ADR-0035
 - [x] 2026-11-12 — the document map is opaque and insertion-ordered — ADR-0012, ADR-0035
+- [ ] 2026-11-20 — the lake's parquet files are written with zstd: without it the export costs 120.2 B/row against 33.0 for the same rows, so a baseline moved into the lake saves nothing — ADR-0071
+- [ ] 2026-11-20 — the baseline is a pinned lake version: compaction records `(lake table, version, last covered segment)` instead of writing a full-state scan, replay is lake@V plus the segments after S, and the scanned baseline stays as the fallback for a lake that is absent, behind, or unreadable — ADR-0071
+- [ ] 2026-11-20 — the pointer is verified, not trusted: the reader re-lists the lake and refuses a version whose manifest does not cover S, on ADR-0065's rule that a pointer is a second surface that can disagree with the listing — ADR-0071
+- [ ] 2026-11-20 — the tail crosses as sealed segment blobs: a cutover ships bytes rather than re-encoding a window, so it converts no format on its critical path and does not wait for the drainer — ADR-0071
+- [ ] 2026-11-20 — capture defaults to on, and the two levels become explicit: `Location` says where and `Off` now means the deployment has no local durable directory (the ephemeral engine, a read-only replica, a scratch disk), while the table level says whether and opting a table out reads like one — ADR-0071
+- [ ] 2026-11-20 — the compaction threshold comes down from 1 GiB once the bulk is pinned in the lake; the 1 GiB default exists only because the delta window was the app host's one recoverable region — ADR-0071
+
+## The stores
+
+- [x] 2026-11-20 — the ephemeral engine is a packed B+tree over chunked tables and okm's non-persistent mode (the same declarations, durability chosen at assembly); it is an arm of the engine matrix — ADR-0072
+- [ ] 2026-11-20 — the matrix's cheap zero-fs default moves off slatedb and onto the ephemeral engine; slatedb stays as the arm that disagrees, and stays evidence only while the suite asks `VirtualStorage` rather than the fixture — ADR-0073
 
 ## Packaging and gates
 

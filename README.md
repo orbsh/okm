@@ -87,14 +87,14 @@ Engine selection happens at the assembly site, one decision per collection:
 // production: persistent LSM
 let users: Collection<_, UserKey, User> = Collection::new(Fjall::open("data/users")?);
 
-// tests: pure memory, zero I/O
-let users: Collection<_, UserKey, User> = Collection::new(Mem::default());
+// no persistence: the same model, storage that lives as long as the handle
+let scratch: Collection<_, UserKey, User> = Collection::new(EphemeralStore::new());
 
 // archive: the same declaration, another engine instance
 let archive: Collection<_, UserKey, User> = Collection::new(Fjall::open("data/archive")?);
 ```
 
-Every engine implements the same behavioural contract (see `engine_matrix_test`); swapping engines does not touch application logic — where the bytes live is an implementation detail, and location is not in the type.
+Every engine implements the same behavioural contract (see `engine_matrix_test`, which runs every logic test against all of them); swapping engines does not touch application logic — where the bytes live is an implementation detail, and location is not in the type. **Durability is one of those details**: `EphemeralStore` is the same declarations over an engine that keeps everything and promises nothing, so a model can be given storage without being given persistence, instead of growing a second implementation of itself.
 
 ## The layers beyond the engine
 
@@ -303,9 +303,10 @@ Embedded-language readers (Python / Steel booths) consume the dynamic codec thro
 okm-core = { version = "0.1", features = ["fjall"] }    # or "redb"; the async engines live in okm-async
 ```
 
+- **ephemeral** (sync, always available): `EphemeralStore::new()` — okm's non-persistent mode (ADR-0072). No file, no journal, no recovery, no compaction: a packed B+tree over chunked arenas behind a read/write lock, created and dropped with the handle. Key space, scans, faces and reduces are the same as any other engine's; only durability is given up, and `len()` / `bytes()` are there for a host that bounds it.
 - **fjall** (sync): `FjallStore::open(path)` — local LSM engine, single `Database` handle, `persist` on demand.
-- **slatedb** (async): `SlatedbStore::open(path, Arc<dyn ObjectStore>)` — object-storage backed; construct stores from the `slatedb::object_store` re-exports so versions always match slatedb's internals. Async traversal goes through the matching async iterators. Not a deployment backend (ADR-0072): it exists as the test matrix's least okm-shaped arm — async behind a sync bridge, object-store persistence, its own compaction and flush cadence — because an abstraction tested only against engines that agree has not been tested.
-- **TestStore**: the test matrix over the real engines (slatedb in-memory, fjall temp dir, redb temp file) — no mock implementation to drift from the real ones.
+- **slatedb** (async): `SlatedbStore::open(path, Arc<dyn ObjectStore>)` — object-storage backed; construct stores from the `slatedb::object_store` re-exports so versions always match slatedb's internals. Async traversal goes through the matching async iterators. Not a deployment backend (ADR-0073): it exists as the test matrix's least okm-shaped arm — async behind a sync bridge, object-store persistence, its own compaction and flush cadence — because an abstraction tested only against engines that agree has not been tested.
+- **TestStore**: the test matrix over the real engines (the ephemeral engine, slatedb in-memory, fjall temp dir, redb temp file) — no mock implementation to drift from the real ones, and every logic test runs against each arm.
 
 ### 5. Relations at runtime: the graph
 
