@@ -113,6 +113,75 @@ Cost per row, no row reads, one run.
 - **A covered row costs less than half a point get** (500 ns against 1.2 µs through okm, and a sixth of one bare): the index half was never the expensive half; the row reads are, and a batch scenario should avoid them or hand them to Parquet.
 - **So**: point lookups lose to Redis by an order of magnitude, batch scans win by 1.1–1.4x at best, and batch scans are not what a store is for. That is the wiki's critique measured — Redis's problem is not that in-memory is bad, it is that it is ahead in neither direction and still costs a network hop and a process to operate.
 
+## Space: the same rows in OKM, Parquet, PostgreSQL 18 and InnoDB
+
+`cargo run -p okm-core --release --example size_vs_parquet --features fjall`
+
+Five million order rows of medium width: a `u32`+`u64` key, a 1-byte categorical, a 3-byte currency code, two `i64` stamps, two `u64` ids, a `u16` count, a ~20-byte email and a ~53-byte note — 127.5 B/row as CSV text. The generator is seeded, so every arm sees the same bytes, and `--emit-csv <path>` writes those rows out for the engines this crate cannot link; the PostgreSQL and InnoDB numbers below were measured on that file.
+
+What each number counts:
+
+- **okm** — the store's data files once the write burst has been replayed on reopen and compaction has drained (`disk_space` minus the journal). The journal is quoted separately: it is one bounded segment holding the not-yet-flushed tail, not a second copy of the table.
+- **PostgreSQL 18.7** — heap + primary-key btree + one secondary index (`pg_relation_size`), after `VACUUM ANALYZE`. "Packed" adds `REINDEX` to both btrees.
+- **MariaDB 11.4 (InnoDB, `DYNAMIC`, 16 KiB pages)** — clustered index + one secondary index (`data_length`, `index_length`), after `ANALYZE`. "Packed" adds `OPTIMIZE TABLE`.
+- **Parquet** — one file, arrow-rs 60, 100 000-row row groups, dictionary encoding in both arms.
+- **WAL is excluded everywhere**, because a database's log is not its table: PostgreSQL's `pg_wal` reached 1.0 GB during this load and InnoDB's `ib_logfile` is 100 MB preallocated. fjall's journal is the one that had to be shown, since it sits inside the store directory.
+
+| store | B/row | total | what it is |
+|---|---|---|---|
+| okm, document only | 112.2 | 560.9 MB | entries, no index (logical 121.4 B/row) |
+| okm, + one secondary index | 128.5 | 642.4 MB | entries + index (logical 153.4 B/row; 50.9 MB live journal beside it) |
+| PostgreSQL 18.7, packed | 220.8 | 1,104.0 MB | heap 788.7 + PK btree 157.7 + index 157.5 |
+| PostgreSQL 18.7, as loaded | 231.2 | 1,156.1 MB | the PK btree at 50 % fill before `REINDEX` |
+| MariaDB/InnoDB, packed | 182.8 | 914.2 MB | clustered 740.3 + secondary 173.9 |
+| MariaDB/InnoDB, as loaded | 188.1 | 940.5 MB | before `OPTIMIZE` |
+| Parquet, zstd(1) | 33.0 | 165.1 MB | dictionary + RLE + zstd |
+| Parquet, uncompressed | 115.6 | 577.9 MB | dictionary + RLE only |
+| the CSV these were loaded from | 127.5 | 637.7 MB | raw text, for scale |
+
+How to read it:
+
+- **The row stores are one family and the columnar file is another.** okm 128.5, InnoDB 182.8, PostgreSQL 220.8 — a 1.7× spread among engines that all answer point reads; Parquet is **3.9× below okm** and cannot answer one at all. Which of the two matters is a workload question, not a format ranking.
+- **Where okm's bytes go**: 153.4 logical = 121.4 document entry (15-byte key + 106-byte value) + 32.0 index entry. On disk it is 128.5, not 186: block prefix sharing is worth ~8 % on the documents (121.4 → 112.2) and it halves the index entry, whose 32 logical bytes cost 16 on disk — every entry in a block starts with the same namespace and key prefix.
+- **Where PostgreSQL's go**: the heap spends 157.7 B/row to hold 119 B of column data. The 38.7 B difference is the 24-byte tuple header (23 + the alignment step), the 4-byte item pointer, per-attribute alignment padding (four `int8`s force `int4` neighbours to pad), and the page header. The other 63.1 B/row is btrees — and the primary-key btree is a second copy of the key, because a PostgreSQL heap has no order of its own.
+- **Where InnoDB's go**: clustering on the primary key removes that second copy, and it pays for it differently — 18 B/row of hidden columns (5-byte record header, 6-byte `DB_TRX_ID`, 7-byte `DB_ROLL_PTR`) plus 15/16 page fill. The secondary index carries the PK again, which is why it is 34.8 B/row for a 16-byte row.
+- **What Parquet is doing**: no compressor is involved in the 115.6 arm — dictionary encoding and RLE alone put one file *below* the CSV it was loaded from, because repeated categories and email domains collapse to ids. zstd then does the remaining 3.5×, on the columns whose entropy is not structural (the note text, the ids).
+- **One knob, not a property**: compression. fjall's block compression is off in the default keyspace options, PostgreSQL compresses only TOAST-able values (≥ ~2 KB), InnoDB needs page compression or `ROW_FORMAT=COMPRESSED`. Turning on fjall's block compression would put okm well below both SQL engines and nowhere near the column store — that gap is the encoding, not the codec.
+- **The LSM number depends on where compaction stood.** The same table at one million rows reads 142.9 B/row for the indexed arm, because that run measured the first flush generation; five million rows have merged levels behind them. Quote the shape (well below the two SQL engines), not the last digit.
+- **Index cost is real but small at this width**: 16.3 B/row on disk for a declared secondary index whose entry is 32 B logically — and that is the entry `includes(amount)` pays for on every row write.
+
+Scaling what was measured (single copy, no replicas): 100 million of these rows is **12.9 GB** on okm, 22.1 GB in PostgreSQL, 18.3 GB in InnoDB, 3.3 GB in Parquet.
+
+Reproducing the two SQL arms — the same CSV, each engine's own narrowest natural type (a PG enum is a 4-byte OID, an InnoDB `ENUM` is 1 byte, which is part of the gap):
+
+```sql
+-- PostgreSQL 18
+CREATE TYPE order_status AS ENUM ('pending','paid','shipped','refunded','cancelled');
+CREATE TABLE orders (
+  org_id int4 NOT NULL, order_id int8 NOT NULL, status order_status NOT NULL,
+  currency char(3) NOT NULL, amount int8 NOT NULL, created_at int8 NOT NULL,
+  customer_id int8 NOT NULL, items int2 NOT NULL, email text NOT NULL, note text NOT NULL,
+  PRIMARY KEY (org_id, order_id)
+);
+CREATE INDEX by_created ON orders (created_at) INCLUDE (amount);
+\copy orders FROM 'orders.csv' WITH (FORMAT csv)
+VACUUM ANALYZE orders;
+SELECT pg_relation_size('orders'), pg_relation_size('orders_pkey'), pg_relation_size('by_created');
+
+-- MariaDB 11.4
+CREATE TABLE orders (
+  org_id INT UNSIGNED NOT NULL, order_id BIGINT UNSIGNED NOT NULL,
+  status ENUM('pending','paid','shipped','refunded','cancelled') NOT NULL,
+  currency VARCHAR(3) NOT NULL, amount BIGINT UNSIGNED NOT NULL,
+  created_at BIGINT NOT NULL, customer_id BIGINT UNSIGNED NOT NULL,
+  items SMALLINT UNSIGNED NOT NULL, email VARCHAR(64) NOT NULL, note VARCHAR(128) NOT NULL,
+  PRIMARY KEY (org_id, order_id), KEY by_created (created_at, amount)
+) ENGINE=InnoDB;
+LOAD DATA LOCAL INFILE 'orders.csv' INTO TABLE orders FIELDS TERMINATED BY ',';
+ANALYZE TABLE orders;
+SELECT data_length, index_length FROM information_schema.tables WHERE table_name = 'orders';
+```
+
 ## Dynamic codec tax (okm-dynamic vs Rust derive, same declaration)
 
 | path | dynamic | derive | tax |

@@ -112,6 +112,75 @@ Redis 臂连的是 valkey 9.1.2，走 loopback，用的是写进 example 的 RES
 - **覆盖读一行不到半个点查**：okm 上 500 ns 对 1.2 µs，裸 fjall 更是只有一个零头；索引那一半从来不是贵的那一半，贵的是回表，而回表在批量场景里本来就该被避免或外包出去。
 - **结论**：点查场景 Redis 输一个数量级，批量场景它只赢 1.1–1.4 倍，而那个场景的正确出口是 Parquet 而不是任何 KV。这就是 wiki 里那份批判的实测版本——Redis 的问题不是"内存库不好"，是它在两个方向都不占优，剩下只有多一跳网络的成本与一份要单独运维的进程。
 
+## 空间：同一批行在 OKM、Parquet、PostgreSQL 18 与 InnoDB 里
+
+`cargo run -p okm-core --release --example size_vs_parquet --features fjall`
+
+五百万行订单，中等宽度：`u32`+`u64` 的主键、1 字节分类值、3 字节货币码、两个 `i64` 时间戳、两个 `u64` 标识、一个 `u16` 计数、约 20 字节邮箱、约 53 字节备注——写成 CSV 文本是 127.5 B/行。生成器带固定种子，所以每个 arm 看到的字节相同；`--emit-csv <path>` 把这批行导出，供本 crate 链不进去的引擎使用，下面的 PostgreSQL 与 InnoDB 数字就是这么量出来的。
+
+各列统计的是什么：
+
+- **okm** — 写入突发在重开后回放完、压缩（compaction）跑干净之后，store 自己的数据文件（`disk_space` 减去 journal）。journal 单列：它是一个有界的段，装着尚未落盘的尾巴，不是表的两份拷贝。
+- **PostgreSQL 18.7** — heap + 主键 btree + 一个二级索引（`pg_relation_size`），`VACUUM ANALYZE` 之后。"压实"版本再加两棵 btree 的 `REINDEX`。
+- **MariaDB 11.4（InnoDB，`DYNAMIC`，16 KiB 页）** — 聚簇索引 + 一个二级索引（`data_length`、`index_length`），`ANALYZE` 之后。"压实"版本再加 `OPTIMIZE TABLE`。
+- **Parquet** — 单文件，arrow-rs 60，十万行一个 row group，两个 arm 都开字典编码。
+- **三家的 WAL 都不计入**，因为数据库的日志不是它的表：本次装载 PostgreSQL 的 `pg_wal` 涨到 1.0 GB，InnoDB 的 `ib_logfile` 是预分配的 100 MB。只有 fjall 的 journal 必须列出来，因为它就躺在 store 目录里。
+
+| 存储 | B/行 | 总量 | 是什么 |
+|---|---|---|---|
+| okm，仅文档 | 112.2 | 560.9 MB | 条目，无索引（逻辑 121.4 B/行） |
+| okm，+ 一个二级索引 | 128.5 | 642.4 MB | 条目 + 索引（逻辑 153.4 B/行；旁边还有 50.9 MB 活 journal） |
+| PostgreSQL 18.7，压实 | 220.8 | 1,104.0 MB | heap 788.7 + 主键 btree 157.7 + 索引 157.5 |
+| PostgreSQL 18.7，装载态 | 231.2 | 1,156.1 MB | `REINDEX` 前，主键 btree 只填到 50% |
+| MariaDB/InnoDB，压实 | 182.8 | 914.2 MB | 聚簇 740.3 + 二级 173.9 |
+| MariaDB/InnoDB，装载态 | 188.1 | 940.5 MB | `OPTIMIZE` 前 |
+| Parquet，zstd(1) | 33.0 | 165.1 MB | 字典 + RLE + zstd |
+| Parquet，不压缩 | 115.6 | 577.9 MB | 只有字典 + RLE |
+| 装载用的那份 CSV | 127.5 | 637.7 MB | 纯文本，作尺度参照 |
+
+怎么读：
+
+- **三家行存是一族，列存是另一族**。okm 128.5、InnoDB 182.8、PostgreSQL 220.8——都能答点查的引擎之间只差 1.7 倍；Parquet 比 okm 小 **3.9 倍**，却根本答不了点查。哪个重要是工作负载问题，不是格式排名。
+- **okm 的字节去哪了**：逻辑 153.4 = 文档条目 121.4（键 15 + 值 106）+ 索引条目 32.0。落盘是 128.5 而不是 186：块内前缀共享在文档上值约 8%（121.4 → 112.2），在索引条目上则直接对折——逻辑 32 字节的条目落盘只花 16 字节，因为同一块里每个条目都从同一段命名空间与主键前缀开头。
+- **PostgreSQL 的去哪了**：heap 每行花 157.7 B 装 119 B 的列数据。差的 38.7 B 是 24 字节元组头（23 + 对齐台阶）、4 字节行指针、按属性类型的对齐填充（四个 `int8` 逼得旁边的 `int4` 补空）以及页头。另外每行 63.1 B 是 btree——而主键 btree 是键的第二份拷贝，因为 PostgreSQL 的 heap 本身没有序。
+- **InnoDB 的去哪了**：聚簇在主键上，省掉那份第二拷贝，代价换成每行 18 B 隐藏列（5 字节记录头、6 字节 `DB_TRX_ID`、7 字节 `DB_ROLL_PTR`）加 15/16 页填充。二级索引要把主键再带一遍，所以 16 字节的行它要花 34.8 B/行。
+- **Parquet 在做什么**：115.6 那个 arm 里没有任何压缩器——只靠字典编码与 RLE，单个文件就比灌进去的 CSV 小，因为重复的分类值和邮箱域名塌成 id。剩下的 3.5 倍由 zstd 完成，吃的是那些熵不来自结构本身的列（备注文本、标识）。
+- **压缩是一个开关，不是属性**：fjall 默认 keyspace 选项里块压缩是关的，PostgreSQL 只压 TOAST 得了的值（≥ 约 2 KB），InnoDB 要 page compression 或 `ROW_FORMAT=COMPRESSED`。给 fjall 开块压缩，okm 会明显低于两个 SQL 引擎，但离列存仍差得远——那段差距是编码，不是压缩器。
+- **LSM 的数字取决于压缩跑到哪一步**：同一张表一百万行时带索引的 arm 读到 142.9 B/行，因为那次量到的是第一代 flush；五百万行的层已经合并过。引用形状（远低于两个 SQL 引擎），不要引用最后一位数。
+- **索引在这个宽度上确实便宜**：声明一个二级索引，逻辑条目 32 B，落盘只多 16.3 B/行——而这正是 `includes(amount)` 每次写行都要付的那份。
+
+按实测线性外推（单副本、不算副本）：同样一亿行，okm **12.9 GB**、PostgreSQL 22.1 GB、InnoDB 18.3 GB、Parquet 3.3 GB。
+
+复现两个 SQL arm——同一份 CSV，各自用自己最窄的自然类型（PG 的 enum 是 4 字节 OID，InnoDB 的 `ENUM` 是 1 字节，这也是差距的一部分）：
+
+```sql
+-- PostgreSQL 18
+CREATE TYPE order_status AS ENUM ('pending','paid','shipped','refunded','cancelled');
+CREATE TABLE orders (
+  org_id int4 NOT NULL, order_id int8 NOT NULL, status order_status NOT NULL,
+  currency char(3) NOT NULL, amount int8 NOT NULL, created_at int8 NOT NULL,
+  customer_id int8 NOT NULL, items int2 NOT NULL, email text NOT NULL, note text NOT NULL,
+  PRIMARY KEY (org_id, order_id)
+);
+CREATE INDEX by_created ON orders (created_at) INCLUDE (amount);
+\copy orders FROM 'orders.csv' WITH (FORMAT csv)
+VACUUM ANALYZE orders;
+SELECT pg_relation_size('orders'), pg_relation_size('orders_pkey'), pg_relation_size('by_created');
+
+-- MariaDB 11.4
+CREATE TABLE orders (
+  org_id INT UNSIGNED NOT NULL, order_id BIGINT UNSIGNED NOT NULL,
+  status ENUM('pending','paid','shipped','refunded','cancelled') NOT NULL,
+  currency VARCHAR(3) NOT NULL, amount BIGINT UNSIGNED NOT NULL,
+  created_at BIGINT NOT NULL, customer_id BIGINT UNSIGNED NOT NULL,
+  items SMALLINT UNSIGNED NOT NULL, email VARCHAR(64) NOT NULL, note VARCHAR(128) NOT NULL,
+  PRIMARY KEY (org_id, order_id), KEY by_created (created_at, amount)
+) ENGINE=InnoDB;
+LOAD DATA LOCAL INFILE 'orders.csv' INTO TABLE orders FIELDS TERMINATED BY ',';
+ANALYZE TABLE orders;
+SELECT data_length, index_length FROM information_schema.tables WHERE table_name = 'orders';
+```
+
 ## 动态 codec 的税（okm-dynamic 对 Rust derive，同一份声明）
 
 | 路径 | dynamic | derive | 税 |
