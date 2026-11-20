@@ -263,20 +263,22 @@ impl ReduceLogic for BookTotal {
 fn the_reduce_prefix_is_the_tables_own_header() {
     let t = <Ledger as Document>::collection(TestStore::default());
     let group_key = LedgerKey { id: 0 };
-    let group_row = Ledger {
-        book: 7,
-        amount: 0,
-    };
+    let group_row = Ledger { book: 7, amount: 0 };
 
     t.put(&LedgerKey { id: 1 }, &Ledger { book: 7, amount: 5 })
         .unwrap();
-    t.put(&LedgerKey { id: 2 }, &Ledger { book: 7, amount: 11 })
-        .unwrap();
+    t.put(
+        &LedgerKey { id: 2 },
+        &Ledger {
+            book: 7,
+            amount: 11,
+        },
+    )
+    .unwrap();
 
     // Through the table: the group the writes folded.
     assert_eq!(
-        t.reduce_get::<BookTotal>(&group_key, &group_row)
-            .unwrap(),
+        t.reduce_get::<BookTotal>(&group_key, &group_row).unwrap(),
         Some(CountSum { count: 2, sum: 16 }),
         "the collection composes the header the write path used"
     );
@@ -285,7 +287,11 @@ fn the_reduce_prefix_is_the_tables_own_header() {
     let entry = <BookTotal as Reduce>::entry_key(&t.header(), &group_key, &group_row);
     // `[0xFF][partition 1B][ns 2B][slot 2B][group]` — the ns is TWO bytes, so a
     // window of three can only ever see its high byte.
-    assert_eq!(&entry[..4], &[0xFF, 3, 0x00, 26], "partition face, then the ns");
+    assert_eq!(
+        &entry[..4],
+        &[0xFF, 3, 0x00, 26],
+        "partition face, then the ns"
+    );
     assert_eq!(&entry[4..6], &[0x50, 0x01], "the reduce family's slot");
 
     // Under the ns alone — the prefix a caller can build by leaving out the

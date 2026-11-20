@@ -14,12 +14,16 @@
 )]
 
 use okm_async::TestStore;
+use okm_core::changelog::replay::replay_after;
 use okm_core::changelog::{
     ChangelogConfig, ChangelogStore, LakeBaseline, header_hex, lake_baseline, last_sealed,
     table_dir,
 };
+use okm_core::schema::CollectionSchema;
 use okm_core::{Collection, Document, DocumentEncode, KeyEncode};
+use okm_dynamic::DynamicCollection;
 use okm_lake::baseline::{compact_against, verify_at};
+use okm_lake::restore::restore_at;
 use okm_lake::{DrainConfig, drain};
 
 #[derive(KeyEncode, Clone, PartialEq, Debug)]
@@ -223,4 +227,57 @@ fn a_compaction_points_at_what_the_lake_actually_holds() {
         "a refused compaction writes no pointer"
     );
     assert!(segments_left(&other_dir) > 0, "and deletes no segment");
+}
+
+#[test]
+fn a_pointered_table_comes_back_from_the_lake_and_then_the_tail() {
+    let logs = tempfile::tempdir().expect("logs");
+    let lake = tempfile::tempdir().expect("lake");
+    fill(logs.path(), 0..8);
+    let header = <R as Document>::NS_PREFIX.to_vec();
+    let dir = table_dir(logs.path(), &header);
+    let covers = coverage_of(&dir);
+    drain_into(logs.path(), lake.path());
+    let table = lake_table(lake.path());
+    let store = ChangelogStore::new(TestStore::slatedb_mem(), ChangelogConfig::new(logs.path()));
+    compact_against::<_, R>(&store, &table, 0, 0).expect("compact against the lake");
+
+    // The tail: writes the lake does not hold. They must survive the compaction, and they
+    // must number themselves ABOVE the reference — a reference is a high-water mark, not a
+    // file that happens to be last.
+    let app = collection(logs.path());
+    for id in 8..12 {
+        app.put(
+            &K { id },
+            &R {
+                level: 2,
+                name: format!("tail {id}"),
+            },
+        )
+        .expect("put");
+    }
+    drop(app);
+
+    // A reader with nothing local: the lake holds the state, the log holds the tail.
+    let blank = TestStore::slatedb_mem();
+    let mut plain: Collection<_, K, R> = Collection::new(blank.shared_handle());
+    let restored = restore_at(&dir, &table, &mut plain).expect("restore lake@V");
+    assert_eq!(restored.version, 0);
+    assert_eq!(restored.covers, covers);
+    assert_eq!(restored.rows, 8, "the lake's own rows, not the tail's");
+
+    let target = DynamicCollection::new(
+        blank.shared_handle(),
+        u16::from_be_bytes([header[0], header[1]]),
+        CollectionSchema::of::<K, R>(),
+        Vec::new(),
+    );
+    let tail = replay_after(&dir, restored.covers, &target).expect("replay the tail");
+    assert_eq!(tail.puts, 4, "the rows the lake does not have: {tail:?}");
+    for id in 0..12u64 {
+        assert!(
+            target.fetch(&K { id }.encode()).expect("fetch").is_some(),
+            "row {id} is in neither half"
+        );
+    }
 }

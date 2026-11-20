@@ -226,6 +226,21 @@ pub fn current_state(store: &dyn LakeStore, table: &str) -> Result<RecordBatch> 
     Ok(state_and_total(store, table)?.0)
 }
 
+/// The table as of a VERSION, not as of now — what a pinned baseline hands over
+/// (ADR-0071 §1). The lake will have drained windows since; a reader restoring version V
+/// must see V's own rows, or the tail it replays on top would be applied to a later state
+/// than the log directory says it is.
+pub fn current_state_at_version(
+    store: &dyn LakeStore,
+    table: &str,
+    version: u64,
+) -> Result<RecordBatch> {
+    let files = delta::files_in_order_at_version(store, table, version).map_err(ReadError::new)?;
+    let (schema, batches) = aligned_files(store, table, &files)?;
+    let keys = key_columns(store, table)?;
+    resolve(&schema, &batches, &keys).map(|(batch, _)| batch)
+}
+
 /// [`current_state`] for a table inside a local lake directory.
 pub fn current_state_at(table_dir: &Path) -> Result<RecordBatch> {
     let (store, table) = delta::lake_of(table_dir).map_err(ReadError::new)?;

@@ -42,6 +42,7 @@ pub mod cli;
 pub mod delta;
 pub mod publish;
 pub mod read;
+pub mod restore;
 pub mod snapshot;
 pub mod status;
 pub mod store;

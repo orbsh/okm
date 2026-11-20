@@ -1,6 +1,6 @@
 # 0071 — The baseline is a pinned lake version, and the tail is still the segment
 
-Status: decided 2026-11-20, not yet implemented.
+Status: decided 2026-11-20, implemented — the pointer, its verification, the lake-side compaction and the restore; the capture default and the compaction threshold are follow-ups in PLAN, because both only pay off once the baseline is pinned.
 
 ## Context
 
