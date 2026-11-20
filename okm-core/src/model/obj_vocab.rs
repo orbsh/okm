@@ -367,7 +367,7 @@ pub fn pending_in<I: Id>(
     vocabulary: &Vocabulary<I>,
     header: &[u8],
     faces: VocabFaces,
-    ops: &[(Vec<u8>, Option<Vec<u8>>)],
+    ops: &crate::engine::storage::Batch,
 ) -> Vec<I> {
     if vocabulary.pending_len() == 0 {
         return Vec::new();
@@ -377,7 +377,7 @@ pub fn pending_in<I: Id>(
         .filter(|(label, _)| {
             let key = name_key(header, faces, label);
             ops.iter()
-                .any(|(written, value)| value.is_some() && written == &key)
+                .any(|(written, value)| value.is_some() && written == key.as_slice())
         })
         .map(|(_, id)| id)
         .collect()
@@ -564,7 +564,7 @@ mod tests {
         // exactly what a caller's batch that never landed looks like.
         let mut other = Batch::default();
         other.put(b"elsewhere".to_vec(), vec![1]);
-        assert!(pending_in(&d, HEADER, FIELD_VOCAB, &other.ops).is_empty());
+        assert!(pending_in(&d, HEADER, FIELD_VOCAB, &other).is_empty());
         assert_eq!(d.pending_len(), 1);
 
         // The commit that carries it does.
@@ -573,7 +573,7 @@ mod tests {
             key(HEADER, FIELD_VOCAB_NAME_SLOT, b"alpha"),
             0u16.to_be_bytes().to_vec(),
         );
-        let promoted = pending_in(&d, HEADER, FIELD_VOCAB, &commit.ops);
+        let promoted = pending_in(&d, HEADER, FIELD_VOCAB, &commit);
         assert_eq!(promoted, vec![0]);
         d.landed(&promoted);
         assert_eq!(d.pending_len(), 0);
@@ -603,7 +603,7 @@ mod tests {
             key(HEADER, FIELD_VOCAB_NAME_SLOT, b"gamma"),
             id.to_be_bytes().to_vec(),
         );
-        let promoted = pending_in(&d, HEADER, FIELD_VOCAB, &commit.ops);
+        let promoted = pending_in(&d, HEADER, FIELD_VOCAB, &commit);
         d.landed(&promoted);
         store
             .del(&key(HEADER, FIELD_VOCAB_NAME_SLOT, b"gamma"))

@@ -1281,11 +1281,11 @@ impl VirtualStorage for EphemeralStore {
     /// only cost is the guard.
     fn commit_batch(&self, batch: crate::engine::storage::Batch) -> crate::error::Result<()> {
         let mut g = self.write();
-        for (key, value) in batch.ops {
+        for (key, value) in batch.iter() {
             match value {
-                Some(value) => g.insert(&key, &value)?,
+                Some(value) => g.insert(key, value)?,
                 None => {
-                    g.remove(&key);
+                    g.remove(key);
                 }
             }
         }

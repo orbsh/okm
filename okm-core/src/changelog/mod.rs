@@ -506,10 +506,22 @@ impl Changelog {
     /// (an index rebuild, a reduce settle) is not a change to the truth.
     /// Returns how many ops it carried: the staged/flush split (`stage_capture`
     /// / `flush_capture`) has to tell "nothing to say" from "say it later".
-    pub fn stage(&mut self, ops: &[(Vec<u8>, Option<Vec<u8>>)]) -> usize {
+    pub fn stage(&mut self, ops: &crate::engine::storage::Batch) -> usize {
+        self.stage_spans(ops.iter())
+    }
+
+    /// The same staging for a baseline's own op list (built from the window, not a batch).
+    pub fn stage_pairs(&mut self, ops: &[(Vec<u8>, Option<Vec<u8>>)]) -> usize {
+        self.stage_spans(ops.iter().map(|(k, v)| (k.as_slice(), v.as_deref())))
+    }
+
+    fn stage_spans<'a, I>(&mut self, ops: I) -> usize
+    where
+        I: Iterator<Item = (&'a [u8], Option<&'a [u8]>)> + Clone,
+    {
         self.staged.clear();
         let count = ops
-            .iter()
+            .clone()
             .filter(|(key, _)| self.plan.carries_key(key))
             .count();
         if count == 0 {
@@ -1098,7 +1110,7 @@ pub fn write_baseline(
         .collect();
     let mut log = Changelog::open(cfg.clone(), header, meta, plan)?;
     for chunk in ops.chunks(BASELINE_CHUNK) {
-        if log.stage(chunk) > 0 {
+        if log.stage_pairs(chunk) > 0 {
             log.commit_staged()?;
         }
     }
@@ -2130,11 +2142,11 @@ impl<S> ChangelogStore<S> {
     }
 
     /// The headers this commit writes into: registered, and actually present.
-    fn touched(&self, ops: &[(Vec<u8>, Option<Vec<u8>>)]) -> Vec<Vec<u8>> {
+    fn touched(&self, ops: &crate::engine::storage::Batch) -> Vec<Vec<u8>> {
         let index = self.ns_index.borrow();
         let odd = self.odd_headers.borrow();
         let mut out: BTreeSet<Vec<u8>> = BTreeSet::new();
-        for (key, _) in ops {
+        for (key, _) in ops.iter() {
             // The ns is the key's first two bytes, so the table is one lookup away. Only a
             // declaration with no `[ns 2B]` header needs the prefix scan.
             let named = key
@@ -2157,7 +2169,17 @@ impl<S> ChangelogStore<S> {
 
     /// Stage this commit's share in every touched table's log. Nothing is written
     /// yet — the frame is memory until the engine says `Ok`.
-    fn stage(&self, ops: &[(Vec<u8>, Option<Vec<u8>>)]) -> Vec<Vec<u8>> {
+    /// One op, staged without building a batch around it — the point-write verbs.
+    fn stage_one(&self, key: &[u8], value: Option<&[u8]>) -> Vec<Vec<u8>> {
+        let mut batch = crate::engine::storage::Batch::default();
+        match value {
+            Some(value) => batch.put_bytes(key, value),
+            None => batch.del(key),
+        }
+        self.stage(&batch)
+    }
+
+    fn stage(&self, ops: &crate::engine::storage::Batch) -> Vec<Vec<u8>> {
         let touched = self.touched(ops);
         for header in &touched {
             self.with_log(header, |log| {
@@ -2318,10 +2340,9 @@ impl<S: VirtualStorage> VirtualStorage for ChangelogStore<S> {
 
     fn put(&self, key: Vec<u8>, value: Vec<u8>) -> Result<()> {
         // A point write is a one-op commit: captured like any other, so a host
-        // that reaches the engine directly is not invisible either. The clone is
-        // the price of the frame's own copy of the bytes.
-        let ops = [(key.clone(), Some(value.clone()))];
-        let touched = self.stage(&ops);
+        // that reaches the engine directly is not invisible either. The frame is
+        // the price of its own copy of the bytes, taken once.
+        let touched = self.stage_one(&key, Some(&value));
         self.inner.put(key, value)?;
         self.flush(&touched);
         Ok(())
@@ -2330,8 +2351,7 @@ impl<S: VirtualStorage> VirtualStorage for ChangelogStore<S> {
     fn put_bytes(&self, key: &[u8], value: &[u8]) -> Result<()> {
         // The frame keeps its own copy (it outlives the write); the engine below takes the
         // span, so a captured point write is one copy, not two.
-        let ops = [(key.to_vec(), Some(value.to_vec()))];
-        let touched = self.stage(&ops);
+        let touched = self.stage_one(key, Some(value));
         self.inner.put_bytes(key, value)?;
         self.flush(&touched);
         Ok(())
@@ -2342,8 +2362,7 @@ impl<S: VirtualStorage> VirtualStorage for ChangelogStore<S> {
     }
 
     fn del(&self, key: &[u8]) -> Result<()> {
-        let ops = [(key.to_vec(), None)];
-        let touched = self.stage(&ops);
+        let touched = self.stage_one(key, None);
         self.inner.del(key)?;
         self.flush(&touched);
         Ok(())
@@ -2354,7 +2373,7 @@ impl<S: VirtualStorage> VirtualStorage for ChangelogStore<S> {
     }
 
     fn commit_batch(&self, batch: Batch) -> Result<()> {
-        let touched = self.stage(&batch.ops);
+        let touched = self.stage(&batch);
         // Only a commit that returned Ok may append: a frame naming a refused
         // write would be a phantom row (ADR-0045 §7).
         self.inner.commit_batch(batch)?;

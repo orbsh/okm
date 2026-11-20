@@ -359,7 +359,8 @@ impl<T: WireTransport> VirtualStorageAsync for WireClient<T> {
     /// the commit outcome: waiting for it is what makes a refused batch an
     /// `Err` here instead of a lost write that looked like a successful one.
     async fn commit_batch(&self, batch: Batch) -> okm_core::error::Result<()> {
-        self.ask(&OpFrame::write_batch(&batch.ops))
+        // One frame is one copy: the carrier on the wire owns its bytes.
+        self.ask(&OpFrame::write_batch(&batch.collect_pairs()))
             .await
             .map(|_ack| ())
             .map_err(okm_core::error::Error::Engine)

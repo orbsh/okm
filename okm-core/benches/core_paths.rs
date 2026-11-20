@@ -627,6 +627,24 @@ fn bench_index_entries(c: &mut Criterion) {
     g.finish()
 }
 
+/// The same put over the engine that costs nothing but okm's own work (the ephemeral
+/// default), because a slatedb commit is 40 µs and hides everything this crate does. This is
+/// the number a change to the write path has to move.
+fn bench_write_ephemeral(c: &mut Criterion) {
+    let mut g = c.benchmark_group("write-ephemeral");
+    g.bench_function("put/row_with_index+reduce", |b| {
+        let t: Collection<TestStore, BenchKey, BenchRow> =
+            Collection::open(TestStore::default()).unwrap();
+        let mut i = 0u64;
+        b.iter(|| {
+            t.put(&make_key(i), &make_row(i)).unwrap();
+            i += 1;
+            black_box(())
+        })
+    });
+    g.finish()
+}
+
 criterion_group!(
     benches,
     bench_key_encode,
@@ -639,6 +657,7 @@ criterion_group!(
     bench_dynamic,
     bench_compiled_plan,
     bench_route_maps,
-    bench_index_entries
+    bench_index_entries,
+    bench_write_ephemeral
 );
 criterion_main!(benches);

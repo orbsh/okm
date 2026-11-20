@@ -1468,7 +1468,7 @@ impl<S: VirtualStorage, K: KeyEncode, R: Document<Key = K>> Collection<S, K, R> 
         let header = self.header();
         let promoted = {
             let vocab = self.fields_vocab.borrow();
-            pending_in(&vocab, &header, FIELD_VOCAB, &batch.ops)
+            pending_in(&vocab, &header, FIELD_VOCAB, &batch)
         };
         self.store.commit_batch(batch)?;
         self.fields_vocab.borrow_mut().landed(&promoted);

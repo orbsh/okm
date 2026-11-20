@@ -509,10 +509,10 @@ impl VirtualStorageAsync for SlatedbStore {
         batch: okm_core::engine::storage::Batch,
     ) -> okm_core::error::Result<()> {
         let mut wb = slatedb::WriteBatch::new();
-        for (k, v) in &batch.ops {
+        for (k, v) in batch.iter() {
             match v {
-                Some(v) => wb.put(k.as_slice(), v.as_slice()),
-                None => wb.delete(k.as_slice()),
+                Some(v) => wb.put(k, v),
+                None => wb.delete(k),
             }
         }
         let h = self

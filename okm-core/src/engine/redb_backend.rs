@@ -152,10 +152,10 @@ impl VirtualStorage for RedbStore {
         let txn = self.db.begin_write().map_err(eng)?;
         {
             let mut table = txn.open_table(TABLE).map_err(eng)?;
-            for (key, value) in batch.ops {
+            for (key, value) in batch.iter() {
                 match value {
-                    Some(v) => table.insert(key.as_slice(), v.as_slice()).map_err(eng)?,
-                    None => table.remove(key.as_slice()).map_err(eng)?,
+                    Some(v) => table.insert(key, v).map_err(eng)?,
+                    None => table.remove(key).map_err(eng)?,
                 };
             }
         }

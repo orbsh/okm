@@ -175,7 +175,8 @@ impl VirtualStorage for RemoteStore {
     /// cross-assembly-point atomic path (ADR-0003) survives remoteness
     /// because the receiver commits the whole op list in one call.
     fn commit_batch(&self, batch: Batch) -> crate::error::Result<()> {
-        self.round_trip(&OpFrame::write_batch(&batch.ops))
+        // The frame is bytes on a socket: it owns its copy, taken once here.
+        self.round_trip(&OpFrame::write_batch(&batch.collect_pairs()))
             .map(|_ack| ())
     }
 }

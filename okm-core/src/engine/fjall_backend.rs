@@ -72,10 +72,10 @@ impl VirtualStorage for FjallStore {
     /// stays engine-agnostic (Batch), the atomicity is fjall's.
     fn commit_batch(&self, batch: Batch) -> crate::error::Result<()> {
         let mut wb = self.db.batch();
-        for (k, v) in &batch.ops {
+        for (k, v) in batch.iter() {
             match v {
-                Some(v) => wb.insert(&self.ks, k.clone(), v.clone()),
-                None => wb.remove(&self.ks, k.clone()),
+                Some(v) => wb.insert(&self.ks, k, v),
+                None => wb.remove(&self.ks, k),
             }
         }
         wb.commit()

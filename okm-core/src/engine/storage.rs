@@ -128,10 +128,10 @@ pub trait VirtualStorage {
     /// as ONE engine-level atomic unit — the single WAL commit is real,
     /// not a replay.
     fn commit_batch(&self, batch: Batch) -> crate::error::Result<()> {
-        for (k, v) in batch.ops {
+        for (k, v) in batch.iter() {
             match v {
-                Some(v) => self.put(k, v)?,
-                None => self.del(&k)?,
+                Some(v) => self.put_bytes(k, v)?,
+                None => self.del(k)?,
             }
         }
         Ok(())
@@ -433,16 +433,117 @@ impl<S: VirtualStorage + ?Sized> VirtualStorage for &S {
 /// callers: the commit boundary is the engine method, never the carrier).
 #[derive(Default)]
 pub struct Batch {
-    pub ops: Vec<(Vec<u8>, Option<Vec<u8>>)>,
+    /// Every op's bytes, back to back.
+    bytes: Vec<u8>,
+    /// Where each op's key and value sit in `bytes`, in write order.
+    pub ops: Vec<OpSpan>,
+}
+
+/// One op of a [`Batch`], by span into the batch's buffer: `(start, end)` for the key, and
+/// the same for a value when the op is a put. Spans, not owned strings, so appending an op is
+/// a copy into one buffer rather than two allocations (ADR-0074 §3) — the write path already
+/// built the bytes once and the store will copy them again anyway.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct OpSpan {
+    pub key: (u32, u32),
+    pub value: Option<(u32, u32)>,
 }
 
 impl Batch {
     pub fn put(&mut self, key: Vec<u8>, value: Vec<u8>) {
-        self.ops.push((key, Some(value)));
+        self.put_bytes(&key, &value);
     }
+
+    /// Append a put from borrowed bytes — the form the entry path hands over.
+    pub fn put_bytes(&mut self, key: &[u8], value: &[u8]) {
+        let key_start = self.bytes.len() as u32;
+        self.bytes.extend_from_slice(key);
+        let key_end = self.bytes.len() as u32;
+        let value_start = self.bytes.len() as u32;
+        self.bytes.extend_from_slice(value);
+        let value_end = self.bytes.len() as u32;
+        self.ops.push(OpSpan {
+            key: (key_start, key_end),
+            value: Some((value_start, value_end)),
+        });
+    }
+
     pub fn del(&mut self, key: &[u8]) {
-        self.ops.push((key.to_vec(), None));
+        let start = self.bytes.len() as u32;
+        self.bytes.extend_from_slice(key);
+        let end = self.bytes.len() as u32;
+        self.ops.push(OpSpan {
+            key: (start, end),
+            value: None,
+        });
     }
+
+    /// The batch's ops as `(key, value-when-a-put)`, in write order.
+    pub fn iter(&self) -> Ops<'_> {
+        Ops {
+            bytes: &self.bytes,
+            ops: &self.ops,
+            front: 0,
+            back: self.ops.len(),
+        }
+    }
+
+    /// The ops as owned pairs — for the callers that must keep them (a remote frame, a test
+    /// assertion). The write path does not: it hands the spans to `commit_batch` directly.
+    pub fn collect_pairs(&self) -> Vec<(Vec<u8>, Option<Vec<u8>>)> {
+        self.iter()
+            .map(|(k, v)| (k.to_vec(), v.map(<[u8]>::to_vec)))
+            .collect()
+    }
+}
+
+/// [`Batch::iter`]: spans resolved against the batch's buffer. Concrete (not `impl Iterator`)
+/// because the staging path needs `Clone` to count before it writes, and an `impl` type cannot
+/// promise that.
+#[derive(Clone)]
+pub struct Ops<'a> {
+    bytes: &'a [u8],
+    ops: &'a [OpSpan],
+    front: usize,
+    back: usize,
+}
+
+impl<'a> Iterator for Ops<'a> {
+    type Item = (&'a [u8], Option<&'a [u8]>);
+
+    fn next(&mut self) -> Option<Self::Item> {
+        if self.front >= self.back {
+            return None;
+        }
+        let op = self.ops[self.front];
+        self.front += 1;
+        Some(resolve(self.bytes, op))
+    }
+
+    fn size_hint(&self) -> (usize, Option<usize>) {
+        let left = self.back - self.front;
+        (left, Some(left))
+    }
+}
+
+impl DoubleEndedIterator for Ops<'_> {
+    fn next_back(&mut self) -> Option<Self::Item> {
+        if self.front >= self.back {
+            return None;
+        }
+        self.back -= 1;
+        Some(resolve(self.bytes, self.ops[self.back]))
+    }
+}
+
+impl ExactSizeIterator for Ops<'_> {}
+
+fn resolve(bytes: &[u8], op: OpSpan) -> (&[u8], Option<&[u8]>) {
+    let key = &bytes[op.key.0 as usize..op.key.1 as usize];
+    let value = op
+        .value
+        .map(|(start, end)| &bytes[start as usize..end as usize]);
+    (key, value)
 }
 
 /// A batch seen as a *writer* the semantic write path can use (ADR-0031):
@@ -500,14 +601,12 @@ impl<S: VirtualStorage> VirtualStorage for BatchStore<'_, S> {
     fn get(&self, key: &[u8]) -> crate::error::Result<Option<Vec<u8>>> {
         // Newest op wins: a put-then-del leaves a `del` that shadows the
         // put, a del-then-put leaves the put — both answer correctly.
-        let pending = self
-            .batch
-            .borrow()
-            .ops
+        let batch = self.batch.borrow();
+        let pending = batch
             .iter()
             .rev()
-            .find(|(k, _)| k.as_slice() == key)
-            .map(|(_, v)| v.clone());
+            .find(|(k, _)| *k == key)
+            .map(|(_, v)| v.map(<[u8]>::to_vec));
         match pending {
             Some(v) => Ok(v),
             None => self.store.get(key),
