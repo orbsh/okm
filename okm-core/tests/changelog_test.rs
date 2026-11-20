@@ -680,3 +680,46 @@ fn a_flipped_byte_in_a_sealed_segment_is_refused() {
     let err = read_sealed(&path).expect_err("the checksum catches it");
     assert!(err.to_string().contains("checksum"), "got: {err}");
 }
+
+#[test]
+fn a_drain_does_not_end_capture() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let app = captured(TestStore::slatedb_mem(), ChangelogConfig::new(dir.path()))
+        .expect("changelog opens");
+
+    app.put(
+        &LogKey { id: 1 },
+        &LogRow {
+            author: 1,
+            title: "one".into(),
+        },
+    )
+    .expect("put");
+    let first = app.store().drain().expect("seal the first window");
+    assert_eq!(first.len(), 1, "one table drained");
+
+    // The drain sealed the segment it had. A writer that keeps serving must open the
+    // NEXT one, not fail every write after the handover it did not take.
+    app.put(
+        &LogKey { id: 2 },
+        &LogRow {
+            author: 1,
+            title: "two".into(),
+        },
+    )
+    .expect("put");
+    let second = app.store().drain().expect("seal what came after the drain");
+    assert!(
+        second[0].1.sealed.as_deref() > first[0].1.sealed.as_deref(),
+        "the row after the drain reached a new segment: {:?} then {:?}",
+        first[0].1.sealed,
+        second[0].1.sealed
+    );
+
+    drop(app);
+    assert_eq!(
+        frames_in(dir.path(), LOG_NS).len(),
+        2,
+        "both rows are in the log"
+    );
+}

@@ -669,6 +669,20 @@ impl Changelog {
         if self.pending.is_empty() {
             return Ok(());
         }
+        // A sealed segment is immutable, so a writer that lived through a `drain` — or a
+        // one-shot `seal_last` — continues in the NEXT segment instead of failing every
+        // write that follows. Capture that silently stops is a hint that lies: the rows
+        // would be in the store and never in the log (ADR-0045 §6).
+        if self.file.is_none() {
+            self.segment = next_segment(&self.dir)?;
+            self.opened = Instant::now();
+            let mut file = create_segment(&self.dir, self.segment)?;
+            let stamp = header_bytes(&self.header, &self.meta);
+            file.write_all(&stamp).map_err(|e| io_err(&self.dir, e))?;
+            self.file = Some(file);
+            self.written = 0;
+            self.frames = 0;
+        }
         let path = self.partial_path();
         let Some(file) = self.file.as_mut() else {
             self.last_error = Some(format!("{}: segment handle is closed", path.display()));
