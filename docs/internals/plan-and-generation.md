@@ -100,6 +100,16 @@ The log follows the same address. Its directory is the header in hex (`table_dir
 
 `okm-core/src/model/layout.rs` holds every width and every fixed face in one file, with the band documented as a contiguous table: `0x00`–`0x1F` fixed faces, `FIXED_FACE_MAX = 0x1F`, so `slot <= 0x1F` is one byte and anything above is two; `SLOT_COUNTER_BITS = 12`, families `0x2..=0xF`. Changing a width is a change to that file — everything else is expressed in terms of its constants.
 
+## Changing generation
+
+The verdict, the copy and the flip are one function, `okm_core::changelog::migrate::migrate_table`, and one verb: `okm-log migrate --store <dir> --table <hex> --to <schema.json> [--root <dir>]`. `--table` is the header a table's log directory is named by — the address, bit and all — and `--to` is the next declaration as a build exports it.
+
+The verdict asks the store, not the caller: `meta::current` says which generation is live, a target that does not move that table by one is refused (it would land on the same parity), and a target naming another ns is refused. Comparing the two declarations' fingerprints is not part of it — a migration's premise is that they differ, so that comparison could only answer yes. It happens at attach (ADR-0074 §5), which is also where a migration onto the wrong target is caught, before a row is served.
+
+The copy decodes every row of the old range through the declaration the store records and writes it through the new one, so the offsets that moved are the only thing the two generations disagree about. Then the tail: `--root` given means segments sealed after the copy's mark are replayed on top, because the writer kept running; absent means the caller quiesced the table, and the verb prints that it assumed so. The flip is the one record the new handle writes, and nothing is deleted.
+
+`okm-log vacuum --store <dir> --table <hex> [--root <dir>]` is the second decision and the only place that deletes. The older of the two records decides which range goes; the range's keys and its record go together; with `--root` the old generation's log directory goes too, because a segment left behind would be replayed into a range with no record — a table nobody can open. A second run answers the same way as a finished first one. This vacuum is the store's; `okm-lake vacuum` reclaims lake files behind retired versions, which is a different question.
+
 ## What this document leaves out
 
 The key's payload segments and their order ([key layout](key-layout.md)); how entries are built from them ([index mechanism](index-mechanism.md)); the dynamic segment's block table ([dynamic segment](dynamic-segment.md)); accumulators ([reduce mechanism](reduce-mechanism.md)); the slot band's full table ([slot mechanism](slot-mechanism.md)).

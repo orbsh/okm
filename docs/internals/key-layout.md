@@ -99,7 +99,7 @@ inside one family — `0x2001` and `0x3001` are the label → id and id → labe
 faces of the first categorical field, `0x2002`/`0x3002` the second. The label
 direction is the LOWER of the pair because the two directions are one
 declaration read two ways, and the family space is filled from the bottom:
-label, id, index, reduce, lead. A layout change is a cutover, so there has
+label, id, index, reduce, lead. A layout change is a migration, so there has
 never been an older numbering for a family to stay clear of.
 
 **Face-level singletons.** A face may hold ONE metadata value whose key is the
@@ -154,18 +154,22 @@ in [ADR-0016](../adr/0016-four-byte-head-and-slot-segments.md). Allocation
 discipline, the append-only contract, and the variable-width-field
 constraints live in [slot mechanism](slot-mechanism.md).
 
-## Layout version: a change is a cutover
+## Layout version: a change is a migration
 
 The numbers above are the CURRENT layout and nothing else reads them. A layout
 change — a face moved, a family renumbered, a key segment reshaped — is a
-**cutover**, not a migration: the store is exported, the new code is deployed,
-and the export is re-imported into a store built by the new layout. `layout_version`
-on the declaration increments with the change, and opening a store stamped with
-an older number is REFUSED rather than half-read: a reader that guesses at a
-layout it does not know turns a version mismatch into silently wrong rows. The
-one cross-version contract is the EXPORT format, which carries its own version
-and is read by the importer of that version — so old data reaches a new store
-through the exporter, never through the reader.
+**migration at the table's own address** (ADR-0075): the generation's parity is
+the high bit of the ns, so the two generations are two ranges of one store and
+neither is a second copy of the other. The old range keeps serving reads while
+`okm-log migrate` decodes it under the old declaration and writes it under the
+new one, then flips the table's record, and `okm-log vacuum` retires it. `layout_version`
+on the declaration increments with the change — by one, because the parity is
+what separates the two ranges — and opening a store stamped with another number
+is REFUSED rather than half-read: a reader that guesses at a layout it does not
+know turns a version mismatch into silently wrong rows. The other cross-version
+contract is the EXPORT format, which carries its own version and is read by the
+importer of that version — so data reaches another STORE through the exporter,
+never through the reader.
 
 **Partition prefix (optional, before the ns header)**: a collection declared
 with `#[ok_partition(N)]` prepends one `[0xFF][N 1B]` segment to every key:

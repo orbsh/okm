@@ -1,6 +1,6 @@
 # 0075 — A generation change is a migration, one table at a time
 
-Status: decided 2026-11-21, not yet implemented.
+Status: decided 2026-11-21; implemented the same day — the mechanism is `okm_core::changelog::migrate` (`migrate_table`, `vacuum_generation`), the verbs are `okm-log migrate` and `okm-log vacuum`, and the identity/address split §2 rests on is a mask at every crossing (`document::IDENTITY_MASK`, `NS_ADDRESSES`, `TablePlan::address_of`).
 
 ## Context
 

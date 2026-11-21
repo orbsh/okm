@@ -1,7 +1,7 @@
 # The drain contract
 
 What `okm-lake` promises a sink, and what a sink promises back (the binary that
-serves it is `okm-lake`; the log's own side — status, compaction, replay — is `okm-log`). The window it
+serves it is `okm-lake`; the log's own side — status, compaction, replay, and a generation's migration and vacuum — is `okm-log`). The window it
 hands over is core's (`okm_core::changelog::window`); this document is the contract
 of the projection on top. Written once so
 that every adapter (this repo's, and a third party's) speaks the same dialect

@@ -1,6 +1,6 @@
 # 0075 — 代际变化是一次迁移，一次一张表
 
-状态：2026-11-21 裁决，尚未落地。
+状态：2026-11-21 裁决，同日落地——机制在 `okm_core::changelog::migrate`（`migrate_table`、`vacuum_generation`），动词是 `okm-log migrate` 与 `okm-log vacuum`；§2 依赖的身份/地址之分，落在每一处跨越的掩码上（`document::IDENTITY_MASK`、`NS_ADDRESSES`、`TablePlan::address_of`）。
 
 ## 背景
 

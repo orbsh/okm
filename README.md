@@ -101,7 +101,7 @@ Every engine implements the same behavioural contract (see `engine_matrix_test`,
 An honest world, each layer minding its own business:
 
 - **Ad-hoc analysis / BI** → CDC drains the business log continuously into Delta Lake; the analytical side uses any engine (DuckDB / Spark / Trino).
-- **Schema evolution** → a schema change is a compile-time event: blue and green processes each run their own version over shared COW snapshots.
+- **Schema evolution** → a schema change is a compile-time event: the generation is one bit of the table's address (ADR-0075), so both versions coexist in one store and `okm-log migrate` moves a table across without stopping it.
 - **Dynamic mode** (tenant-defined fields) → `okm_core::model::dynamic_*`: the structure is data rather than a type, and outer access still takes the statically optimised path.
 
 ## Status

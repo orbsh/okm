@@ -100,6 +100,16 @@ None                                     => Err(Error::LayoutUnstamped { current
 
 `okm-core/src/model/layout.rs` 把每个宽度和每个固定面收在一个文件里，带子按连续表写在文档里：`0x00`–`0x1F` 固定面，`FIXED_FACE_MAX = 0x1F`，所以 `slot <= 0x1F` 是一字节，以上两字节；`SLOT_COUNTER_BITS = 12`，家族 `0x2..=0xF`。改一个宽度就是改那个文件——其余一切都以它的常量表达。
 
+## 换一代
+
+判定、拷贝、翻转是一个函数 `okm_core::changelog::migrate::migrate_table`，也是一个动词：`okm-log migrate --store <dir> --table <hex> --to <schema.json> [--root <dir>]`。`--table` 是表的日志目录被命名用的那个 header——地址，位在里头——`--to` 是构建导出的下一代声明。
+
+判定问的是 store，不是调用方：`meta::current` 说哪一代是活的；目标若没有把这张表推进一代就拒（它会落到同一个奇偶上）；目标若点名别的 ns 也拒。比两份声明的指纹不属于判定——迁移的前提就是它们不同，那种比较只能答「是」。它在 attach 处发生（ADR-0074 §5），迁错目标也是在那里被抓住的，在服务任何一行之前。
+
+拷贝用 store 记的声明解旧区间的每一行、用新声明写回去，于是两代唯一不一致的地方就是移动过的偏移。然后是尾巴：给了 `--root` 意味着拷贝起点之后封的段要重放在上面（写者一直在跑）；没给意味着调用方静默了这张表，动词会把这条假设打出来。翻转是新句柄写下的那一条记录，什么都不删。
+
+`okm-log vacuum --store <dir> --table <hex> [--root <dir>]` 是第二个决定，也是唯一删东西的地方。两条记录里更旧的那条决定删哪段区间；区间的 key 与它的记录一起走；给了 `--root` 连旧代的日志目录一起走——留下一个段会被重放进一个没有记录的区间，那是一张谁也打不开的表。重跑与已完成同样返回。这个 vacuum 是 store 的；`okm-lake vacuum` 回收退役版本背后的湖文件，问的是另一个问题。
+
 ## 本文不覆盖
 
 键的 payload 段与其顺序（[key layout](key-layout.zh-CN.md)）；条目如何由它们构建（[index mechanism](index-mechanism.zh-CN.md)）；动态段的块表（[dynamic segment](dynamic-segment.zh-CN.md)）；累加器（[reduce mechanism](reduce-mechanism.zh-CN.md)）；槽带的完整表（[slot mechanism](slot-mechanism.zh-CN.md)）。

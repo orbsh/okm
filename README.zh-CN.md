@@ -101,7 +101,7 @@ let archive: Collection<_, UserKey, User> = Collection::open(Fjall::open("data/a
 诚实的世界，各走各的层：
 
 - **Ad-hoc 分析 / BI** → CDC 淌业务日志持续导出 Delta Lake，分析侧任意引擎（DuckDB / Spark / Trino）
-- **Schema 演进** → 模式变更是编译期事件：蓝绿两进程各跑各的版本，共享 COW 快照
+- **Schema 演进** → 模式变更是编译期事件：代际是表地址里的一位（ADR-0075），两代在同一个库里共存，`okm-log migrate` 逐表搬过去，不停服务
 - **动态模式**（租户自定义字段）→ `okm_core::model::dynamic_*`：结构是数据而不是类型，外层访问仍是静态优化路径
 
 ## 状态
