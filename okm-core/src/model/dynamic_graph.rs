@@ -75,9 +75,23 @@ impl<S: VirtualStorage> DynGraph<S> {
     /// the store instance (same rule as `DynamicCollection`), and a schema
     /// that names a different ns is rejected — never overridden.
     pub fn new(store: S, ns: u16, schema: CollectionSchema) -> Self {
-        let ns_bytes = ns.to_be_bytes();
+        // The ADDRESS, not the plain ns: the high bit of the first byte is the layout
+        // generation (ADR-0075 §2), and the schema names the generation it was compiled from.
+        // A handle that addressed the plain ns would write into a range no typed reader opens.
         assert!(
-            schema.ns_prefix.is_empty() || schema.ns_prefix == ns_bytes,
+            ns < 0x8000,
+            "graph assembly: ns {ns} is out of range — the high bit of the first ns byte is the \
+             layout generation (ADR-0075)"
+        );
+        let mut ns_bytes = ns.to_be_bytes();
+        ns_bytes[0] |= ((schema.layout_version & 1) << 7) as u8;
+        let declared = &schema.ns_prefix;
+        let agrees = declared.is_empty()
+            || (declared.len() == 2
+                && declared[0] & 0x7F == ns_bytes[0] & 0x7F
+                && declared[1] == ns_bytes[1]);
+        assert!(
+            agrees,
             "graph assembly: ns {ns} disagrees with the schema's declared ns {:?} — the pair comes from one declaration, never from two",
             schema.ns_prefix
         );

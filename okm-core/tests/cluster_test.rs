@@ -62,6 +62,15 @@ pub struct Employment {
 
 const NS: u16 = 0x0192;
 
+/// The graph's ADDRESS: the ns bytes with the layout generation's parity in the high bit
+/// (ADR-0075 §2). Every raw-byte check in this file asks for the header this way, so a
+/// generation bump moves the address and the test moves with it.
+fn ns_bytes() -> [u8; 2] {
+    let prefix = <Employment as Document>::NS_PREFIX;
+    [prefix[0], prefix[1]]
+}
+
+
 // The CALLER's vocabulary, defined here because a test is a caller: `Kind` is one
 // byte and okm assigns it no meaning. An application picks its own bytes beside
 // its schema (k10r: 1 = community, 5 = flow); the store never learns the words.
@@ -115,7 +124,7 @@ fn attrs(label: &str) -> Dict {
 /// the kind is an interned id, so it is two bytes, exactly like a predicate.
 fn key(kind: Kind, slot: u8, hyper_id: u64, tail: &[u8]) -> Vec<u8> {
     let mut k = Vec::with_capacity(3 + 2 + 8 + tail.len());
-    k.extend_from_slice(&NS.to_be_bytes());
+    k.extend_from_slice(&ns_bytes());
     k.push(slot);
     k.extend_from_slice(&kind.0.to_be_bytes());
     k.extend_from_slice(&hyper_id.to_be_bytes());
@@ -125,7 +134,7 @@ fn key(kind: Kind, slot: u8, hyper_id: u64, tail: &[u8]) -> Vec<u8> {
 
 /// Every `(key, value)` under one fixed face of the graph's ns.
 fn face(store: &TestStore, slot: u8) -> Vec<(Vec<u8>, Vec<u8>)> {
-    let mut prefix = NS.to_be_bytes().to_vec();
+    let mut prefix = ns_bytes().to_vec();
     prefix.push(slot);
     let end = prefix_end(&prefix);
     store
@@ -1458,7 +1467,7 @@ impl MemberClusters {
         Self {
             keys: rows
                 .iter()
-                .map(|row| edge_cluster_key(&NS.to_be_bytes(), row, cluster))
+                .map(|row| edge_cluster_key(&ns_bytes(), row, cluster))
                 .collect(),
             at: 0,
         }
@@ -1508,7 +1517,7 @@ fn the_edge_index_answers_membership_and_leaves_with_the_member_rows() {
         // The layout the ADR states, byte for byte:
         // `[ns][0x0F][src_h][pred][dst_h][kind][hyper]`.
         let mut spelled = Vec::new();
-        spelled.extend_from_slice(&NS.to_be_bytes());
+        spelled.extend_from_slice(&ns_bytes());
         spelled.push(0x0F);
         row_of(&g, &keys[0]).write(&mut spelled);
         spelled.extend_from_slice(&kid(&store, COMMUNITY).0.to_be_bytes());
@@ -1664,7 +1673,7 @@ fn traversal_and_membership_intersect_on_the_derived_face() {
         assert_eq!(
             shared,
             vec![edge_cluster_key(
-                &NS.to_be_bytes(),
+                &ns_bytes(),
                 &row_of(&g, &report.edges[0]),
                 cluster.into()
             )],

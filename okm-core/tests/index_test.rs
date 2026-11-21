@@ -114,10 +114,11 @@ fn table_put_writes_primary_and_indexes() {
     let (k, r) = mk_user(101, 100);
     t.put(&k, &r).unwrap();
 
-    // 主键写入固定面 0x00：头 [0,9,0]（ns 2B + 固定面 1 字节）+ key payload
+    // 主键写入固定面 0x00：头 [0x80,9,0]（ns 2B + 固定面 1 字节）+ key payload。
+    // ns 首字节最高位是布局代际的奇偶（ADR-0075 §2）——这张表的版本是奇数，故为 0x80。
     let kl = <UserKey as KeyEncode>::KEY_LEN;
     let pk = t.primary_key(&k);
-    assert_eq!(&pk[..3], &[0, 9, 0]);
+    assert_eq!(&pk[..3], &[0x80, 9, 0]);
     assert_eq!(&pk[3..], &k.encode()[..]);
     // value = 行载荷 TLV，可解码回原行
     let raw = t.store().get(&pk).unwrap().unwrap();
@@ -127,7 +128,7 @@ fn table_put_writes_primary_and_indexes() {
     // 索引 entry：ns 9 + slot 0x4001（by_reputation，index 段计数 1）
     // entry key 尾部 = 完整主键 id；value = includes 段（无 includes → 空）
     let e1 = t.index_key::<ByReputation>(&k, &r);
-    assert_eq!(&e1[..4], &[0, 9, 0x40, 0x01]); // ns=9、slot=0x4001
+    assert_eq!(&e1[..4], &[0x80, 9, 0x40, 0x01]); // ns=9（代际位 0x80）、slot=0x4001
     assert_eq!(&e1[e1.len() - kl..], &k.encode()[..]);
     assert!(t.store().get(&e1).unwrap().is_some());
 
@@ -199,12 +200,13 @@ fn scan_via_index_returns_rows() {
 #[test]
 fn entry_layout_hex_lock() {
     // 直接锁定 by_reputation entry 字节布局：[ns 2B][slot 2B][reputation 4B][id 8B]
+    // ns 首字节带上布局代际的奇偶位（ADR-0075 §2）。
     let (k, r) = mk_user(101, 100);
     let kl = <UserKey as KeyEncode>::KEY_LEN; // 8
     assert_eq!(kl, 8);
 
     let e = ByReputation::entry_key(<User as Document>::NS_PREFIX, &k, &r);
-    assert_eq!(&e[..4], &[0, 9, 0x40, 0x01]); // ns=9、slot=0x4001
+    assert_eq!(&e[..4], &[0x80, 9, 0x40, 0x01]); // ns=9（代际位 0x80）、slot=0x4001
     assert_eq!(&e[4..8], &100u32.to_be_bytes()); // 索引字段 reputation 来自 payload
     assert_eq!(&e[8..], &k.encode()[..]); // key 前缀取满 = 完整主键
     assert_eq!(e.len(), 4 + 4 + kl);
@@ -215,7 +217,7 @@ fn entry_layout_hex_lock() {
     // （均来自 payload），key 前缀取满 id(8B)；value = includes(title_len) 段
     let (pk, pr) = mk_post(500, 7, 1700000000, 42);
     let e2 = ByTimeline::entry_key(<Post as Document>::NS_PREFIX, &pk, &pr);
-    assert_eq!(&e2[..4], &[0, 12, 0x40, 0x01]); // ns=12、slot=0x4001
+    assert_eq!(&e2[..4], &[0x80, 12, 0x40, 0x01]); // ns=12（代际位 0x80）、slot=0x4001
     assert_eq!(&e2[4..12], &7u64.to_be_bytes()); // author_id 来自 payload
     assert_eq!(&e2[12..20], &1700000000u64.to_be_bytes()); // created_at 来自 payload
     assert_eq!(&e2[20..], &pk.encode()[..]); // key 前缀取满
@@ -229,7 +231,7 @@ fn entry_layout_hex_lock() {
     // session_id(8B)——user_id 从尾段去掉（去冗余）
     let (sk, sr) = mk_session(9, 777, 3);
     let e3 = ByKind::entry_key(<Session as Document>::NS_PREFIX, &sk, &sr);
-    assert_eq!(&e3[..4], &[0, 15, 0x40, 0x01]); // ns=15、slot=0x4001
+    assert_eq!(&e3[..4], &[0x80, 15, 0x40, 0x01]); // ns=15（代际位 0x80）、slot=0x4001
     assert_eq!(&e3[4..5], &[3]); // kind 来自 payload
     assert_eq!(&e3[5..], &777u64.to_be_bytes()); // 截断尾段 = session_id
     assert_eq!(e3.len(), 4 + 1 + 8);
@@ -418,7 +420,7 @@ fn variable_length_index_text_first() {
     assert_eq!(kl, 8);
     let (k, r) = &rows[0];
     let e = ByCityName::entry_key(<Doc as Document>::NS_PREFIX, k, r);
-    assert_eq!(&e[..4], &[0, 21, 0x40, 0x01]); // ns=21、slot=0x4001
+    assert_eq!(&e[..4], &[0x80, 21, 0x40, 0x01]); // ns=21（代际位 0x80）、slot=0x4001
     assert_eq!(&e[4..8], &10u32.to_be_bytes()); // city 定宽可定位
     assert_eq!(&e[8..13], b"alpha"); // name 居末：裸字节，无长度前缀
     assert_eq!(&e[13..], &k.encode()[..]); // 尾部主键干净切出
@@ -732,7 +734,7 @@ fn function_index_normalizes_both_sides() {
     let kl = <DocKey as KeyEncode>::KEY_LEN;
     let (k, r) = &rows[0];
     let e = ByLower::entry_key(<DocFunc as Document>::NS_PREFIX, k, r);
-    assert_eq!(&e[..4], &[0, 21, 0x40, 0x01]); // ns=21、slot=0x4001
+    assert_eq!(&e[..4], &[0x80, 21, 0x40, 0x01]); // ns=21（代际位 0x80）、slot=0x4001
     assert_eq!(&e[4..9], b"apple"); // 归一化后的结果
     assert_eq!(&e[9..], &k.encode()[..]);
     assert_eq!(e.len(), 4 + 5 + kl);

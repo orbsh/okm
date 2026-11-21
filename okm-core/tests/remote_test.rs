@@ -214,12 +214,13 @@ fn remote_scan_range_is_lazy_paged() {
     // strips it again on the answer; the sender's key space is
     // prefix-relative (ADR-0010).
     let begin = {
-        let mut b = vec![0x00, 0x07, 0x00];
+        // The table's address: ns 7 with the layout generation's bit (ADR-0075 §2).
+        let mut b = vec![0x80, 0x07, 0x00];
         b.extend_from_slice(&0u64.to_be_bytes());
         b
     };
     let end = {
-        let mut e = vec![0x00, 0x07, 0x00, 0xFF];
+        let mut e = vec![0x80, 0x07, 0x00, 0xFF];
         e.extend_from_slice(&u64::MAX.to_be_bytes());
         e
     };

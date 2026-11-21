@@ -78,6 +78,15 @@ pub struct Employment {
 
 const NS: u16 = 0x0194;
 
+/// The graph's ADDRESS: the ns bytes with the layout generation's parity in the high bit
+/// (ADR-0075 §2). Every raw-byte check in this file asks for the header this way, so a
+/// generation bump moves the address and the test moves with it.
+fn ns_bytes() -> [u8; 2] {
+    let prefix = <Employment as Document>::NS_PREFIX;
+    [prefix[0], prefix[1]]
+}
+
+
 fn person(id: u64) -> NodeRef {
     NodeRef::new(Person::NS_PREFIX, &PersonId { id }.encode())
 }
@@ -119,7 +128,7 @@ fn head_of(g: &mut Graph<TestStore, Employment>, key: &okm_core::EdgeKey) -> Edg
 /// the prefix is built with the crate's own writer so the test cannot disagree
 /// with the layout it is pinning.
 fn face_prefix(slot: u16) -> Vec<u8> {
-    let mut key = NS.to_be_bytes().to_vec();
+    let mut key = ns_bytes().to_vec();
     okm_core::write_slot(&mut key, slot);
     key
 }
@@ -292,7 +301,7 @@ fn verify_issue_once(store: &TestStore, engine: &str) {
         "{engine}: and one reverse row per node"
     );
 
-    let registry = Handles::new(store, NS.to_be_bytes());
+    let registry = Handles::new(store, ns_bytes());
     let first = registry
         .handle_of(&person(1))
         .unwrap_or_else(|e| panic!("{engine}: probe: {e}"))
@@ -351,7 +360,7 @@ fn verify_traversal_yields_handles(store: &TestStore, engine: &str) {
     ]))
     .unwrap_or_else(|e| panic!("{engine}: commit: {e}"));
 
-    let registry = Handles::new(store, NS.to_be_bytes());
+    let registry = Handles::new(store, ns_bytes());
     let here = registry
         .handle_of(&person(1))
         .expect("p1")
@@ -420,7 +429,7 @@ fn verify_bulk_matches_singles(store: &TestStore, engine: &str) {
     g.incorporate(Fragment::new(decls))
         .unwrap_or_else(|e| panic!("{engine}: commit: {e}"));
 
-    let registry = Handles::new(store, NS.to_be_bytes());
+    let registry = Handles::new(store, ns_bytes());
     let all = registry.all().unwrap();
     assert_eq!(all.len(), 5, "{engine}: three people and two orgs");
 
@@ -483,7 +492,7 @@ fn verify_delete_leaves_the_handle(store: &TestStore, engine: &str) {
         ]))
         .unwrap_or_else(|e| panic!("{engine}: commit: {e}"));
 
-    let registry = Handles::new(store, NS.to_be_bytes());
+    let registry = Handles::new(store, ns_bytes());
     let one = registry
         .handle_of(&person(1))
         .expect("p1")
@@ -566,7 +575,7 @@ fn verify_rebuild(store: &TestStore, engine: &str) {
     ]))
     .unwrap_or_else(|e| panic!("{engine}: commit: {e}"));
 
-    let registry = Handles::new(store, NS.to_be_bytes());
+    let registry = Handles::new(store, ns_bytes());
     let before_forward = face(store, HANDLE_NODE_SLOT);
     let before_reverse = face(store, NODE_HANDLE_SLOT);
     let before_table = registry.all().unwrap();
@@ -609,7 +618,7 @@ fn verify_rebuild(store: &TestStore, engine: &str) {
         "{engine}: the authority was not rewritten"
     );
     assert_eq!(
-        Handles::new(store, NS.to_be_bytes()).all().unwrap(),
+        Handles::new(store, ns_bytes()).all().unwrap(),
         before_table,
         "{engine}: the same handle table, from the same rows"
     );

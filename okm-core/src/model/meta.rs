@@ -268,6 +268,50 @@ pub fn meta_key(header: &[u8]) -> Vec<u8> {
     buf
 }
 
+/// The same header under the table's OTHER generation (ADR-0075 §2).
+///
+/// The ns occupies the header's last two bytes, and the generation is the high bit of the
+/// first of them, so the twin address is one flipped bit away.
+pub fn other_parity(header: &[u8]) -> Vec<u8> {
+    let mut other = header.to_vec();
+    if let Some(index) = other.len().checked_sub(2) {
+        if let Some(byte) = other.get_mut(index) {
+            *byte ^= 0x80;
+        }
+    }
+    other
+}
+
+/// The table's current record: both parities probed, the larger version wins (ADR-0075 §3).
+///
+/// One row is a quiet table. Two rows are a flip that happened — the newer one is live and the
+/// older one waits for its vacuum — and the rule is the number, not a pointer: there is no
+/// separate record to keep in step, so there is none to disagree with the bytes. `this_build` is
+/// only used to word `LayoutUnstamped`: a row that carries no number at all is one this build
+/// cannot interpret, whichever parity it sits at.
+pub fn current<S: VirtualStorage + ?Sized>(
+    store: &S,
+    header: &[u8],
+    this_build: u8,
+) -> Result<Option<(u8, TableMeta)>> {
+    let own = read(store, header)?;
+    let twin = read(store, &other_parity(header))?;
+    let mut best: Option<(u8, TableMeta)> = None;
+    for row in [own, twin].into_iter().flatten() {
+        let version = row
+            .layout_version()
+            .ok_or(crate::error::Error::LayoutUnstamped {
+                current: this_build,
+            })?;
+        // Equal numbers cannot happen: the parity is derived from the number, so one table has
+        // at most one row per generation and at most two generations at a time.
+        if best.as_ref().map(|(seen, _)| version > *seen).unwrap_or(true) {
+            best = Some((version, row));
+        }
+    }
+    Ok(best)
+}
+
 /// Read a table's meta entry. `None` = never stamped (a store this build did
 /// not create); engine failures come back as `Err`.
 pub fn read<S: VirtualStorage + ?Sized>(store: &S, header: &[u8]) -> Result<Option<TableMeta>> {

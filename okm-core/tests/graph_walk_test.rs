@@ -465,7 +465,9 @@ fn verify(store: TestStore) {
         .out(&person(1))
         .take_while(|step| {
             g.node(step.far_handle)
-                .is_ok_and(|far| far.ns_id() == Org::NS)
+                // `ns_id` is the ADDRESS (the node's own header bytes, generation parsed in);
+                // the declaration names the identity. Compare identities (ADR-0075 §2).
+                .is_ok_and(|far| far.ns_id() & 0x7FFF == Org::NS)
         })
         .collect();
     let while_pulled = calls.pulled();

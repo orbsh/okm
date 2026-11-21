@@ -104,7 +104,7 @@ fn view_projects_both_slots_and_leaves_the_typed_read_alone() {
 
     // Vocabulary landed in the id family under the same ns, cursor included
     // (ADR-0032: the face holds its allocation cursor at the bare prefix).
-    let mut prefix = vec![0u8, 9];
+    let mut prefix = t.header().to_vec();
     okm_core::write_slot(&mut prefix, okm_core::index::FIELD_VOCAB_ID_SLOT);
     let scan = t.store().scan_suffix(&prefix).unwrap();
     assert_eq!(

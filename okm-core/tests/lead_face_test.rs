@@ -54,7 +54,9 @@ fn seeded() -> Collection<TestStore, MembershipKey, Membership> {
 
 /// Every entry key of one face, suffix only (the header is the prefix).
 fn entries(col: &Collection<TestStore, MembershipKey, Membership>, slot: u16) -> Vec<Vec<u8>> {
-    let prefix = [0u8, 210u8, (slot >> 8) as u8, (slot & 0xff) as u8];
+    // The declaration's own header — ns with its generation bit (ADR-0075 §2) — then the face.
+    let mut prefix = <Membership as Document>::NS_PREFIX.to_vec();
+    prefix.extend_from_slice(&slot.to_be_bytes());
     let end = prefix_end(&prefix);
     let mut out: Vec<Vec<u8>> = col
         .store()

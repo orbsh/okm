@@ -157,8 +157,20 @@ pub fn expand(input: syn::DeriveInput) -> syn::Result<TS2> {
     // One ns per listed table, read off that table's own declaration. The
     // constant is not optional: a document without `#[ok_ns]` does not compile,
     // so a member always names a collection and this cannot fail.
+    // Two lists, because the two questions differ (ADR-0075 §2). `NS_VALUES` is the IDENTITY:
+    // which tables the graph admits, and it must not move when a layout generation bumps.
+    // `NS_ADDRESSES` is where those tables' rows are, generation bit included, and it is what
+    // the graph scans and writes through.
     let ns_items = tables.iter().map(|ty| {
         quote! { <#ty as ::okm_core::Document>::NS }
+    });
+    let address_items = tables.iter().map(|ty| {
+        quote! {
+            {
+                const PREFIX: &[u8] = <#ty as ::okm_core::Document>::NS_PREFIX;
+                ((PREFIX[0] as u16) << 8) | (PREFIX[1] as u16)
+            }
+        }
     });
 
     // One pkey width per listed table, read off its key's own `KEY_LEN`. This is
@@ -211,6 +223,9 @@ pub fn expand(input: syn::DeriveInput) -> syn::Result<TS2> {
 
         impl ::okm_core::NodeKinds for #set_ident {
             const NS_VALUES: &'static [u16] = &[#(#ns_items),*];
+
+            /// The same members as ADDRESSES — ns with the layout generation's bit.
+            const NS_ADDRESSES: &'static [u16] = &[#(#address_items),*];
 
             /// Each member's pkey width, from its key's own `KEY_LEN` — the table
             /// an edge key parses by, with no length prefix (ADR-0067).

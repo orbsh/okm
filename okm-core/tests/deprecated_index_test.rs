@@ -49,8 +49,9 @@ fn deprecated_slot_is_reserved_and_not_written() {
     // Only the LIVE index writes — the deprecated index slot (0x4001)
     // produces nothing; the live one (0x4002, declaration order preserved)
     // writes. Slot is 2 bytes BE now (ADR-0016).
-    let slot_dep = t.store().scan_suffix(&[0, 9, 0x40, 0x01]).unwrap();
-    let slot_live = t.store().scan_suffix(&[0, 9, 0x40, 0x02]).unwrap();
+    // The ns's high byte carries the layout generation's parity (ADR-0075 §2).
+    let slot_dep = t.store().scan_suffix(&[0x80, 9, 0x40, 0x01]).unwrap();
+    let slot_live = t.store().scan_suffix(&[0x80, 9, 0x40, 0x02]).unwrap();
     assert!(
         slot_dep.is_empty(),
         "deprecated slot must not receive writes"
@@ -64,7 +65,7 @@ fn deprecated_slot_is_reserved_and_not_written() {
     // count below is about DATA entries: one entry describes the store, it does not hold data.
     let data = t
         .store()
-        .scan_suffix(&[0, 9])
+        .scan_suffix(&[0x80, 9])
         .unwrap()
         .into_iter()
         .filter(|k| k.last() != Some(&(okm_core::META_SLOT as u8)))
@@ -80,7 +81,7 @@ fn prune_deletes_only_deprecated_prefix() {
     // copy, so the seeded entry lands in the table's own engine).
     let store = TestStore::default();
     let stale = [
-        vec![0u8, 9, 0x40, 0x01],
+        vec![0x80, 9, 0x40, 0x01],
         99u32.to_be_bytes().to_vec(),
         1u64.to_be_bytes().to_vec(),
     ]
@@ -108,12 +109,12 @@ fn prune_deletes_only_deprecated_prefix() {
     assert_eq!(pruned, 1, "the simulated stale index-slot entry is pruned");
     assert!(
         t.store()
-            .scan_suffix(&[0, 9, 0x40, 0x01])
+            .scan_suffix(&[0x80, 9, 0x40, 0x01])
             .unwrap()
             .is_empty()
     );
     // Live entries untouched.
-    assert_eq!(t.store().scan_suffix(&[0, 9, 0x40, 0x02]).unwrap().len(), 2);
+    assert_eq!(t.store().scan_suffix(&[0x80, 9, 0x40, 0x02]).unwrap().len(), 2);
     assert_eq!(t.get_row(&UserKey { id: 1 }).unwrap().unwrap().level, 7);
     assert_eq!(t.get_row(&UserKey { id: 2 }).unwrap().unwrap().level, 8);
 }

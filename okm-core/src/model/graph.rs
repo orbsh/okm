@@ -180,7 +180,7 @@ impl Members {
     /// The width table of a generated member set — the static graph's form.
     pub fn of<N: NodeKinds>() -> Self {
         Self(
-            N::NS_VALUES
+            N::NS_ADDRESSES
                 .iter()
                 .copied()
                 .zip(N::KEY_LENS.iter().copied())
@@ -189,10 +189,16 @@ impl Members {
     }
 
     /// The member's pkey width, or `None` when the ns is not a member.
+    ///
+    /// The question is about a TABLE, and the caller usually holds an address: an endpoint
+    /// carries the node table's own header bytes, whose first byte now also names the layout
+    /// generation (ADR-0075 §2). Masking here rather than at every call site is the same rule
+    /// `Collection::ns` follows — an identity never carries the generation.
     pub fn key_len(&self, ns: u16) -> Option<usize> {
+        let table = ns & 0x7FFF;
         self.0
             .iter()
-            .find(|(member, _)| *member == ns)
+            .find(|(member, _)| (*member & 0x7FFF) == table)
             .map(|(_, width)| *width)
     }
 
@@ -481,8 +487,14 @@ pub fn predicate_in_face_key(ns: &[u8; 2], row: &HandleKey) -> Vec<u8> {
 /// the ns of a variant is read off the table's own `#[ok_ns]` and the width off
 /// its key's `KEY_LEN`.
 pub trait NodeKinds: Copy {
-    /// Every member collection's ns, one per variant.
+    /// Every member collection's ns — the IDENTITY, one per variant.
     const NS_VALUES: &'static [u16];
+
+    /// The same members as ADDRESSES: ns with the layout generation's bit (ADR-0075 §2).
+    ///
+    /// A member set answers two questions that are not the same one: *is this table mine*
+    /// (identity) and *where are its rows* (address). The wiring below needs the second.
+    const NS_ADDRESSES: &'static [u16];
 
     /// Every member collection's key width, aligned with [`Self::NS_VALUES`].
     ///
@@ -682,7 +694,9 @@ impl<S: VirtualStorage, E: GraphEncode> Graph<S, E> {
         Self {
             store,
             vocab: Vocabulary::new(),
-            ns: ns.to_be_bytes(),
+            // The address: the graph's own header carries the layout generation
+            // (ADR-0075 §2), same as the collection that declares it.
+            ns: crate::model::document::ns_bytes::<E>(ns),
             members: Members::of::<E::Nodes>(),
             _pd: std::marker::PhantomData,
         }

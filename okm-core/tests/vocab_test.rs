@@ -290,8 +290,9 @@ fn a_declared_index_over_a_categorical_field_orders_by_the_id() {
         .status
         .id()
         .unwrap();
-    // ns | slot 0x4001 | the field's own byte (the id) | pkey
-    let mut prefix = 81u16.to_be_bytes().to_vec();
+    // The table's own header (its ns, with whatever the layout generation puts in it) |
+    // slot 0x4001 | the field's own byte (the id) | pkey
+    let mut prefix = col.header().to_vec();
     prefix.extend_from_slice(&0x4001u16.to_be_bytes());
     prefix.push(id);
     let hits = store.scan_suffix(&prefix).unwrap();

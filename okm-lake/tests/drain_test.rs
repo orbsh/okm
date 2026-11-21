@@ -429,7 +429,8 @@ fn a_lagging_table_is_not_skipped_by_the_one_ahead() {
     let root = tempfile::tempdir().expect("root");
     let out = tempfile::tempdir().expect("out");
 
-    // Table 0x0047 (ns 71) gets TWO sealed segments — one per clean drop.
+    // Table ns 71 gets TWO sealed segments — one per clean drop. Its address is 0x8047:
+    // the ns's high byte carries the layout generation's parity (ADR-0075 §2).
     for level in [1u32, 2] {
         let c = collection(root.path());
         c.put(
@@ -442,7 +443,7 @@ fn a_lagging_table_is_not_skipped_by_the_one_ahead() {
         .expect("put");
     }
 
-    // Table 0x0048 (ns 72) gets one, so it sits at ordinal 1 while the first
+    // Table ns 72 (address 0x8048) gets one, so it sits at ordinal 1 while the first
     // table has reached ordinal 2.
     {
         let c = lagging_collection(root.path());
@@ -467,7 +468,7 @@ fn a_lagging_table_is_not_skipped_by_the_one_ahead() {
         .collect();
     assert_eq!(files.len(), 2, "one window file per table: {files:?}");
     assert!(
-        files.iter().any(|f| f.starts_with("0048-")),
+        files.iter().any(|f| f.starts_with("8048-")),
         "the lagging table still drains: {files:?}"
     );
 
@@ -1413,7 +1414,7 @@ fn a_partition_must_be_a_key_column() {
     );
     // Nothing landed: a refused window leaves no file and no moved position.
     assert!(
-        !out.path().join("0047/data").exists(),
+        !out.path().join("8047/data").exists(),
         "no half-committed directory"
     );
 }

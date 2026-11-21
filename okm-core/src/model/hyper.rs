@@ -805,7 +805,12 @@ impl<S: VirtualStorage> Hyperedges<S> {
     /// declaration, so a reader cannot name a namespace the edges do not live in
     /// and cannot read a tuple it has no widths for.
     pub fn of<E: GraphEncode>(store: S) -> Self {
-        Self::new(store, <E as Document>::NS, Members::of::<E::Nodes>())
+        let prefix = <E as Document>::NS_PREFIX;
+        Self::new(
+            store,
+            u16::from_be_bytes([prefix[0], prefix[1]]),
+            Members::of::<E::Nodes>(),
+        )
     }
 
     /// The width table this reader parses member rows with.
@@ -1740,7 +1745,11 @@ enum ClusterOp {
 trait NodeConflict {
     fn ns(&self) -> u16;
     /// The table's key header, `[0xFF][part] (if declared)[ns]`.
-    fn header(&self, ns: &[u8; 2]) -> Vec<u8>;
+    ///
+    /// The ADDRESS, taken from the declaration: its first ns byte also names the layout
+    /// generation (ADR-0075 §2), so a header assembled from the plain ns would write these
+    /// rows into an address no handle of the table reads.
+    fn header(&self) -> Vec<u8>;
     /// The row's new payload: the hook's answer for the stored payload and the
     /// declared one, or the declared payload when nothing is stored yet.
     fn apply(
@@ -1765,10 +1774,10 @@ where
         R::NS
     }
 
-    fn header(&self, ns: &[u8; 2]) -> Vec<u8> {
-        let mut header = Vec::with_capacity(R::PARTITION_PREFIX.len() + 2);
+    fn header(&self) -> Vec<u8> {
+        let mut header = Vec::with_capacity(R::PARTITION_PREFIX.len() + R::NS_PREFIX.len());
         header.extend_from_slice(R::PARTITION_PREFIX);
-        header.extend_from_slice(ns);
+        header.extend_from_slice(R::NS_PREFIX);
         header
     }
 
@@ -2129,13 +2138,16 @@ impl<G: GraphEncode + Default> Fragment<G> {
         let mut endpoints: BTreeSet<(u16, Vec<u8>)> = BTreeSet::new();
         for decl in &self.rows {
             if let Decl::Edge(head) = decl {
-                endpoints.insert((head.src.ns_id(), head.src.pkey.clone()));
-                endpoints.insert((head.dst.ns_id(), head.dst.pkey.clone()));
+                // An endpoint carries the node table's address, whose first byte also names
+                // the layout generation (ADR-0075 §2); the declaration beside it names a
+                // table. Compare tables.
+                endpoints.insert((head.src.ns_id() & 0x7FFF, head.src.pkey.clone()));
+                endpoints.insert((head.dst.ns_id() & 0x7FFF, head.dst.pkey.clone()));
             }
         }
         for decl in &self.rows {
             if let Decl::Node(variant, key) = decl {
-                let node_ns = variant.ns();
+                let node_ns = variant.ns() & 0x7FFF;
                 if !endpoints.contains(&(node_ns, key.clone())) {
                     return Err(Error::BareNode {
                         ns: node_ns,
@@ -2592,7 +2604,7 @@ impl<G: GraphEncode + Default> Fragment<G> {
         let mut adapter = BatchStore::new(graph.store(), batch);
         for reduce in &mut self.node_conflicts {
             let node_ns = reduce.ns();
-            let header = reduce.header(&node_ns.to_be_bytes());
+            let header = reduce.header();
             for (_, pkey) in endpoints.iter().filter(|(ns, _)| *ns == node_ns) {
                 let mut key = header.clone();
                 write_slot(&mut key, PRIMARY_SLOT);

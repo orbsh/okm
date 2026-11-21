@@ -132,11 +132,13 @@ fn the_member_enum_is_named_after_the_graph() {
 }
 
 fn user(id: u64) -> NodeRef {
-    NodeRef::new(&10u16.to_be_bytes(), &id.to_be_bytes())
+    // The ADDRESS (`NS_PREFIX`), not the plain ns: the high bit is the layout generation
+    // (ADR-0075 §2), and a ref built from the plain number points at no row.
+    NodeRef::new(<User as okm_core::Document>::NS_PREFIX, &id.to_be_bytes())
 }
 
 fn org(id: u64) -> NodeRef {
-    NodeRef::new(&11u16.to_be_bytes(), &id.to_be_bytes())
+    NodeRef::new(<Org as okm_core::Document>::NS_PREFIX, &id.to_be_bytes())
 }
 
 fn head(src: NodeRef, dst: NodeRef, predicate: &str) -> EdgeHead {
@@ -283,7 +285,7 @@ fn the_predicate_cursor_is_the_id_faces_bare_prefix() {
     // ids restarting after a process boundary and colliding with names already
     // allocated.
     let store = okm_async::TestStore::slatedb_mem();
-    let ns: &[u8] = &100u16.to_be_bytes();
+    let ns: &[u8] = <Employment as okm_core::Document>::NS_PREFIX;
     let bare = |s: u16| {
         let mut k = ns.to_vec();
         okm_core::write_slot(&mut k, s);
@@ -526,7 +528,7 @@ fn same_head_reassert_retires_the_old_face_entry() {
     // The face, read END TO END: one entry for this identity, at the new
     // position — the declared entry's tail IS the edge key (no number).
     let slot = <__OkmIndex_Employment_by_since as okm_core::KvIndex>::SLOT;
-    let mut prefix = 100u16.to_be_bytes().to_vec();
+    let mut prefix = <Employment as okm_core::Document>::NS_PREFIX.to_vec();
     okm_core::write_slot(&mut prefix, slot);
     let end = okm_core::engine::storage::prefix_end(&prefix);
     let face: Vec<(Vec<u8>, Vec<u8>)> = store
@@ -544,7 +546,7 @@ fn same_head_reassert_retires_the_old_face_entry() {
 
     // ... and the two point reads agree: old position empties, new one answers.
     assert!(
-        g.by_attr_face(slot, &100u16.to_be_bytes())
+        g.by_attr_face(slot, <Employment as okm_core::Document>::NS_PREFIX)
             .unwrap()
             .is_empty(),
         "the entry the old payload wrote is gone"
@@ -728,7 +730,7 @@ fn hex_lock_one_link() {
     };
     link(&mut g, head(user(1), org(9), "employs"), &attrs).unwrap();
 
-    let ns = 100u16.to_be_bytes();
+    let ns: &[u8] = <Employment as okm_core::Document>::NS_PREFIX;
     let slot = |s: u16| {
         let mut v = Vec::new();
         okm_core::write_slot(&mut v, s);

@@ -75,7 +75,14 @@ impl TablePlan {
     /// process. Two bytes per distinct declaration is the whole price of keeping the static
     /// form's shape instead of a lifetime parameter on every table.
     pub fn compile(schema: &CollectionSchema) -> Self {
-        let header: &'static [u8] = Box::leak(schema.ns_prefix.clone().into_boxed_slice());
+        // The generation is one bit of the address (ADR-0075 §2), and a schema carries the
+        // number it was compiled from — so a plan built from stored bytes names the same
+        // address the declaration does, byte for byte.
+        let mut ns = schema.ns_prefix.clone();
+        if let Some(first) = ns.first_mut() {
+            *first = (*first & 0x7F) | ((schema.layout_version & 1) << 7);
+        }
+        let header: &'static [u8] = Box::leak(ns.into_boxed_slice());
         Self::of(header, schema.slots)
     }
 

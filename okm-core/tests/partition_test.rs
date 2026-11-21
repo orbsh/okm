@@ -65,10 +65,12 @@ fn partition_segment_precedes_ns_header() {
         &[0xFF, 0x01],
         "partitioned key starts with [0xFF][part 1B] escape segment"
     );
-    assert_eq!(&pk[2..4], &[0x00, 0x07], "ns 7 big-endian follows");
+    // The ns follows the partition escape; its high bit is the layout generation's parity
+    // (ADR-0075 §2).
+    assert_eq!(&pk[2..4], &[0x80, 0x07], "ns 7 big-endian follows");
     assert_eq!(
         &lk[..2],
-        &[0x00, 0x07],
+        &[0x80, 0x07],
         "plain key starts with ns header directly (never 0xFF)"
     );
     assert_eq!(

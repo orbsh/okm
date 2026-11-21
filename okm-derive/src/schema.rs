@@ -1395,6 +1395,21 @@ pub(crate) fn parse_schema_with_key(
         }
     };
 
+    // The top bit of the ns's first byte is the LAYOUT GENERATION's (ADR-0075 §2): the
+    // parity of `LAYOUT_VERSION` rides there, so one table's two generations are two
+    // disjoint key ranges a store can hold at once. That leaves 32768 tables per store,
+    // which is far past the point where an application should be split rather than
+    // extended — and it is a build error here, not a surprise at the first key.
+    if ns >= 0x8000 {
+        return Err(syn::Error::new(
+            input.ident.span(),
+            format!(
+                "#[ok_ns({ns})] is out of range: ns must be below 0x8000, because the high bit \
+                 of the first byte carries the layout generation (ADR-0075)"
+            ),
+        ));
+    }
+
     // #[ok_shared_ns_in_tests] — a path-only marker: this ns is deliberately declared by
     // more than one document (a generation pair, an old and a new declaration of
     // one table). Without it, the generated ns-claim type clashes with the other

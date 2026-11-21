@@ -1543,7 +1543,12 @@ pub(crate) fn emit_row_impl(schema: &DocumentSchema) -> syn::Result<TS2> {
         quote! { const REDACTED: &'static [&'static str] = &[#(#redacted_lits),*]; }
     };
     let ns = schema.ns;
-    let (ns_hi, ns_lo) = ((ns >> 8) as u8, (ns & 0xff) as u8);
+    // The generation is one bit of the address (ADR-0075 §2): the parity of LAYOUT_VERSION in
+    // the high bit of the ns's first byte. `ns < 0x8000` is asserted where the declaration is
+    // parsed, so the bit is free. Everything else — offsets, slot positions, key widths —
+    // stays where it was, which is why it is a bit and not a byte.
+    let parity = ((schema.layout_version & 1) << 7) as u8;
+    let (ns_hi, ns_lo) = (((ns >> 8) as u8) | parity, (ns & 0xff) as u8);
     // `#[ok_shared_ns_in_tests]` declares no marker (two test declarations may share the ns), so the static
     // has no module-level name to take — it gets one of its own inside the const, which is
     // still one per type and still not a generic scope.

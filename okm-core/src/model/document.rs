@@ -138,6 +138,21 @@ fn segment_start<I: KvIndex>(header: &[u8]) -> usize {
     head.len()
 }
 
+/// A handle's ns bytes: the plain ns with this build's generation bit (ADR-0075 §2).
+///
+/// Used by the two constructors that take an ns at runtime (`with_ns`, `rebased`) — a mapped
+/// table still holds THIS declaration's layout, so its address carries THIS generation.
+pub(crate) fn ns_bytes<R: Document>(ns: u16) -> [u8; 2] {
+    assert!(
+        ns < 0x8000,
+        "ns {ns} is out of range: the high bit of the first ns byte is the layout generation \
+         (ADR-0075)"
+    );
+    let mut bytes = ns.to_be_bytes();
+    bytes[0] |= ((R::LAYOUT_VERSION & 1) << 7) as u8;
+    bytes
+}
+
 impl<S: VirtualStorage, K: KeyEncode, R: Document<Key = K>> Collection<S, K, R> {
     /// Compile this declaration's faces for the write path, once at assembly (ADR-0076 §1).
     ///
@@ -206,7 +221,24 @@ impl<S: VirtualStorage, K: KeyEncode, R: Document<Key = K>> Collection<S, K, R> 
             R::PLAN.get_or_init(|| crate::model::table_plan::TablePlan::compile(&derived));
             return Ok(());
         }
-        let mut meta = self.ensure_layout()?;
+        // Which generation the store is on, from ONE pass over the table's two addresses
+        // (ADR-0075 §3): the larger version is current. This is what keeps a stale build from
+        // seeding an empty table beside another generation's rows.
+        let mut meta = match crate::model::meta::current(&self.store, header, R::LAYOUT_VERSION)? {
+            Some((version, _)) if version != R::LAYOUT_VERSION => {
+                return Err(crate::error::Error::LayoutMismatch {
+                    stored: version,
+                    current: R::LAYOUT_VERSION,
+                });
+            }
+            Some((_, mut meta)) => {
+                // A row exists: the name rule still runs first, so a namespace claimed by two
+                // declarations reports the claim and not a shape that differs because of it.
+                self.check_name(&mut meta)?;
+                meta
+            }
+            None => self.ensure_layout()?,
+        };
         let derived = crate::model::schema::CollectionSchema::of::<K, R>();
         let mut dirty = false;
         match meta.get(crate::model::meta::SCHEMA) {
@@ -280,7 +312,7 @@ impl<S: VirtualStorage, K: KeyEncode, R: Document<Key = K>> Collection<S, K, R> 
             batch: std::cell::RefCell::new(crate::engine::storage::Batch::default()),
             fields_vocab: std::cell::RefCell::new(Vocabulary::new()),
             vocabs: std::cell::RefCell::new(<R::Vocabs as ::core::default::Default>::default()),
-            header_bytes: assemble_header(R::PARTITION_PREFIX, &ns.to_be_bytes()),
+            header_bytes: assemble_header(R::PARTITION_PREFIX, &ns_bytes::<R>(ns)),
             header_len: header_len(R::PARTITION_PREFIX),
             ns_override: Some(ns),
             _marker: std::marker::PhantomData,
@@ -302,7 +334,7 @@ impl<S: VirtualStorage, K: KeyEncode, R: Document<Key = K>> Collection<S, K, R> 
             batch: std::cell::RefCell::new(crate::engine::storage::Batch::default()),
             fields_vocab: std::cell::RefCell::new(Vocabulary::new()),
             vocabs: std::cell::RefCell::new(<R::Vocabs as ::core::default::Default>::default()),
-            header_bytes: assemble_header(R::PARTITION_PREFIX, &ns.to_be_bytes()),
+            header_bytes: assemble_header(R::PARTITION_PREFIX, &ns_bytes::<R>(ns)),
             header_len: header_len(R::PARTITION_PREFIX),
             ns_override: Some(ns),
             _marker: std::marker::PhantomData,
@@ -314,7 +346,10 @@ impl<S: VirtualStorage, K: KeyEncode, R: Document<Key = K>> Collection<S, K, R> 
     pub fn ns(&self) -> Option<u16> {
         self.ns_override.or_else(|| {
             (R::NS_PREFIX.len() == 2)
-                .then(|| u16::from_be_bytes([R::NS_PREFIX[0], R::NS_PREFIX[1]]))
+                // The TABLE, not the address: the high bit of the first byte is the layout
+                // generation (ADR-0075 §2), and an identity that changed with every bump
+                // would be no identity at all.
+                .then(|| u16::from_be_bytes([R::NS_PREFIX[0], R::NS_PREFIX[1]]) & 0x7FFF)
         })
     }
 
@@ -401,23 +436,37 @@ impl<S: VirtualStorage, K: KeyEncode, R: Document<Key = K>> Collection<S, K, R> 
         let header = self.header();
         let mut meta =
             crate::model::meta::ensure_layout(&self.store, header, R::LAYOUT_VERSION, R::FACES)?;
-        if !R::TABLE_NAME.is_empty() {
-            match meta.table_name() {
-                Some(existing) if existing != R::TABLE_NAME => {
-                    return Err(crate::error::Error::TableNameTaken {
-                        ns: R::NS,
-                        declared: R::TABLE_NAME.to_string(),
-                        existing: existing.to_string(),
-                    });
-                }
-                Some(_) => {}
-                None => {
-                    meta.set(crate::model::meta::TABLE, R::TABLE_NAME.as_bytes().to_vec());
-                    crate::model::meta::write(&self.store, header, &meta)?;
-                }
+        self.check_name(&mut meta)?;
+        Ok(meta)
+    }
+
+    /// One ns, one table. A row that names another table in this ns is a collision, not drift:
+    /// two declarations cannot share an address, so the name is what tells the caller which of
+    /// the two it is looking at (ADR-0074).
+    ///
+    /// Called from `ensure_layout` and again from `attach` when a row already exists — the
+    /// second call is what keeps this rule ahead of the shape comparison, which would otherwise
+    /// answer "different declaration" to what is really "that name is taken".
+    fn check_name(&self, meta: &mut crate::model::meta::TableMeta) -> crate::error::Result<()> {
+        if R::TABLE_NAME.is_empty() {
+            return Ok(());
+        }
+        let header = self.header();
+        match meta.table_name() {
+            Some(existing) if existing != R::TABLE_NAME => {
+                Err(crate::error::Error::TableNameTaken {
+                    ns: R::NS,
+                    declared: R::TABLE_NAME.to_string(),
+                    existing: existing.to_string(),
+                })
+            }
+            Some(_) => Ok(()),
+            None => {
+                meta.set(crate::model::meta::TABLE, R::TABLE_NAME.as_bytes().to_vec());
+                crate::model::meta::write(&self.store, header, meta)?;
+                Ok(())
             }
         }
-        Ok(meta)
     }
 
     /// Whether this store's derived faces were built from THIS declaration

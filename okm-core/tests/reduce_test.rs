@@ -213,7 +213,8 @@ fn entry_layout_is_ns_slot_group() {
     // （计数 1 → slot 0x5001，ADR-0016：不再续接索引计数器）。
     let ek = <AuthorStats as Reduce>::entry_key(<Post as Document>::NS_PREFIX, &k, &r);
     assert_eq!(ek.len(), 4 + 8);
-    assert_eq!(&ek[..2], &[0, 21]);
+    // The ns's high byte carries the layout generation's parity (ADR-0075 §2).
+    assert_eq!(&ek[..2], &[0x80, 21]);
     assert_eq!(&ek[2..4], &[0x50, 0x01]);
     assert_eq!(&ek[4..], &55u64.to_be_bytes());
 }
@@ -289,7 +290,7 @@ fn the_reduce_prefix_is_the_tables_own_header() {
     // window of three can only ever see its high byte.
     assert_eq!(
         &entry[..4],
-        &[0xFF, 3, 0x00, 26],
+        &[0xFF, 3, 0x80, 26],
         "partition face, then the ns"
     );
     assert_eq!(&entry[4..6], &[0x50, 0x01], "the reduce family's slot");

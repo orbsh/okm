@@ -65,7 +65,9 @@ fn the_stamp_lives_at_the_highest_fixed_face_with_no_suffix() {
     );
 
     let key = meta::meta_key(&header());
-    assert_eq!(key, vec![0x00, 0x5A, 0x1F], "`[ns 2B][0x1F]`, no suffix");
+    // `[ns 2B][0x1F]`, no suffix — and the first ns byte carries the layout generation's
+    // parity (ADR-0075 §2).
+    assert_eq!(key, vec![0x80, 0x5A, 0x1F], "`[ns 2B][0x1F]`, no suffix");
 
     // [count u16 BE] [name_len varint] [name] [value_len varint] [value]
     let payload = store.get(&key).unwrap().unwrap();
