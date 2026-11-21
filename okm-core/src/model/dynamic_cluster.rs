@@ -2,7 +2,7 @@
 //! `model::hyper` — same faces, same key shapes, same rules, `Dict` payloads
 //! everywhere.
 //!
-//! The face numbers and widths come from `okm_core::model::layout` — one table
+//! The face numbers and widths come from `crate::model::layout` — one table
 //! for the whole engine; this module mirrors the typed `hyper` layer for the
 //! dynamic (schema-less) graph and never re-derives a number.
 //!
@@ -33,7 +33,7 @@
 //!
 //! # Two verbs, one direction each
 //!
-//! [`Graph::incorporate`] writes, [`Graph::retract`] removes — the names the
+//! [`DynGraph::incorporate`] writes, [`DynGraph::retract`] removes — the names the
 //! static form uses, so the vocabulary does not fork.
 //!
 //! - A [`DynFragment`] is the whole unit of work: the edge declarations, the
@@ -55,26 +55,24 @@
 
 use std::collections::{BTreeMap, BTreeSet};
 
-use okm_core::model::graph::{
+use crate::model::graph::{
     EdgeKey, Handle, HandleKey, NodeRef, in_prefix, out_prefix, parse_predicate_far,
 };
-use okm_core::model::handles::{HANDLE_WIDTH, Handles};
-use okm_core::model::hyper::{
+use crate::model::handles::{HANDLE_WIDTH, Handles};
+use crate::model::hyper::{
     CHILD_INDEX_SLOT, CLUSTER_SLOT, EDGE_CLUSTER_SLOT, EDGE_MEMBER_SLOT, NODE_CLUSTER_SLOT,
     NODE_MEMBER_SLOT, child_key, children_prefix, cluster_key, cluster_value, clusters_prefix,
     edge_cluster_key, edge_clusters_prefix, edge_member_key, members_prefix, node_cluster_key,
     node_clusters_prefix, node_member_key, node_members_prefix,
 };
-use okm_core::model::index::U64_WIDTH;
-use okm_core::model::layout::{CLUSTER_KIND_WIDTH, ClusterKindId};
-use okm_core::model::obj_vocab::{
-    CLUSTER_KIND, FIELD_VOCAB, Faces, FieldNameId, Names, Vocabulary,
-};
-use okm_core::storage::{Batch, BatchStore, VirtualStorage, prefix_end, scan_suffix_kv};
+use crate::model::index::U64_WIDTH;
+use crate::model::layout::{CLUSTER_KIND_WIDTH, ClusterKindId};
+use crate::model::obj_vocab::{CLUSTER_KIND, FIELD_VOCAB, Faces, FieldNameId, Names, Vocabulary};
+use crate::storage::{Batch, BatchStore, VirtualStorage, prefix_end, scan_suffix_kv};
 use okm_value::{Dict, Variant, decode_named};
 
-use crate::graph::{DynEdge, Graph};
-pub use okm_core::model::graph::Selection;
+use crate::model::dynamic_graph::{DynEdge, DynGraph};
+pub use crate::model::graph::Selection;
 
 /// An edge's tuple as bytes: `(src ns, src pkey, predicate id, dst ns, dst pkey)`.
 /// The tuple IS the identity (ADR-0067), so this is what "the same edge" means to
@@ -126,7 +124,7 @@ type Removal = (
 /// (`COMMUNITY` / `EVENT` / `SUBGRAPH` / `SCOPE`), `hyper_id` the same run-time
 /// allocated id, and `MEMBER_COUNT` the same reserved payload name the write
 /// path stamps last.
-pub use okm_core::model::hyper::{
+pub use crate::model::hyper::{
     Cluster, ClusterRef, ClusterRow, DerivedReport, EdgeSet, Kind, MEMBER_COUNT, MemberEdges,
     NODE_COUNT, NodeSet, ReplaceReport, RetractReport, WriteReport,
 };
@@ -139,7 +137,7 @@ fn face_prefix(ns: &[u8; 2], slot: u16) -> Vec<u8> {
     let mut key = Vec::with_capacity(4);
     key.extend_from_slice(ns);
     // The fixed-face form of `write_slot`: one byte for 0x00–0x0D.
-    okm_core::write_slot(&mut key, slot);
+    crate::write_slot(&mut key, slot);
     key
 }
 
@@ -295,7 +293,7 @@ fn member_keys<S: VirtualStorage + ?Sized>(
 /// One edge's stored ROW identity, read-only: `None` when either endpoint never
 /// appeared in an edge, because then no face can name it. The boundary between
 /// a caller's tuple and the face's handles, for the single-key verbs
-/// ([`Graph::member_of`], [`Graph::edge_sets_of`]).
+/// ([`DynGraph::member_of`], [`DynGraph::edge_sets_of`]).
 fn row_of_key<S: VirtualStorage>(
     store: &S,
     ns: &[u8; 2],
@@ -423,7 +421,7 @@ fn next_free_cluster<S: VirtualStorage + ?Sized>(
     Ok(next)
 }
 
-impl<S: VirtualStorage> Graph<S> {
+impl<S: VirtualStorage> DynGraph<S> {
     /// Intern a kind label (0x0A/0x0B) and hand back its two-byte id — a WRITE,
     /// which is why it takes `&mut`: the vocabulary belongs to the collection,
     /// not to a batch.
@@ -922,8 +920,8 @@ pub type ClusterConflict = Box<dyn Fn(&Dict, &Dict) -> Dict>;
 
 /// The dynamic form's write fragment: the edge declarations, the clusters over
 /// them and the two conflict hooks, all encoded into ONE engine batch by
-/// [`Graph::incorporate`]; the delete declarations go the other way, through
-/// [`Graph::retract`].
+/// [`DynGraph::incorporate`]; the delete declarations go the other way, through
+/// [`DynGraph::retract`].
 ///
 /// There are two hooks, not three: the static form's `on_node_conflict` resolves
 /// a typed row the declaration names, and this form names no rows. A node here
@@ -1049,7 +1047,7 @@ impl DynFragment {
     }
 
     /// Delete one edge — and every membership row it owns — in the same batch
-    /// as the rest of the fragment's deletes. Read by [`Graph::retract`].
+    /// as the rest of the fragment's deletes. Read by [`DynGraph::retract`].
     ///
     /// The clusters an edge belongs to are found by ONE pass over the member
     /// face (`0x0B` is the authority; `0x0D` is derived and may be stale, so it
@@ -1074,7 +1072,7 @@ impl DynFragment {
     /// `on_edge_conflict(stored, moved)` with the moved assertion as the declared
     /// side.
     ///
-    /// Only [`Graph::replace`] takes one: `incorporate` counts it as a deletion
+    /// Only [`DynGraph::replace`] takes one: `incorporate` counts it as a deletion
     /// and `retract` as a write, so each still refuses.
     pub fn repoint(&mut self, from: DynEdge, to: DynEdge) -> &mut Self {
         self.repoints.push((from, to));
@@ -1094,7 +1092,7 @@ impl DynFragment {
     }
 
     /// A retract fragment removes, and only removes. Anything that declares
-    /// edges, clusters or conflict hooks belongs to [`Graph::incorporate`] — a
+    /// edges, clusters or conflict hooks belongs to [`DynGraph::incorporate`] — a
     /// fragment carrying both would have two meanings in one batch.
     fn check_retractable(&self) -> Result<(), String> {
         let writes = self.edges.len()
@@ -1117,7 +1115,7 @@ impl DynFragment {
     }
 
     /// `incorporate` writes, and a fragment that declares deletions belongs to
-    /// [`Graph::retract`] — two verbs with one meaning each.
+    /// [`DynGraph::retract`] — two verbs with one meaning each.
     fn check_incorporable(&self) -> Result<(), String> {
         let deletions = self.edge_deletes.len() + self.node_deletes.len() + self.repoints.len();
         if deletions > 0 {
@@ -1133,7 +1131,7 @@ impl DynFragment {
     /// op list. Nothing lands until the caller commits it.
     fn write_into<S: VirtualStorage>(
         mut self,
-        graph: &mut Graph<S>,
+        graph: &mut DynGraph<S>,
         batch: &mut Batch,
         mut plan: BTreeMap<(ClusterKindId, u64), Plan>,
     ) -> Result<WriteReport, String> {
@@ -1313,7 +1311,7 @@ impl DynFragment {
     /// `retract` reports.
     fn apply_plan<S: VirtualStorage>(
         &mut self,
-        graph: &Graph<S>,
+        graph: &DynGraph<S>,
         ns: &[u8; 2],
         plan: BTreeMap<(ClusterKindId, u64), Plan>,
         batch: &mut Batch,
@@ -1531,7 +1529,7 @@ impl DynFragment {
     }
 }
 
-impl<S: VirtualStorage> Graph<S> {
+impl<S: VirtualStorage> DynGraph<S> {
     /// The write verb (ADR-0066 §7, dynamic form): consume `fragment` and land
     /// its declared edges, the dynamic segments they carry, its clusters and its
     /// two conflict hooks as ONE engine commit. A refused fragment writes nothing

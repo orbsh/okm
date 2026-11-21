@@ -1,6 +1,6 @@
 # 0076 — The mechanism moves under the declaration; the query surface stays two
 
-Status: decided 2026-11-21. §1 and §2 implemented; §3 in progress — `encode`, `path`, `plan_fields` and the declared-index machinery (`index` → `model::access_method`, beside the typed half core already had) `reduce` (the byte fold is `model::byte_reduce::ByteReduce`), and the dynamic face itself — `collection`, `plan`, `write` — moved into core; what remains outside is `arrow` and the projections.
+Status: decided 2026-11-21; implemented the same day. §1 (one entry producer) and §2 (one ledger orchestration) are in; §3 is complete — every mechanism module moved into core (`encode`, `path`, `access_method`, `plan_fields`, `byte_reduce`, `dynamic_collection`, `dynamic_plan`, `dict_write`, `dynamic_graph`, `dynamic_cluster`). What remains outside is the projection half: `okm-dynamic` is now `arrow` plus re-exports, 92 lines of façade over core.
 
 ## Context
 

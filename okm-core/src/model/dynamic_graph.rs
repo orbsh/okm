@@ -29,16 +29,16 @@
 
 use std::collections::{BTreeMap, BTreeSet};
 
-use okm_core::model::graph::{
+use crate::model::graph::{
     Direction, EDGE_PREDICATE_OUT_SLOT, EdgeKey, EdgeStep, Handle, HandleKey, HopHead, Members,
     NodeRef, face_key, in_face_key, in_prefix, out_face_key, out_prefix, parse_predicate_far,
     predicate_in_face_key, predicate_in_prefix, predicate_out_face_key, predicate_out_prefix,
 };
-use okm_core::model::handles::Handles;
-use okm_core::model::layout::HANDLE_WIDTH;
-use okm_core::obj_vocab::{FIELD_VOCAB, Faces, PREDICATE_VOCAB, Vocabulary};
-use okm_core::schema::CollectionSchema;
-use okm_core::storage::{Batch, ScanIter, VirtualStorage, prefix_end, scan_suffix_kv};
+use crate::model::handles::Handles;
+use crate::model::layout::HANDLE_WIDTH;
+use crate::obj_vocab::{FIELD_VOCAB, Faces, PREDICATE_VOCAB, Vocabulary};
+use crate::schema::CollectionSchema;
+use crate::storage::{Batch, ScanIter, VirtualStorage, prefix_end, scan_suffix_kv};
 use okm_value::{Dict, decode_named};
 
 /// One dynamic edge: endpoints by reference, predicate by name,
@@ -53,9 +53,9 @@ pub struct DynEdge {
 }
 
 /// Engine = the dynamic form's operation surface. Symmetric with
-/// `okm_core::Graph` (fixed-ontology): same faces, same wire, runtime
+/// `crate::Graph` (fixed-ontology): same faces, same wire, runtime
 /// declarations.
-pub struct Graph<S> {
+pub struct DynGraph<S> {
     store: S,
     /// Predicate vocabulary (0x04/0x05) — per-handle state, allocation is
     /// single-writer, reads load on probe.
@@ -69,7 +69,7 @@ pub struct Graph<S> {
     members: Members,
 }
 
-impl<S: VirtualStorage> Graph<S> {
+impl<S: VirtualStorage> DynGraph<S> {
     /// Assemble a dynamic graph's edge collection from the declaration's
     /// PAIR: the ns and the schema it yielded. `ns` MUST be unique within
     /// the store instance (same rule as `DynamicCollection`), and a schema
@@ -110,7 +110,7 @@ impl<S: VirtualStorage> Graph<S> {
         self.predicates.pending_len() + self.fields.pending_len()
     }
 
-    /// The engine handle. The cluster faces (`crate::cluster`) and the derived
+    /// The engine handle. The cluster faces (`crate::model::dynamic_cluster`) and the derived
     /// rebuild read through this, so a read verb needs no `&mut` on the graph.
     pub(crate) fn store_ref(&self) -> &S {
         &self.store
@@ -156,7 +156,7 @@ impl<S: VirtualStorage> Graph<S> {
 
     fn face_key(&self, slot: u16, segments: &[&[u8]]) -> Vec<u8> {
         let mut k = self.ns.clone();
-        okm_core::write_slot(&mut k, slot);
+        crate::write_slot(&mut k, slot);
         for s in segments {
             k.extend_from_slice(s);
         }
@@ -269,7 +269,7 @@ impl<S: VirtualStorage> Graph<S> {
     /// The dynamic segment's entry: `[ns][0x01][src_h][pred][dst_h]` → nTLV
     /// frames, keyed by the same row identity as the edge itself.
     fn fields_key(&self, row: &HandleKey) -> Vec<u8> {
-        let mut k = self.face_key(okm_core::index::DYNAMIC_SLOT, &[]);
+        let mut k = self.face_key(crate::index::DYNAMIC_SLOT, &[]);
         row.write(&mut k);
         k
     }
@@ -710,7 +710,7 @@ impl<S: VirtualStorage> Graph<S> {
     /// Every predicate this graph has, id-ordered: one 0x04 prefix scan.
     pub fn predicates(&mut self) -> Result<Vec<(u16, String)>, String> {
         let mut p = self.ns.clone();
-        okm_core::write_slot(&mut p, okm_core::index::PREDICATE_VOCAB_ID_SLOT);
+        crate::write_slot(&mut p, crate::index::PREDICATE_VOCAB_ID_SLOT);
         let mut out: Vec<(u16, String)> = scan_suffix_kv(&self.store, &p)
             .map_err(|e| e.to_string())?
             .into_iter()
@@ -782,7 +782,7 @@ impl<S: VirtualStorage> Graph<S> {
 /// 0x06/0x07 (or 0x08/0x09 once a predicate is pushed down).
 ///
 /// The type is the dynamic counterpart of core's `EdgeStream`: same faces, same
-/// entry key, same step (`okm_core::EdgeStep`), so a consumer written against
+/// entry key, same step (`crate::EdgeStep`), so a consumer written against
 /// one form works against the other. What differs is only what the dynamic
 /// form always differs in — nothing here names a declared type.
 ///
@@ -796,7 +796,7 @@ impl<S: VirtualStorage> Graph<S> {
 /// - **Ordered by entry key.** The key is `[ns][slot][scanned prefix][far
 ///   handle]`, i.e. the far endpoint's handle order — the address order of the
 ///   face, not an insertion order (issue order is not a key order, ADR-0067).
-///   That is what makes it a [`Seekable`](okm_core::seek::Seekable), and what
+///   That is what makes it a [`Seekable`](crate::seek::Seekable), and what
 ///   makes two streams over the same face alignable by `okm-query`'s operators.
 /// - **Cycle-unaware.** The stream answers one node's edges and stops. "The
 ///   same node" depends on the caller's own filter, so a visited set here would
@@ -970,7 +970,7 @@ impl<S: VirtualStorage> Iterator for DynEdgeStream<'_, S> {
     }
 }
 
-impl<S: VirtualStorage> okm_core::seek::Seekable for DynEdgeStream<'_, S> {
+impl<S: VirtualStorage> crate::seek::Seekable for DynEdgeStream<'_, S> {
     /// The face entry's RAW key — the byte string the scan's cursor speaks, so
     /// a position on one stream is directly usable as another's bound when both
     /// walk the same face family.

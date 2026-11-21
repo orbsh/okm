@@ -17,7 +17,7 @@ use okm_core::{Decl, Fragment};
 use okm_core::{
     DocumentEncode, EdgeHead, EdgeKey, Graph as StaticGraph, GraphEncode, KeyEncode, NodeRef,
 };
-use okm_dynamic::{DynEdge, Graph};
+use okm_dynamic::{DynEdge, DynGraph};
 use okm_value::{Dict, Variant};
 
 const NS: u16 = 0x0190; // 400
@@ -96,7 +96,7 @@ fn works_at_schema() -> CollectionSchema {
 #[test]
 fn dynamic_link_traverse_and_fetch_back() {
     let store = okm_async::TestStore::slatedb_mem();
-    let mut g: Graph<_> = Graph::new(store.clone(), NS, works_at_schema());
+    let mut g: DynGraph<_> = DynGraph::new(store.clone(), NS, works_at_schema());
 
     let key = g
         .link(&dyn_edge(person(1), org(9), "works_at", 2020))
@@ -141,7 +141,7 @@ fn dynamic_link_traverse_and_fetch_back() {
 #[test]
 fn dynamic_unlink_removes_all_faces() {
     let store = okm_async::TestStore::slatedb_mem();
-    let mut g: Graph<_> = Graph::new(store.clone(), NS, works_at_schema());
+    let mut g: DynGraph<_> = DynGraph::new(store.clone(), NS, works_at_schema());
 
     let first = g
         .link(&dyn_edge(person(1), org(9), "works_at", 2020))
@@ -168,7 +168,7 @@ fn dynamic_unlink_removes_all_faces() {
 #[test]
 fn a_reassertion_is_the_same_row_and_widths_come_from_the_declaration() {
     let store = okm_async::TestStore::slatedb_mem();
-    let mut g: Graph<_> = Graph::new(store.clone(), NS, works_at_schema());
+    let mut g: DynGraph<_> = DynGraph::new(store.clone(), NS, works_at_schema());
     let first = g
         .link(&dyn_edge(person(1), org(9), "works_at", 2020))
         .unwrap();
@@ -220,7 +220,7 @@ fn member_set_travels_in_the_schema_and_is_enforced() {
     );
 
     let store = okm_async::TestStore::slatedb_mem();
-    let mut g: Graph<_> = Graph::new(store.clone(), NS, schema);
+    let mut g: DynGraph<_> = DynGraph::new(store.clone(), NS, schema);
     // ns 0x13 is nobody's collection in this graph: rejected at write, the same
     // way the static form's `E::Nodes` rejects it.
     let stranger = NodeRef::new(&0x13u16.to_be_bytes(), &1u64.to_be_bytes());
@@ -237,7 +237,7 @@ fn member_set_travels_in_the_schema_and_is_enforced() {
     // `[src][pred][dst]` has no boundary to parse by (ADR-0067). The writer
     // refuses rather than guessing a length — an edge needs a declaration to
     // exist at all.
-    let mut plain: Graph<_> = Graph::new(
+    let mut plain: DynGraph<_> = DynGraph::new(
         store.clone(),
         NS,
         CollectionSchema::of::<EdgeKey, WorksAt>(),
@@ -260,7 +260,7 @@ fn assembly_rejects_a_disagreeing_ns_pair() {
     // The pair comes from ONE declaration: an ns argument that disagrees
     // with the schema's own ns is rejected, never overridden.
     let store = okm_async::TestStore::slatedb_mem();
-    let _g: Graph<_> = Graph::new(store, NS + 1, works_at_schema());
+    let _g: DynGraph<_> = DynGraph::new(store, NS + 1, works_at_schema());
 }
 
 #[test]
@@ -271,7 +271,7 @@ fn byte_equality_with_fixed_ontology_form() {
     // payload fields), so the lock covers an edge with NO attributes — the
     // shared wire is everything else, including the empty obj payload.
     let store_dyn = okm_async::TestStore::slatedb_mem();
-    let mut gd: Graph<_> = Graph::new(store_dyn.clone(), NS, works_at_schema());
+    let mut gd: DynGraph<_> = DynGraph::new(store_dyn.clone(), NS, works_at_schema());
     gd.link(&DynEdge {
         src: person(1),
         dst: org(9),
@@ -320,7 +320,7 @@ fn byte_equality_with_fixed_ontology_form() {
 #[test]
 fn link_promotes_its_vocabulary_allocations() {
     let store = okm_async::TestStore::slatedb_mem();
-    let mut g: Graph<_> = Graph::new(store, NS, works_at_schema());
+    let mut g: DynGraph<_> = DynGraph::new(store, NS, works_at_schema());
 
     let first = g
         .link(&dyn_edge(person(1), org(9), "works_at", 2020))

@@ -25,7 +25,7 @@ pub mod pyo3_impl {
     use okm_core::model::key::KeySet as SharedKeySet;
     use okm_core::storage::VirtualStorage;
     use okm_core::{Direction, EdgeKey, Handle, Members, NodeRef};
-    use okm_dynamic::Graph as DynGraph;
+    use okm_dynamic::DynGraph;
     use okm_dynamic::{
         AccessMethod, AccessMethodKind, Cluster, ClusterRef, Decl, Dict, DynEdge, DynFragment,
         EdgeStep, Kind, ByteReduce, RetractReport, Value, WriteReport,

@@ -42,7 +42,7 @@ use okm_core::{
     DocumentEncode, EdgeKey, EdgeStep, GraphEncode, HandleKey, KeyEncode, NodeRef, Seekable,
     VirtualStorage, write_slot,
 };
-use okm_dynamic::{Cluster, Decl, DynEdge, DynFragment, EdgeSet, Graph, Kind, NodeSet};
+use okm_dynamic::{Cluster, Decl, DynEdge, DynFragment, DynGraph, EdgeSet, Kind, NodeSet};
 use okm_query::intersect_seek;
 use okm_value::{Dict, Variant};
 
@@ -133,8 +133,8 @@ fn schema() -> CollectionSchema {
     CollectionSchema::of_graph::<WorksAt>()
 }
 
-fn graph(store: &TestStore) -> Graph<TestStore> {
-    Graph::new(store.clone(), NS, schema())
+fn graph(store: &TestStore) -> DynGraph<TestStore> {
+    DynGraph::new(store.clone(), NS, schema())
 }
 
 // ---- the layout, spelled out by hand ----
@@ -931,7 +931,7 @@ fn a_traversal_find_reads_fewer_entries_than_the_face_holds() {
             inner: store.clone(),
             calls: calls.clone(),
         };
-        let mut g: Graph<_> = Graph::new(counted, NS, schema());
+        let mut g: DynGraph<_> = DynGraph::new(counted, NS, schema());
 
         // One hub (person 1) with WORKS + ADVISES out-edges, and a second person
         // pointing at the first org so the in-face has a mirror.
@@ -952,7 +952,7 @@ fn a_traversal_find_reads_fewer_entries_than_the_face_holds() {
 
         // ---- one edge, both directions: the same head, mirrored far ends ----
         // A step states HANDLES (ADR-0067); a reference behind one is
-        // `Graph::node`, and the tuple a step names is `Graph::edge_key`.
+        // `DynGraph::node`, and the tuple a step names is `DynGraph::edge_key`.
         let out_step = g
             .out(&person(1))
             .find(|step| g.edge_key(step).is_ok_and(|key| key == works[0]))

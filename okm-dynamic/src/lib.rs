@@ -42,8 +42,6 @@
 
 #[cfg(feature = "arrow")]
 pub mod arrow;
-mod cluster;
-mod graph;
 
 pub use okm_core::TableMeta;
 // The two cluster spellings travel with the crate: a caller of the dynamic surface
@@ -59,15 +57,6 @@ pub use okm_value::{CodecError, Dict, Variant as Value};
 // fields. Should segments return, the schema export already carries the
 // FieldType variant slot for them.
 
-/// The dynamic counterpart of core's graph + cluster vocabulary: the same four
-/// cluster faces (ADR-0066) with `Dict` payloads, the same lazy traversal
-/// streams, and the same three write verbs (`incorporate` / `retract` / `replace`).
-pub use cluster::{
-    Cluster, ClusterConflict, ClusterRef, ClusterRow, Cut, Decl, DerivedReport, DynFragment,
-    EdgeConflict, HalfEdge, Kind, MEMBER_COUNT, NODE_COUNT, ReplaceReport, RetractReport,
-    Selection, WriteReport, intern_kind, interned_kinds, interned_label,
-};
-pub use graph::{DynEdge, DynEdgeStream, Graph, edge_face_prefix, edge_step, predicate_id_in};
 pub use okm_core::decode::{decode_key, decode_payload, resolve_vocab_labels};
 pub use okm_core::model::access_method::{
     AccessMethod, AccessMethodKind, Admits, FuncDerive, decode_includes, index_entries,
@@ -79,7 +68,18 @@ pub use okm_core::model::byte_reduce::{
     reduce_get, scan_reduces,
 };
 pub use okm_core::model::dict_write::DictWrite;
+/// The dynamic counterpart of core's graph + cluster vocabulary: the same four
+/// cluster faces (ADR-0066) with `Dict` payloads, the same lazy traversal
+/// streams, and the same three write verbs (`incorporate` / `retract` / `replace`).
+pub use okm_core::model::dynamic_cluster::{
+    Cluster, ClusterConflict, ClusterRef, ClusterRow, Cut, Decl, DerivedReport, DynFragment,
+    EdgeConflict, HalfEdge, Kind, MEMBER_COUNT, NODE_COUNT, ReplaceReport, RetractReport,
+    Selection, WriteReport, intern_kind, interned_kinds, interned_label,
+};
 pub use okm_core::model::dynamic_collection::DynamicCollection;
+pub use okm_core::model::dynamic_graph::{
+    DynEdge, DynEdgeStream, DynGraph, edge_face_prefix, edge_step, predicate_id_in,
+};
 pub use okm_core::model::dynamic_plan::{
     PlannedDelete, PlannedPut, PlannedWrite, Stored, decode_stored,
 };
