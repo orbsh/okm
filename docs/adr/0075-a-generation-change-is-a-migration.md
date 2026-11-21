@@ -29,14 +29,14 @@ Four facts decide the shape this decision can take.
 
 6. **The copy is not a change; the replayed tail is.** Copied rows are the new generation's baseline — the lake pins or exports them, and the log is not the record of what moved. The replayed changes are changes, and they enter the log under the new generation's header. This is why the old generation's log must outlive the flip: it is the only record of what happened between the snapshot and the switch.
 
-7. **The driver is a lake subcommand, not a crate.** The legs exist — `read`, `restore`, `publish`, `delta`, `baseline`, `vacuum`, and the replay target — and what is missing is the verdict (compare generation, fingerprint, schema bytes), the copy and the flip. A separate `okm-migrate` crate would copy the lake's bridge to do the same work in a second place.
+7. **The driver is the log's subcommand, not a crate.** Nothing on this path needs the lake: the copy reads the old range through the stored declaration, the catch-up reads the log's own segments, and the flip writes one record row — all of which `okm-log` already holds handles for. What is missing is the verdict (compare generation, fingerprint, schema bytes), the copy and the flip; a separate `okm-migrate` crate would carry the same three legs in a second place. The lake stays what ADR-0056 §5 made it — the analytics consumer and the disaster path — and a generation change does not pass through it.
 
 ## What follows from it
 
 - `#[ok_ns]` is bounded below `0x8000`, asserted where it is declared, because the top bit of the first byte belongs to the generation.
 - `TablePlan::compile` derives the parity bit from `schema.layout_version`, so a plan compiled from stored bytes carries the same header the declaration does — one plan per generation, exact, no masked comparison anywhere.
 - `LayoutMismatch` stops being a terminal error and becomes a value a caller can act on: the table it names is the table to migrate, and nothing else stops. A process that finds a *newer* generation is a stale process, and it says so instead of running against bytes it cannot read.
-- The lake gains a verb; `PLAN.md` carries it as the open item this ADR stands behind.
+- The log gains a verb; `PLAN.md` carries it as the open item this ADR stands behind.
 - A migrated table keeps its old range and record until the vacuum, so a failed verification costs a re-run rather than the data.
 - `ns_override` stays what ADR-0062 made it — a restore's mapping — and does not become a general "which generation am I on" flag: the generation is in the key, not in the handle's options.
 
