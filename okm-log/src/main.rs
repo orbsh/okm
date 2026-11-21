@@ -127,6 +127,12 @@ fn migrate(args: &[String]) -> Result<i32, String> {
         hex_of(&report.from_address),
         hex_of(&report.to_address)
     );
+    if root.is_none() {
+        // Say the assumption out loud: a copy with no tail is only complete when nothing wrote.
+        println!(
+            "  no --root given: nothing was replayed, so this run assumed the table was quiesced"
+        );
+    }
     Ok(0)
 }
 
