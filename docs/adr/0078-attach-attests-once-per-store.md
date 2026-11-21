@@ -118,4 +118,5 @@ which caches the row it read.
 
 A table whose layout was swapped under a store between two opens in the same process would not be
 noticed by the second open. Nothing in okm can do that today: a layout change is a migration
-(ADR-0075), which seals the table and reopens nothing in place.
+(ADR-0075), which moves a table into its other parity and flips with a quiesce — the old generation
+serves every read until then, and no handle is re-pointed in place.
