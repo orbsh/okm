@@ -341,6 +341,17 @@ A multi-value face is also the primitive under full-text search, and that use ca
 
 Beyond the equality prefix, a comparison on the leading index field is a physical key interval (ADR-0020): `scan_range::<I>(begin, end)` — byte order == value order for every OKM encoding, so `1 < a < 100` reads only the rows inside `[1, 100)`. Recipes live in the [query guide](query-recipes.md), "the forms of WHERE".
 
+### The dynamic handle: `new` declares, `open` reads
+
+A schema can also arrive as data instead of as a Rust type: `DynamicCollection<S>` — the facade every binding rides — is assembled over a `CollectionSchema` rather than over `K`/`R`. It has two constructors, and the difference is where the declaration comes from, not convenience:
+
+| constructor | where the declaration is | what the handle carries |
+|---|---|---|
+| `DynamicCollection::new(store, ns, schema, indexes)` | the caller's | the schema, plus the access methods (`with_reduces` adds reduce groups) the caller declares |
+| `DynamicCollection::open(store, ns)` | the `[ns][0x1F]` row the table attached (ADR-0043, ADR-0074 §5) | the declaration the store holds — and no access methods |
+
+`new` does no I/O: it is a declaration, and the row is written by the first `ensure_layout()`. `open` reads that row, refuses one whose schema names another ns (the ns and the declaration travel as a pair), and compiles the route from those bytes — so a reader that knows only the ns sees the writer's view without carrying a copy that can drift. What `open` cannot give is an access method or a reduce group: those are declared, never recorded (ADR-0076), which is why a table built for probes is still assembled with `new` over the schema it read.
+
 ### The engine is an assembly-point choice
 
 `Collection::open(store)` takes a store, and nothing on any type says which engine it is (ADR-0010 — the assembly site picks the engine, the declaration owns the ns). Every table therefore has this freedom, not only a side table: one application's tables need not share an engine. The hot table can sit on a small, fast one, the payload table on an LSM tuned for volume, and a read-mostly export table on whatever dumps cheaply. In a relational engine the same wish is a foreign server or a linked table; here it falls out of the model, because a table already IS an independent key space with its own handle — nothing has to be bridged for it to live somewhere else.

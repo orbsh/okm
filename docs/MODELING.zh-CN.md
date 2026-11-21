@@ -311,6 +311,17 @@ let hits = t.scan::<ByToken>(b"rust")?;
 
 等值前缀之外，索引首字段上的比较谓词是一个物理 key 区间（ADR-0020）：`scan_range::<I>(begin, end)`——OKM 每种编码都保持字节序 == 值序，`1 < a < 100` 只读 `[1, 100)` 内的行。配方见[查询指南](query-recipes.zh-CN.md)「where 的形态」一节。
 
+### 动态句柄：`new` 声明，`open` 读取
+
+schema 也可以以数据形式到达，而不必是 Rust 类型：`DynamicCollection<S>`——各语言绑定所乘的那个门面——装配在 `CollectionSchema` 上而不是 `K`/`R` 上。它有两个构造函数，区别在于声明从哪来，不在便利：
+
+| 构造函数 | 声明在哪里 | 句柄带什么 |
+|---|---|---|
+| `DynamicCollection::new(store, ns, schema, indexes)` | 调用方手里 | schema，加上调用方声明的 access method（`with_reduces` 再加 reduce 组） |
+| `DynamicCollection::open(store, ns)` | 表 attach 时写下的 `[ns][0x1F]` 行（ADR-0043、ADR-0074 §5） | store 持有的那份声明——不含 access method |
+
+`new` 不做任何 I/O：它是一次声明，那一行由第一次 `ensure_layout()` 写下。`open` 读那一行，拒绝 schema 写着别的 ns 的行（ns 与声明成对同行），并用那些字节编译路由——于是只知道 ns 的读者就能看到写者那一侧的视图，不必自己带一份可能漂移的副本。`open` 给不了的恰是 access method 与 reduce 组：它们只有声明、从不入档（ADR-0076），所以为探针建的表仍然用 `new` 加上它读到的那份 schema 组装。
+
 ### 引擎是装配点的选择
 
 `Collection::open(store)` 收的是一个 store，任何类型上都没有东西说自己跑在哪个引擎上（ADR-0010——装配点选引擎，声明只拥有 ns）。所以这个自由属于每一张表，不只属于副表：同一个应用里的表不必共用一个引擎。热的表可以待在小而快的引擎上，payload 表待在为容量调的 LSM 上，只读的导出表随便找个落盘便宜的。关系型里同样的愿望要以 foreign server 或链接表的形式出现；在这里它是模型的免费推论——一张表本来就是一个独立的键空间、配一个自己的句柄，换地方不需要为它架桥。
