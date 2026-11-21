@@ -361,6 +361,38 @@ pub mod pyo3_impl {
             })
         }
 
+        /// Open a table the store already describes (ADR-0074 §5) — core's
+        /// `DynamicCollection::open`, with the store taken from another face over it.
+        ///
+        /// Python has no store handle of its own and does not need one: a
+        /// `Collection` IS that handle (its engine is the keyspace, not a copy), so
+        /// `Collection.open(writer, ns)` reads the declaration the writer attached —
+        /// the same row `Collection::open` verifies on the Rust side — instead of
+        /// asking the caller to carry a copy of the schema. The ns must be the one
+        /// the declaration names: a row that describes another ns is a ValueError.
+        ///
+        /// The handle carries no access methods or reduce groups, because the store
+        /// never records them (ADR-0076). Reads and writes by key need neither; a
+        /// table declared from Python — with function or path indexes — is still
+        /// created by the constructor, which is where those are declared.
+        #[staticmethod]
+        fn open(store: &Collection, ns: u16) -> PyResult<Self> {
+            let engine = store
+                .inner
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .store()
+                .clone();
+            let inner = okm_core::model::dynamic_collection::DynamicCollection::open(engine, ns)
+                .map_err(PyValueError::new_err)?;
+            let schema = inner.schema().clone();
+            Ok(Collection {
+                inner: Arc::new(Mutex::new(inner)),
+                schema,
+                ns,
+            })
+        }
+
         /// Register a function index (ADR-0022): `func(document) ->
         /// list[bytes]` produces one entry per derived value (multi-entry
         /// fan-out, the inverted-index regime). The slot must be unique

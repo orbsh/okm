@@ -157,6 +157,21 @@ def main() -> int:
     acc = t.reduce_get({"level": 4})
     assert acc == (2).to_bytes(8, "big"), f"acc after two puts: {acc!r}"
 
+    # --- opening from the store (ADR-0074 §5) --------------------------
+    # A second handle reads the declaration out of the table's meta row instead of
+    # being handed the schema again — core's `DynamicCollection::open`, with the
+    # store taken from a face over it (a handle, not a copy). It refuses an ns the
+    # store never described, which is the same refusal a Rust reader gets.
+    reader = okm.Collection.open(t, 42)
+    assert reader.meta() == t.meta(), "the opened handle reads the same row"
+    assert reader.fetch(key(1, 10))["name"] == "a", "it reads what the writer put"
+    try:
+        okm.Collection.open(t, 43)
+    except ValueError as refused:
+        assert "no meta row" in str(refused), f"ns 43 was never described: {refused}"
+    else:
+        raise AssertionError("ns 43 was never described, so open must refuse")
+
     # --- overwrite: unfold old + fold new, no drift --------------------
     t.put(key(1, 10), doc(1, 10, 4, 100, "a2"))
     acc = t.reduce_get({"level": 4})
