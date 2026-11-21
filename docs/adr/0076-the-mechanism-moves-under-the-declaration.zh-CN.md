@@ -12,7 +12,7 @@
 
 ## 决定
 
-1. **plan 是唯一的条目生产者。** `TablePlan` 长出产一条 entry 所需的布局——每个已声明槽位的索引字段位置与宽度、includes、reduce 的 group 段——再由一次对它的 walk 把各个面追加进 collection 的 `Entries` 缓冲。生成的 `KvIndex` 实现只保留编译器能查、运行期查不了的那部分：`SLOT`、`FIELDS`、`INCLUDES`、`KEY_PREFIX`、`FUNC`、`admits`，以及 probe builder 里逐字段的 const 断言。`Document::index_entries_into` 退化成把键与 document 交给 walk 的那一次调用；每个索引自己的生成体不再生产。typed 的 plan 是一个 const（`Document::PLAN`，ADR-0074 §3），dynamic 的 plan 是同一个值在 open 时编译出来（`TablePlan::compile`）——一个生产者，两种到手方式。
+1. **plan 是唯一的条目生产者。** `TablePlan` 长出一个 `EntryLayout`：每个已声明的面编译一次成字段引用——键字段的静态偏移、hot 字段的偏移、cold 字段的 tag——外加它的 includes 与尾部。一次对这份布局的 walk，从键字节与写已经建好的 payload 字节把各个面追加进 collection 的 `Entries` 缓冲；reduce 的 group 段按同样方式编译。生成的 `KvIndex` 实现只保留编译器能查、运行期查不了的那部分：`SLOT`、`FIELDS`、`INCLUDES`、`KEY_PREFIX`、`FUNC`、`admits`，以及 probe builder 里逐字段的 const 断言。`Document::index_entries_into` 退化成把键与 document 交给 walk 的那一次调用；每个索引自己的生成体不再生产。路由在 typed 侧仍是 const（`Document::PLAN`，ADR-0074 §3），在 dynamic 侧于 open 时编译（`TablePlan::compile`）；条目那一半由各形态自己持有的声明编译一次——typed 侧是它发射的声明表，dynamic 侧是调用方声明的 access method——因为 store 的面描述不携带它。一个生产者，两种拿到声明的方式。
 
 2. **一份 ledger，且 fold 保持不失败。** core 的 `reduce_get` / `scan_reduces` / `apply_row` 已经拥有对 accumulator 的 read-modify-write，动态侧在 `Vec<u8>` 上又写了一遍。缝本来就有：`ReduceCodec`（`encode_acc`/`decode_acc`，`okm-core/src/model/reduce.rs:26`），字节 accumulator 就是它的又一个实现。dynamic 的 fold 会失败，因为一个 `Dict` 可能对不上声明；但这个检查已有边界：动态层在规划任何东西之前就拒绝这种 document（`index_entries` 与 `plan.rs` 都答 `Result<_, String>`），所以形状检查留在那条边界上，共享的 fold 步保持不失败。给 typed 的 fold 挂 `Result`，等于在写路径上为一个不可能发生、且调用方无法处理的错误付账。
 
@@ -26,6 +26,7 @@
 - `Entries`——写的缓冲，read-modify-write 时还有被替换那一行的——成为两种形态里写面生成的唯一位置。
 - bindings 与 `okm-log replay` 的入口不变；它们失去的是入口背后的第二份实现。
 - PLAN 里量过 walk 的那一条（「把 `TablePlan` 编译到 attach」）并入这一条，数字一并带过去。
+- plan 编译所用的声明不是 store 的 schema，目前也还不可能是：`IndexSchema` 带的是 `name/slot/fields/includes/func/deprecated`，所以 `key(...)` 的尾部截断与 `where(...)` 谓词在存储字节里不可见，而 reduce 声明整个不在 `CollectionSchema` 里（`faces` 只对已声明的面取指纹）。因此两个只在截断或谓词上不同的声明会描述出同一份 schema，attach 分辨不出来。补上这个洞要加宽存储的声明与它的指纹——那是一次布局代数变更（ADR-0042），是另一个决定。
 
 ## 被否
 

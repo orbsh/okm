@@ -21,6 +21,7 @@
 
 pub mod document;
 pub mod entries;
+pub mod entry_layout;
 pub mod faces;
 pub mod field;
 pub mod graph;

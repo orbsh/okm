@@ -1095,6 +1095,8 @@ fn emit_index_entries(schema: &DocumentSchema) -> syn::Result<TS2> {
         let includes = &idx.includes;
         let func = &idx.func;
         let deprecated = idx.deprecated;
+        let key_names = &idx.key;
+        let filter = &idx.filter;
         decl_items.push(quote! {
             ::okm_core::model::faces::IndexDecl {
                 name: #name,
@@ -1103,6 +1105,8 @@ fn emit_index_entries(schema: &DocumentSchema) -> syn::Result<TS2> {
                 includes: &[#(#includes),*],
                 func: #func,
                 deprecated: #deprecated,
+                key_prefix: &[#(#key_names),*],
+                filter: #filter,
             }
         });
     }
@@ -1112,6 +1116,7 @@ fn emit_index_entries(schema: &DocumentSchema) -> syn::Result<TS2> {
         let name = lead.ident.to_string();
         let fields = &lead.fields;
         let deprecated = lead.deprecated;
+        let key_names = &lead.key;
         decl_items.push(quote! {
             ::okm_core::model::faces::IndexDecl {
                 name: #name,
@@ -1120,6 +1125,8 @@ fn emit_index_entries(schema: &DocumentSchema) -> syn::Result<TS2> {
                 includes: &[],
                 func: "",
                 deprecated: #deprecated,
+                key_prefix: &[#(#key_names),*],
+                filter: "",
             }
         });
     }

@@ -33,6 +33,19 @@ pub struct IndexDecl {
     pub includes: &'static [&'static str],
     pub func: &'static str,
     pub deprecated: bool,
+    /// The `key(...)` subset, in declaration order — the entry's tail. Empty is
+    /// the whole key.
+    ///
+    /// Not part of the fingerprint or of `IndexSchema`: the stored description
+    /// carries the six facts above, so a truncation change is invisible to
+    /// attach (ADR-0076 §"what follows"). It is carried here because the entry
+    /// producer needs it, and a plan compiled without it would write a
+    /// different tail than the declaration asks for.
+    pub key_prefix: &'static [&'static str],
+    /// The `where(...)` path, empty when the face is a full index. Same status
+    /// as `key_prefix`: the entry producer needs to know a face is partial so
+    /// it can refuse it, and the stored description cannot say so.
+    pub filter: &'static str,
 }
 
 /// Which declaration kind owns a face slot (ADR-0054).
@@ -251,6 +264,8 @@ mod tests {
         includes: &[],
         func: "",
         deprecated: false,
+        key_prefix: &[],
+        filter: "",
     };
     const B: IndexDecl = IndexDecl {
         name: "by_org",
@@ -259,6 +274,8 @@ mod tests {
         includes: &["bio_len"],
         func: "",
         deprecated: false,
+        key_prefix: &[],
+        filter: "",
     };
 
     #[test]
