@@ -523,6 +523,19 @@ impl<S: VirtualStorage> DynamicCollection<S> {
         // document is the PAIR of slots (ADR-0035), so both are walked; a document
         // that has both is visited twice and writes the same entries twice, which
         // is cheaper than a merge by key.
+        //
+        // Whether the DECODED document is needed at all is a property of the
+        // declaration, not of the row: a `Plain` face is answered by the payload bytes
+        // alone, while a callable reads declared names back out of the map and a path
+        // face reads the dynamic segment. A table that declares nothing else therefore
+        // rebuilds without `fetch` — which is two point reads (`stored_document` and
+        // `dynamic_map`) and two decodes per row that the walk never asked for.
+        let needs_document = self.indexes.iter().any(|m| {
+            !matches!(
+                &m.kind,
+                crate::model::access_method::AccessMethodKind::Plain
+            )
+        });
         for slot in [crate::index::PRIMARY_SLOT, crate::index::DYNAMIC_SLOT] {
             let mut prefix = ns.clone();
             crate::write_slot(&mut prefix, slot);
@@ -530,8 +543,13 @@ impl<S: VirtualStorage> DynamicCollection<S> {
             for item in self.store.scan_range(&prefix, end.as_deref()) {
                 let (key, value) = item.map_err(codec)?;
                 let pkey = &key[prefix.len()..];
-                let Some(document) = self.fetch(pkey)? else {
-                    continue;
+                let document = if needs_document {
+                    match self.fetch(pkey)? {
+                        Some(document) => Some(document),
+                        None => continue,
+                    }
+                } else {
+                    None
                 };
                 // The access methods address the PAYLOAD declaration, so they are
                 // derived on the row slot only: a segment-only document has no row to
@@ -554,25 +572,30 @@ impl<S: VirtualStorage> DynamicCollection<S> {
                         .produce(&ns, pkey, &value, &mut entries)
                         .map_err(|m| m.to_string())?;
                     // The faces the walk cannot produce keep their runtime producer, exactly
-                    // as on the write path — one producer per face, both paths.
-                    for (ek, ev) in crate::model::access_method::callable_entries(
+                    // as on the write path — one producer per face, both paths. They read the
+                    // document, so they are the ones `needs_document` exists for.
+                    if let Some(document) = &document {
+                        for (ek, ev) in crate::model::access_method::callable_entries(
+                            &self.schema,
+                            &ns,
+                            &self.indexes,
+                            pkey,
+                            document,
+                        )? {
+                            entries.extend_pair(&ek, &ev);
+                        }
+                    }
+                }
+                if let Some(document) = &document {
+                    for (ek, ev) in crate::model::access_method::path_index_entries(
                         &self.schema,
                         &ns,
                         &self.indexes,
                         pkey,
-                        &document,
+                        document,
                     )? {
                         entries.extend_pair(&ek, &ev);
                     }
-                }
-                for (ek, ev) in crate::model::access_method::path_index_entries(
-                    &self.schema,
-                    &ns,
-                    &self.indexes,
-                    pkey,
-                    &document,
-                )? {
-                    entries.extend_pair(&ek, &ev);
                 }
                 for (ek, ev) in entries.iter() {
                     batch.put_bytes(ek, ev);

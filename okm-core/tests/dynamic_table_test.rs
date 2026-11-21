@@ -1522,3 +1522,93 @@ fn a_rebuild_rederives_a_categorical_face() {
     let hits = table.scan_access_method_keys(0x4001, &[7]).unwrap();
     assert_eq!(hits.len(), 2);
 }
+
+// --- a plain-face rebuild reads no document --------------------------
+
+/// Counts every point read; writes, deletes and scans are real.
+#[derive(Default)]
+struct CountedReads {
+    inner: TestStore,
+    reads: std::sync::Arc<std::sync::atomic::AtomicUsize>,
+}
+
+impl Clone for CountedReads {
+    fn clone(&self) -> Self {
+        Self {
+            inner: self.inner.clone(),
+            reads: std::sync::Arc::clone(&self.reads),
+        }
+    }
+}
+
+impl CountedReads {
+    fn count(&self) -> usize {
+        self.reads.load(std::sync::atomic::Ordering::Relaxed)
+    }
+    fn reset(&self) {
+        self.reads.store(0, std::sync::atomic::Ordering::Relaxed);
+    }
+}
+
+impl VirtualStorage for CountedReads {
+    fn put(&self, key: Vec<u8>, value: Vec<u8>) -> okm_core::error::Result<()> {
+        self.inner.put(key, value)
+    }
+    fn get(&self, key: &[u8]) -> okm_core::error::Result<Option<Vec<u8>>> {
+        self.reads
+            .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        self.inner.get(key)
+    }
+    fn del(&self, key: &[u8]) -> okm_core::error::Result<()> {
+        self.inner.del(key)
+    }
+    fn scan_range(&self, begin: &[u8], end: Option<&[u8]>) -> okm_core::engine::storage::ScanIter {
+        self.inner.scan_range(begin, end)
+    }
+}
+
+/// A `Plain` face is answered by the payload bytes the scan already handed back, so a
+/// rebuild of such a table must not fetch a single document. A callable or a path face
+/// is what makes the decoded map necessary, and that is the declaration's property —
+/// not the row's.
+#[test]
+fn a_rebuild_of_plain_faces_reads_no_document() {
+    let store = CountedReads::default();
+    let table = DynamicCollection::new(
+        store.clone(),
+        43,
+        CollectionSchema::of::<CatKey, CatRow>(),
+        vec![AccessMethod::plain(
+            0x4001,
+            vec!["status".into()],
+            vec!["score".into()],
+        )],
+    );
+    for (id, status, score) in [(1u64, 3u8, 10u32), (2, 7, 41), (3, 7, 42)] {
+        let mut doc = Dict::new();
+        doc.insert("status".into(), Value::U8(status));
+        doc.insert("score".into(), Value::U32(score));
+        table.put(&CatKey { id }.encode(), &doc).unwrap();
+    }
+
+    // What the verb costs on its own: a table declaring no faces sweeps nothing and
+    // derives nothing, so this is the stamp's read count.
+    let bare = DynamicCollection::new(
+        store.clone(),
+        43,
+        CollectionSchema::of::<CatKey, CatRow>(),
+        Vec::new(),
+    );
+    store.reset();
+    bare.rebuild_faces(usize::MAX).unwrap();
+    let baseline = store.count();
+
+    store.reset();
+    let report = table.rebuild_faces(usize::MAX).unwrap();
+    assert_eq!(report.entries_written, 3);
+    assert_eq!(
+        store.count(),
+        baseline,
+        "a plain-face rebuild reads the stamp and nothing else"
+    );
+}
