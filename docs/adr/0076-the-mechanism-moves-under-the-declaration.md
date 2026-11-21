@@ -1,6 +1,6 @@
 # 0076 — The mechanism moves under the declaration; the query surface stays two
 
-Status: decided 2026-11-21; implemented the same day. §1 (one entry producer) and §2 (one ledger orchestration) are in; §3 is complete — every mechanism module moved into core (`encode`, `path`, `access_method`, `plan_fields`, `byte_reduce`, `dynamic_collection`, `dynamic_plan`, `dict_write`, `dynamic_graph`, `dynamic_cluster`). What remains outside is the projection half: `okm-dynamic` is now `arrow` plus re-exports, 92 lines of façade over core.
+Status: decided 2026-11-21; implemented the same day. §1 (one entry producer) and §2 (one ledger orchestration) are in; §3 is complete — every mechanism module moved into core (`encode`, `path`, `access_method`, `plan_fields`, `byte_reduce`, `dynamic_collection`, `dynamic_plan`, `dict_write`, `dynamic_graph`, `dynamic_cluster`). The projection half went to the crate that already projects — `okm_lake::columns` — and `okm-dynamic` is gone: its tests moved next to the code they test, and the lake, the log and the bindings name core's modules directly.
 
 ## Context
 
@@ -16,7 +16,7 @@ The next step was already measured and named. A hardcoded plan costs 3.0 ns key 
 
 2. **One ledger; the carrier owns the error.** Core's `reduce_get` / `scan_reduces` / `apply_row` already own the read-modify-write over an accumulator, and the dynamic side repeats it over `Vec<u8>`. The seam exists: `ReduceCodec` (`encode_acc`/`decode_acc`, `okm-core/src/model/reduce.rs:26`), with the byte accumulator as one more implementation. The dynamic fold is fallible because a `Dict` can fail to match the declaration, and because a fold is user code besides. Widening the typed fold to carry an error it cannot produce would be paying, on the write path, for a failure its caller cannot cause; making the dynamic fold total would leave a refusing callable with nowhere to say so. So the orchestration is generic over the carrier's error instead. The read half is `ledger_get` and `ledger_scan` over any `ReduceCodec`. The write half is `apply_group` over an `AccLedger` — the two questions a carrier answers, `get_acc` and `put_acc` — with the engine as one carrier (`StoreLedger`) and the dynamic plan as the other (`PlanLedger`, where a write becomes the ops the caller records). A step that refuses leaves the entry untouched, because the write happens only after the step agrees; the shape check therefore needs no second home. `create` is a parameter rather than a policy here: the typed write seeds an entry even on an unfold, the dynamic plan only on a fold — a difference older than this ADR, kept visible.
 
-3. **Mechanism moves in; projections stay out.** The modules that are mechanism — `collection`, `plan`, `plan_fields`, `index`, `path`, `encode`, `reduce`, and the two schema-free forms `cluster` and `graph` — move into `okm-core`. The projections do not: the schema-driven Arrow column builder (`arrow.rs`) and everything above it (Parquet, the lake's table formats, the snapshot export) stay outside, because core cannot depend on arrow (ADR-0045, ADR-0056) and a projection of a segment is not part of producing one. `okm-dynamic` keeps the projections and the re-exports the lake, the log and the bindings read; its mechanism modules leave rather than being re-exported a second time.
+3. **Mechanism moves in; projections stay out.** The modules that are mechanism — `collection`, `plan`, `plan_fields`, `index`, `path`, `encode`, `reduce`, and the two schema-free forms `cluster` and `graph` — move into `okm-core`. The projections do not: the schema-driven Arrow column builder (`arrow.rs`) and everything above it (Parquet, the lake's table formats, the snapshot export) stay outside, because core cannot depend on arrow (ADR-0045, ADR-0056) and a projection of a segment is not part of producing one. The projections move to `okm-lake`, which already owns arrow and parquet; the crate itself is dissolved rather than kept as a re-export layer.
 
 4. **The query surface stays two, and that is the decision, not a residue.** The typed side asks by type: `scan::<I>(&prefix)`, the marker type carrying the slot and field list, the probe builder asserting every name against the key's and the document's own tables. The dynamic side asks by number with bytes: `scan(index_slot, encoded_prefix)`, plus `scan_exact`, `scan_covered` and `scan_access_method_keys`, with the prefix encoded by the caller (`encode_fields`). The carriers differ — a compile-time type versus data — and neither absorbs the other: a typed probe cannot be constructed without the type, and a host language can only hand over bytes. What unifies is the stored side (slot, entry layout, ledger), never the asking side.
 
@@ -37,3 +37,20 @@ The next step was already measured and named. A hardcoded plan costs 3.0 ns key 
 - **Keeping two producers and relying on the byte-equality tests.** A test observes drift; it does not prevent it, and the drift would be silent on the read side — an entry that sorts differently is still a well-formed entry.
 - **Compiling or caching the plan per collection.** The typed plan is a const; a cache would reintroduce, on the write path, exactly the lookup the plan exists to remove.
 - **Deleting `okm-dynamic` and re-exporting core under its names.** The name would outlive the crate and point at a different body, and the projection half still needs a home that a re-export cannot give it.
+
+## Amendment — 2026-11-21: the crate goes, and nothing is re-exported under its name
+
+With the mechanism gone, what was left of `okm-dynamic` was `arrow.rs` and 44 `pub use`
+lines. The projection moved to `okm_lake::columns` — the lake already owns arrow, parquet
+and every other projection of a segment, so the column builder had a real home waiting —
+and the eleven test files moved to the crates they exercise (core's dynamic form, the
+lake's baseline and replay).
+
+The re-export half was dropped rather than kept. A crate whose whole body is `pub use`
+buys name stability and a curated list of names, and it buys no boundary: `pub use` is
+transparent, so a consumer can always name the real path, and every mechanism move has to
+be mirrored by hand. That trade is worth it when a surface is versioned for someone
+outside the workspace; here the bindings, the lake and the log are compiled at the same
+commit as core, so the only thing the layer guaranteed was that a move costs a second
+edit. The rejection above ("deleting `okm-dynamic` and re-exporting core under its names")
+does not describe this: nothing is re-exported under that name any more.

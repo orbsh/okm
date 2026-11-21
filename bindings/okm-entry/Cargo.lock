@@ -1459,6 +1459,7 @@ version = "0.1.0"
 dependencies = [
  "getrandom 0.3.4",
  "okm-derive",
+ "okm-value",
  "okm-wire",
  "proc-macro2",
  "quote",
@@ -1479,20 +1480,19 @@ dependencies = [
 ]
 
 [[package]]
-name = "okm-dynamic"
-version = "0.1.0"
-dependencies = [
- "okm-core",
-]
-
-[[package]]
 name = "okm-entry"
 version = "0.1.0"
 dependencies = [
  "okm-async",
  "okm-core",
- "okm-dynamic",
  "serde_json",
+]
+
+[[package]]
+name = "okm-value"
+version = "0.1.0"
+dependencies = [
+ "indexmap",
 ]
 
 [[package]]

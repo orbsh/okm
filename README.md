@@ -102,7 +102,7 @@ An honest world, each layer minding its own business:
 
 - **Ad-hoc analysis / BI** → CDC drains the business log continuously into Delta Lake; the analytical side uses any engine (DuckDB / Spark / Trino).
 - **Schema evolution** → a schema change is a compile-time event: blue and green processes each run their own version over shared COW snapshots.
-- **Dynamic mode** (tenant-defined fields) → okm-dynamic: the structure is data rather than a type, and outer access still takes the statically optimised path.
+- **Dynamic mode** (tenant-defined fields) → `okm_core::model::dynamic_*`: the structure is data rather than a type, and outer access still takes the statically optimised path.
 
 ## Status
 
@@ -378,7 +378,7 @@ Four tiers, each built on the one below it. The rule across all four: **a tier s
 | Engine contract | `VirtualStorage` / `SharedVirtualStorage` (`okm-core/src/engine/storage.rs`); `VirtualStorageAsync` is its mirror in `okm-async` (ADR-0059) | the seven methods over encoded bytes — the only language a backend must speak; the async mirror serves only engines and transports whose own API is async |
 | Consumers | okm-query / okm-stream / okm-graph / okm-vector / okm-ngram / bindings | sit above the assembly tier and consume its outputs (ordered scan streams, subscribe events, documents) with zero core changes |
 
-Both schema carriers — compiled declarations (okm-derive) and schema data (okm-dynamic) — reach the same two lower tiers, so "which mode" never changes the engine contract or the bytes.
+Both schema carriers — compiled declarations (okm-derive) and schema data (`CollectionSchema`, the dynamic form in core) — reach the same two lower tiers, so "which mode" never changes the engine contract or the bytes.
 
 ### The engine tier in full
 

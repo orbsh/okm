@@ -16,7 +16,7 @@
 //!   degenerating into loops over ids — a thin `#[pyclass]` over
 //!   `okm_core::KeySet` (the container) and `okm_query::HeldSets` (the
 //!   algebra), so the Steel binding holds the same two rather than a copy
-//!   of either. Its layout knowledge stays in okm-dynamic: this file
+//!   of either. Its layout knowledge stays in the dynamic form: this file
 //!   drives the cursor and never re-derives a key shape.
 //!
 //! Errors cross as Python ValueError (dynamic-side discipline: errors
@@ -25,12 +25,14 @@ pub mod pyo3_impl {
     use okm_core::model::key::KeySet as SharedKeySet;
     use okm_core::storage::VirtualStorage;
     use okm_core::{Direction, EdgeKey, Handle, Members, NodeRef};
-    use okm_dynamic::DynGraph;
-    use okm_dynamic::{
-        AccessMethod, AccessMethodKind, Cluster, ClusterRef, Decl, Dict, DynEdge, DynFragment,
-        EdgeStep, Kind, ByteReduce, RetractReport, Value, WriteReport,
-    };
-    use okm_dynamic::{EdgeSet, NodeSet};
+    use okm_core::model::dynamic_graph::DynGraph;
+    use okm_core::model::access_method::{AccessMethod, AccessMethodKind};
+    use okm_core::model::byte_reduce::ByteReduce;
+    use okm_core::model::dynamic_cluster::{Cluster, ClusterRef, Decl, DynFragment, Kind, RetractReport, WriteReport};
+    use okm_core::model::dynamic_graph::DynEdge;
+    use okm_core::model::graph::EdgeStep;
+    use okm_value::{Dict, Variant as Value};
+    use okm_core::{EdgeSet, NodeSet};
     use okm_query::HeldSets;
     use pyo3::exceptions::{PyTypeError, PyValueError};
     use pyo3::prelude::*;
@@ -194,7 +196,7 @@ pub mod pyo3_impl {
     /// translation, ADR-0037 §1).
     #[pyclass]
     pub struct Collection {
-        inner: Arc<Mutex<okm_dynamic::DynamicCollection<EngineBox>>>,
+        inner: Arc<Mutex<okm_core::model::dynamic_collection::DynamicCollection<EngineBox>>>,
         schema: okm_core::schema::CollectionSchema,
         ns: u16,
     }
@@ -216,7 +218,7 @@ pub mod pyo3_impl {
         /// bare schema object is also accepted). Declared indexes must be
         /// plain (host callables — func/partial — register through the
         /// embedded-mode add_* surface instead); reduce kinds take the
-        /// okm-dynamic preset spellings ("count", {"high_water": f},
+        /// the dynamic form's preset spellings ("count", {"high_water": f},
         /// {"low_water": f}). ns is NOT in the entry (the DSL's rule: it
         /// binds at construction).
         pub fn with_store(
@@ -348,7 +350,7 @@ pub mod pyo3_impl {
         #[new]
         fn new(schema: &Schema, ns: u16) -> PyResult<Self> {
             Ok(Collection {
-                inner: Arc::new(Mutex::new(okm_dynamic::DynamicCollection::new(
+                inner: Arc::new(Mutex::new(okm_core::model::dynamic_collection::DynamicCollection::new(
                     EngineBox::Test(okm_async::TestStore::slatedb_mem()),
                     ns,
                     schema.inner.as_ref().clone(),
@@ -451,7 +453,7 @@ pub mod pyo3_impl {
             value_ty: &str,
             version: u32,
         ) -> PyResult<()> {
-            let path = okm_dynamic::Path::parse(path).map_err(PyValueError::new_err)?;
+            let path = okm_core::model::path::Path::parse(path).map_err(PyValueError::new_err)?;
             let value_ty = path_value_type(value_ty)?;
             self.inner
                 .lock()
@@ -480,7 +482,7 @@ pub mod pyo3_impl {
             self.inner
                 .lock()
                 .unwrap_or_else(std::sync::PoisonError::into_inner)
-                .declare_reduce(okm_dynamic::ReduceSpec {
+                .declare_reduce(okm_core::model::byte_reduce::ReduceSpec {
                     slot,
                     group_fields,
                     logic: Box::new(logic),
@@ -705,7 +707,7 @@ pub mod pyo3_impl {
                 .inner
                 .lock()
                 .unwrap_or_else(std::sync::PoisonError::into_inner);
-            okm_dynamic::scan_reduces(t.store(), &self.ns.to_be_bytes(), slot)
+            okm_core::model::byte_reduce::scan_reduces(t.store(), &self.ns.to_be_bytes(), slot)
                 .map_err(PyValueError::new_err)
         }
 
@@ -742,7 +744,7 @@ pub mod pyo3_impl {
                     Ok(accs.as_ref().and_then(|a| a.get(ek).cloned()))
                 })
                 .map_err(PyValueError::new_err)?;
-            let frame = okm_wire::OpFrame::write_batch(&plan.ops).encode();
+            let frame = okm_wire::OpFrame::write_batch(&plan.ops.collect_pairs()).encode();
             Ok((frame, plan.new_accs))
         }
 
@@ -767,7 +769,7 @@ pub mod pyo3_impl {
                     Ok(accs.as_ref().and_then(|a| a.get(ek).cloned()))
                 })
                 .map_err(PyValueError::new_err)?;
-            let frame = okm_wire::OpFrame::write_batch(&plan.ops).encode();
+            let frame = okm_wire::OpFrame::write_batch(&plan.ops.collect_pairs()).encode();
             Ok((frame, plan.new_accs))
         }
 
@@ -775,7 +777,7 @@ pub mod pyo3_impl {
         /// `old` document dict for the next `plan_put` — the cache-refill
         /// helper the embedded path does against its own engine.
         fn decode_stored(&self, payload: Vec<u8>) -> PyResult<Py<PyAny>> {
-            let m = okm_dynamic::decode_stored(&self.schema, &payload)
+            let m = okm_core::model::dynamic_plan::decode_stored(&self.schema, &payload)
                 .map_err(PyValueError::new_err)?;
             Python::attach(|py| Ok(map_to_dict(py, &m)?.unbind().into_any()))
         }
@@ -828,18 +830,18 @@ pub mod pyo3_impl {
         /// missing key fields are a ValueError).
         fn encode_key(&self, values: &Bound<'_, PyAny>) -> PyResult<Vec<u8>> {
             let map = py_values_to_map(&self.inner, values)?;
-            okm_dynamic::encode_key(&self.inner, &map).map_err(codec_err)
+            okm_core::model::encode::encode_key(&self.inner, &map).map_err(codec_err)
         }
 
         /// Encode the payload (hot segment + cold TLV) from `{field: value}`.
         fn encode_payload(&self, values: &Bound<'_, PyAny>) -> PyResult<Vec<u8>> {
             let map = py_values_to_map(&self.inner, values)?;
-            okm_dynamic::encode_payload(&self.inner, &map).map_err(codec_err)
+            okm_core::model::encode::encode_payload(&self.inner, &map).map_err(codec_err)
         }
 
         /// Decode key bytes → `{field: value}`.
         fn decode_key(&self, bytes: &[u8]) -> PyResult<Py<PyAny>> {
-            okm_dynamic::decode_key(&self.inner, bytes)
+            okm_core::decode::decode_key(&self.inner, bytes)
                 .map_err(codec_err)
                 .and_then(|m| {
                     Python::attach(|py| map_to_dict(py, &m).map(|d| d.unbind().into_any()))
@@ -849,7 +851,7 @@ pub mod pyo3_impl {
         /// Decode payload bytes → `{field: value}`. Absent tail fields arrive
         /// as their schema defaults (version migration).
         fn decode_payload(&self, bytes: &[u8]) -> PyResult<Py<PyAny>> {
-            okm_dynamic::decode_payload(&self.inner, bytes)
+            okm_core::decode::decode_payload(&self.inner, bytes)
                 .map_err(codec_err)
                 .and_then(|m| {
                     Python::attach(|py| map_to_dict(py, &m).map(|d| d.unbind().into_any()))
@@ -1114,7 +1116,7 @@ pub mod pyo3_impl {
         })
     }
 
-    /// A head → the identity okm-dynamic takes. `None` when no edge ever
+    /// A head → the identity the dynamic form takes. `None` when no edge ever
     /// interned the predicate: no row can hold that edge, so a read answers
     /// nothing and a delete is nothing to do (never a refusal).
     fn head_key(
@@ -1124,7 +1126,7 @@ pub mod pyo3_impl {
         what: &str,
     ) -> PyResult<Option<EdgeKey>> {
         let head = head_of(obj, what)?;
-        let id = okm_dynamic::predicate_id_in(store, &ns.to_be_bytes(), &head.predicate)
+        let id = okm_core::model::dynamic_graph::predicate_id_in(store, &ns.to_be_bytes(), &head.predicate)
             .map_err(PyValueError::new_err)?;
         Ok(id.map(|predicate| EdgeKey::new(head.src, predicate, head.dst)))
     }
@@ -1166,7 +1168,7 @@ pub mod pyo3_impl {
     /// takes a kind.
     fn kind_arg(store: &EngineBox, ns: u16, obj: &Bound<'_, PyAny>, what: &str) -> PyResult<Kind> {
         if let Ok(label) = obj.extract::<String>() {
-            return okm_dynamic::intern_kind(store, &ns.to_be_bytes(), &label)
+            return okm_core::model::dynamic_cluster::intern_kind(store, &ns.to_be_bytes(), &label)
                 .map_err(PyValueError::new_err);
         }
         kind_of(obj, what)
@@ -1247,7 +1249,7 @@ pub mod pyo3_impl {
     /// The edge-side twin of [`cluster_is_target`] — one dict parses under both
     /// verbs, and the key that changes the reading is `attrs`: a dict that
     /// carries them is a declaration, so `retract` refuses it with
-    /// okm-dynamic's own "that is incorporate's verb".
+    /// the dynamic form's own "that is incorporate's verb".
     fn head_is_target(obj: &Bound<'_, PyAny>) -> bool {
         let Ok(dict) = obj.cast::<pyo3::types::PyDict>() else {
             return false;
@@ -1646,7 +1648,7 @@ pub mod pyo3_impl {
         /// comparison, not a second lookup.
         fn new(
             key: Vec<u8>,
-            head: &okm_dynamic::HopHead,
+            head: &okm_core::model::graph::HopHead,
             near_handle: Handle,
             near: &NodeRef,
             far: NodeRef,
@@ -1769,7 +1771,7 @@ pub mod pyo3_impl {
     impl Graph {
         /// Assemble over an engine the caller owns. A schema whose `ns_prefix`
         /// names another ns is REFUSED here rather than asserted in
-        /// `okm_dynamic::Graph::new`: the ns and the schema travel as a pair
+        /// `okm_core::model::dynamic_graph::DynGraph::new`: the ns and the schema travel as a pair
         /// (ADR-0025), and a binding's job is to report the disagreement, not
         /// to abort the interpreter on it.
         pub fn assemble(
@@ -2032,7 +2034,7 @@ pub mod pyo3_impl {
             &self,
             kind: Kind,
             id: u64,
-        ) -> Result<Option<okm_dynamic::ClusterRow>, String> {
+        ) -> Result<Option<okm_core::model::dynamic_cluster::ClusterRow>, String> {
             self.inner
                 .lock()
                 .unwrap_or_else(std::sync::PoisonError::into_inner)
@@ -2102,7 +2104,7 @@ pub mod pyo3_impl {
         /// cannot express (accumulate, read-then-write) stay in Rust.
         ///
         /// A fragment that carries deletions is REFUSED by this verb with
-        /// okm-dynamic's own message ("incorporate writes; … that is retract's
+        /// the dynamic form's own message ("incorporate writes; … that is retract's
         /// verb"), as `ValueError` — the same refusal the Rust face raises.
         ///
         /// Answers `{"edges": […], "edge_sets": [(kind, id), …], "node_sets": [(kind, id), …]}`:
@@ -2142,7 +2144,7 @@ pub mod pyo3_impl {
         /// refusal.
         ///
         /// A fragment that declares writes (edge/cluster declarations, a
-        /// reducer, a `remove`) is refused with okm-dynamic's message
+        /// reducer, a `remove`) is refused with the dynamic form's message
         /// ("retract removes; … that is incorporate's verb"). An edge dict
         /// carrying `attrs` is a DECLARATION, so that is the shape it is read as.
         ///
@@ -2369,13 +2371,13 @@ pub mod pyo3_impl {
     }
 
     /// One node's edges, one direction, as a LAZY, ORDERED cursor — the binding
-    /// side of `okm_dynamic::DynEdgeStream`.
+    /// side of `okm_core::model::dynamic_graph::DynEdgeStream`.
     ///
     /// It is a cursor of its OWN because a `#[pyclass]` cannot hold the borrowed
     /// stream: a `DynEdgeStream<'a, S>` borrows the store, and the store lives
     /// inside the graph, so the borrow could not outlive one call. This type
     /// OWNS the engine handle (a clone is the keyspace) and the scan it opened,
-    /// and asks okm-dynamic what each entry means (`edge_step`) and where a walk
+    /// and asks the dynamic form what each entry means (`edge_step`) and where a walk
     /// starts (`edge_face_prefix`) — the layout stays in one place; only the
     /// position lives here.
     ///
@@ -2470,7 +2472,7 @@ pub mod pyo3_impl {
         }
 
         fn prefix(&self) -> Vec<u8> {
-            okm_dynamic::edge_face_prefix(self.ns.to_be_bytes(), self.dir, self.filter, self.handle)
+            okm_core::model::dynamic_graph::edge_face_prefix(self.ns.to_be_bytes(), self.dir, self.filter, self.handle)
         }
 
         /// Point the cursor at (possibly) another face and re-fill it. A filter
@@ -2510,7 +2512,7 @@ pub mod pyo3_impl {
                         // The entry's key states the predicate and the far handle;
                         // nothing is resolved here (that is the boundary's job,
                         // `next_view` / `views`).
-                        if let Some(step) = okm_dynamic::edge_step(
+                        if let Some(step) = okm_core::model::dynamic_graph::edge_step(
                             &key,
                             self.suffix_at,
                             self.dir,
@@ -2581,7 +2583,7 @@ pub mod pyo3_impl {
             predicate: &str,
             members: Members,
         ) -> Result<Self, String> {
-            let filter = okm_dynamic::predicate_id_in(&store, &ns.to_be_bytes(), predicate)?;
+            let filter = okm_core::model::dynamic_graph::predicate_id_in(&store, &ns.to_be_bytes(), predicate)?;
             let mut stream = EdgeStream {
                 store,
                 ns,
@@ -2773,7 +2775,7 @@ pub mod pyo3_impl {
         /// A collection: keys are document pkeys, rows are the ASSEMBLED
         /// document (`DynamicCollection::fetch` — the call the Steel binding's
         /// `key-fetch!` makes, so the two bindings cannot answer differently).
-        Collection(Arc<Mutex<okm_dynamic::DynamicCollection<EngineBox>>>),
+        Collection(Arc<Mutex<okm_core::model::dynamic_collection::DynamicCollection<EngineBox>>>),
         /// A graph: keys are face entry keys, rows are the entries' value bytes.
         /// There is nothing to assemble — a graph row IS its entry — so this arm
         /// reads the store directly, as it always did.
@@ -2966,7 +2968,7 @@ pub mod pyo3_impl {
         }
     }
 
-    fn codec_err(e: okm_dynamic::CodecError) -> PyErr {
+    fn codec_err(e: okm_value::CodecError) -> PyErr {
         PyValueError::new_err(format!("{e}"))
     }
 

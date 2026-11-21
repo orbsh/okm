@@ -10,7 +10,6 @@ path = "src/main.rs"
 
 [dependencies]
 okm-core = { path = "../okm-core", features = ["schema-serde", "fjall"] }
-okm-dynamic = { path = "../okm-dynamic", features = ["replay"] }
 
 [dev-dependencies]
 okm-derive = { path = "../okm-derive" }

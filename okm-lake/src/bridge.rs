@@ -45,10 +45,10 @@ use okm_core::model::index::Document;
 use okm_core::model::key::KeyEncode;
 // The graph's edge table (and the variant column it appends) is a PARQUET
 // shape, so these two are too: `--features arrow` alone must stay buildable.
+use crate::columns::arrow_type;
 use okm_core::model::document::Collection;
 use okm_core::model::graph::EdgeKey;
 use okm_core::model::graph::{Graph, GraphEncode};
-use okm_dynamic::arrow::arrow_type;
 use okm_value::Variant;
 
 /// Decode a prefix-monotonic varint (P1 wire — the same codec as

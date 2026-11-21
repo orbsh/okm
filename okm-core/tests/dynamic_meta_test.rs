@@ -21,11 +21,12 @@
     clippy::panic_in_result_fn
 )]
 
+use okm_core::model::dynamic_collection::DynamicCollection;
 use okm_core::schema::CollectionSchema;
 use okm_core::{Document, DocumentEncode, KeyEncode, VirtualStorage, meta};
-use okm_dynamic::{Dict, DynamicCollection, Value};
+use okm_value::{Dict, Variant as Value};
 
-use okm_async::TestStore;
+use okm_core::testing::TestStore;
 /// ns 92 = `[0x00, 0x5C]` — the hex locks below spell it out.
 #[derive(KeyEncode, Clone, PartialEq, Debug, Default)]
 pub struct MetaKey {

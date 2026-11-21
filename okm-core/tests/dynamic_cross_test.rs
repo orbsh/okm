@@ -17,14 +17,14 @@
     clippy::panic_in_result_fn
 )]
 
+use okm_core::decode::{decode_key, decode_payload};
+use okm_core::model::encode::{encode_key, encode_payload};
 use okm_core::schema::CollectionSchema;
 use okm_core::testing::TestStore;
 use okm_core::{
     Collection, Document, DocumentEncode, KeyEncode, Offset, Quant, VarInt, VirtualStorage,
 };
-use okm_dynamic::{
-    CodecError, Dict, Value, decode_key, decode_payload, encode_key, encode_payload,
-};
+use okm_value::{CodecError, Dict, Variant as Value};
 
 /// The document as one map: the row's value with the dynamic segment laid over
 /// it — a point read answers parts, a row converts to a value, and values
@@ -346,7 +346,7 @@ fn a_key_name_in_a_map_is_a_value_field_in_both_modes() {
 
     let typed: Collection<TestStore, UserKey, User> =
         Collection::open(TestStore::default()).unwrap();
-    let dynamic = okm_dynamic::DynamicCollection::new(
+    let dynamic = okm_core::model::dynamic_collection::DynamicCollection::new(
         TestStore::default(),
         41,
         CollectionSchema::of::<UserKey, User>(),
@@ -466,7 +466,7 @@ fn the_two_enumeration_modes_see_the_two_kinds_of_document() {
     );
 
     // The dynamic face answers the same two modes over the same two kinds.
-    let dynamic = okm_dynamic::DynamicCollection::new(
+    let dynamic = okm_core::model::dynamic_collection::DynamicCollection::new(
         TestStore::default(),
         41,
         CollectionSchema::of::<UserKey, User>(),

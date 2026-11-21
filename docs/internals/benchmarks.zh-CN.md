@@ -212,7 +212,7 @@ SELECT data_length, index_length FROM information_schema.tables WHERE table_name
 
 同一批行在湖那边的开销现在是 **36.3 B/行**：`snapshot::parquet_io` 用 zstd level 1 写（ADR-0071 §5），同一个文件在设上 codec 之前是 120.2，多出来的差额是那三个变更列（同批行不带变更列的 parquet 是 33.0）。
 
-## 动态 codec 的税（okm-dynamic 对 Rust derive，同一份声明）
+## 动态 codec 的税（动态形态对 Rust derive，同一份声明）
 
 | 路径 | dynamic | derive | 税 |
 |---|---|---|---|

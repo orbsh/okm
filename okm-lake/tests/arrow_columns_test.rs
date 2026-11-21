@@ -16,10 +16,11 @@
 use okm_lake::bridge::ToRecordBatch;
 
 use okm_async::TestStore;
+use okm_core::decode::decode_payload;
 use okm_core::schema::CollectionSchema;
 use okm_core::{Collection, DocumentEncode, KeyEncode, Offset, Quant, VarInt, VirtualStorage};
-use okm_dynamic::arrow::{ordered_fields, record_batch};
-use okm_dynamic::{Value, decode_payload};
+use okm_lake::columns::{ordered_fields, record_batch};
+use okm_value::Variant as Value;
 
 #[derive(KeyEncode, Clone, PartialEq, Debug)]
 pub struct K {
@@ -124,7 +125,7 @@ fn an_absent_payload_is_a_null_half_and_a_wrong_kind_is_an_error() {
     assert!(!batch.column(0).is_null(0), "keys are never NULL");
 
     // A row whose value is the wrong kind is a refusal, not a silent NULL.
-    let mut wrong = okm_dynamic::Dict::new();
+    let mut wrong = okm_value::Dict::new();
     wrong.insert("note".into(), Value::Str("ok".into()));
     wrong.insert("n".into(), Value::Str("not a number".into()));
     wrong.insert("created".into(), Value::I64(1_700_000_050));

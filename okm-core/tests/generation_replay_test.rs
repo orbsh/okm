@@ -7,7 +7,7 @@
 //! segment decoded under the wrong declaration does not fail, it answers with the other
 //! field's value, which is exactly the silent corruption a per-directory declaration caused.
 
-#![cfg(feature = "replay")]
+#![cfg(feature = "schema-serde")]
 #![allow(
     clippy::unwrap_used,
     clippy::expect_used,
@@ -16,12 +16,12 @@
     clippy::panic_in_result_fn
 )]
 
-use okm_async::TestStore;
 use okm_core::changelog::replay::replay_table;
 use okm_core::changelog::{ChangelogConfig, ChangelogStore, table_dir};
+use okm_core::model::dynamic_collection::DynamicCollection;
 use okm_core::schema::CollectionSchema;
+use okm_core::testing::TestStore;
 use okm_core::{Collection, Document, DocumentEncode, KeyEncode};
-use okm_dynamic::DynamicCollection;
 use okm_value::Variant;
 
 #[derive(KeyEncode, Clone, PartialEq, Debug, Default)]
@@ -53,7 +53,7 @@ pub struct Gen2 {
 }
 
 fn store(root: &std::path::Path) -> ChangelogStore<TestStore> {
-    ChangelogStore::new(TestStore::slatedb_mem(), ChangelogConfig::new(root))
+    ChangelogStore::new(TestStore::default(), ChangelogConfig::new(root))
 }
 
 #[test]
@@ -85,7 +85,7 @@ fn a_mixed_directory_replays_each_segment_under_its_own_declaration() {
     // A store built today is declared with the NEWEST generation — that is the shape it
     // serves. The history below it is read under the shape it was written with.
     let target = DynamicCollection::new(
-        TestStore::slatedb_mem(),
+        TestStore::default(),
         u16::from_be_bytes([
             <Gen1 as Document>::NS_PREFIX[0],
             <Gen1 as Document>::NS_PREFIX[1],

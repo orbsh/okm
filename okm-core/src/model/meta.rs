@@ -57,7 +57,7 @@ pub const VERSION: &str = "version";
 ///
 /// The third runtime name: `version` says which layout wrote the store, `faces` which
 /// declaration's derived faces it holds, and this one the shape those answers refer to. It
-/// is what lets a reader with no compiled declaration — okm-dynamic, a binding, the change
+/// is what lets a reader with no compiled declaration — the dynamic form, a binding, the change
 /// log deciding whether to capture — answer questions about a table it has no type for.
 pub const SCHEMA: &str = "schema";
 

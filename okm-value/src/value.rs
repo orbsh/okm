@@ -26,7 +26,7 @@ use indexmap::IndexMap;
 ///
 /// It used to exist twice — one tree for dynamic-segment frames (widthless
 /// integers) and one as the schema-driven codec's currency (width-typed integers,
-/// re-exported by `okm_dynamic` as `Value`). The shapes had drifted apart for a
+/// re-exported as `Value` by the dynamic form's callers). The shapes had drifted apart for a
 /// historical reason, not a structural one, and the decoder had to live above core
 /// to reach the second. Now there is one:
 ///

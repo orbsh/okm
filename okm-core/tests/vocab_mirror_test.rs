@@ -17,10 +17,11 @@
     clippy::panic_in_result_fn
 )]
 
-use okm_async::TestStore;
+use okm_core::model::dynamic_collection::DynamicCollection;
 use okm_core::schema::CollectionSchema;
+use okm_core::testing::TestStore;
 use okm_core::{DocumentEncode, KeyEncode, write_slot};
-use okm_dynamic::{Dict, DynamicCollection, Value};
+use okm_value::{Dict, Variant as Value};
 
 const NS: u16 = 47;
 
@@ -70,7 +71,7 @@ fn labels(store: &TestStore) -> Vec<String> {
 /// handle wrote instead of allocating a second id for it.
 #[test]
 fn two_handles_allocate_one_id_per_label() {
-    let store = TestStore::slatedb_mem();
+    let store = TestStore::default();
     let a = table(store.shared_handle());
     let b = table(store.shared_handle());
 
@@ -110,7 +111,7 @@ fn two_handles_allocate_one_id_per_label() {
 /// dropped field looks exactly like data loss to the caller).
 #[test]
 fn a_stale_mirror_resolves_an_unknown_id_from_the_engine() {
-    let store = TestStore::slatedb_mem();
+    let store = TestStore::default();
     let writer = table(store.shared_handle());
     let reader = table(store.shared_handle());
 

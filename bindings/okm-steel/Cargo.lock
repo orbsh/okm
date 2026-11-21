@@ -610,19 +610,10 @@ dependencies = [
 ]
 
 [[package]]
-name = "okm-dynamic"
-version = "0.1.0"
-dependencies = [
- "okm-core",
- "okm-value",
-]
-
-[[package]]
 name = "okm-entry"
 version = "0.1.0"
 dependencies = [
  "okm-core",
- "okm-dynamic",
  "serde_json",
 ]
 
@@ -640,9 +631,9 @@ dependencies = [
  "im-rc",
  "okm-core",
  "okm-derive",
- "okm-dynamic",
  "okm-entry",
  "okm-query",
+ "okm-value",
  "serde_json",
  "steel-core",
 ]

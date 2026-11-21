@@ -295,7 +295,12 @@ fn replay(args: &[String]) -> Result<i32, String> {
     let store = okm_core::FjallStore::open(&store_dir, "okm").map_err(|e| e.to_string())?;
 
     let new_collection = |ns: u16, schema: &okm_core::schema::CollectionSchema| {
-        okm_dynamic::DynamicCollection::new(store.shared_handle(), ns, schema.clone(), Vec::new())
+        okm_core::model::dynamic_collection::DynamicCollection::new(
+            store.shared_handle(),
+            ns,
+            schema.clone(),
+            Vec::new(),
+        )
     };
 
     let runs: Vec<TableRun> = match table {

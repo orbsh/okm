@@ -117,7 +117,7 @@ t.scan_exact::<I>(&encoded)
 
 It is **exact matching without a fetch**: no row check, no `includes(that field)` to verify against. The precondition is that the probe names **every field** of the index's data segment — naming only leading fields is group semantics (that is `scan::<I>`), and under the equality form those group hits are all rejected.
 
-The dynamic side is the same criterion, word for word: `okm_dynamic::scan_access_method` / `scan_access_method_exact` → `DynamicCollection::scan` / `scan_exact` → the Python binding's `Collection.scan` / `scan_exact` (`accept_embedded.py` locks one spill assertion).
+The dynamic side is the same criterion, word for word: `okm_core::model::access_method::scan_access_method` / `scan_access_method_exact` → `DynamicCollection::scan` / `scan_exact` → the Python binding's `Collection.scan` / `scan_exact` (`accept_embedded.py` locks one spill assertion).
 
 ## `scan_covered`: the covering scan
 

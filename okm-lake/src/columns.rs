@@ -15,7 +15,6 @@
 //!   (the log replays the id faces) — an id that has no label is NULL, never an
 //!   invented name.
 
-use crate::{CodecError, Dict, Value, decode_key};
 use arrow::array::{
     ArrayRef, BinaryArray, FixedSizeBinaryArray, Float64Array, Int64Array, StringArray, UInt8Array,
     UInt16Array, UInt32Array, UInt64Array,
@@ -23,7 +22,9 @@ use arrow::array::{
 use arrow::datatypes::{DataType, Field as ArrowField, Schema};
 use arrow::record_batch::RecordBatch;
 use okm_core::FieldType;
+use okm_core::decode::decode_key;
 use okm_core::schema::{CollectionSchema, FieldSchema};
+use okm_value::{CodecError, Dict, Variant as Value};
 use std::sync::Arc;
 
 /// `id slot, id bytes → label` for a `Vocab<N>` field. The drainer answers from

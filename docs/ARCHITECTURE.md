@@ -49,7 +49,7 @@ VirtualStorage (Fjall / redb / slatedb)
 ```
 
 **Why the split matters**: consumers of the declaration — the schema
-export (`CollectionSchema::of`), the dynamic reader (okm-dynamic), the
+export (`CollectionSchema::of`), the dynamic reader (in core), the
 Arrow/Parquet bridge, snapshot tooling — need *knowledge* of the
 schema, not its code. They read the constants. Adding a consumer never
 requires touching the derive; adding a field requires only that the

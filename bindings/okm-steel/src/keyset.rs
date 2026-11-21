@@ -274,7 +274,7 @@ impl KeySetRegistry {
 /// carrier injected — never carried by the set.
 enum RowSite {
     /// A collection: keys are document pkeys, rows are decoded documents.
-    Collection(Arc<Mutex<okm_dynamic::DynamicCollection<EngineBox>>>),
+    Collection(Arc<Mutex<okm_core::model::dynamic_collection::DynamicCollection<EngineBox>>>),
     /// A graph: keys are face entry keys, rows are the entries' value bytes.
     Graph(EngineBox),
 }

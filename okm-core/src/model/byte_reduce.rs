@@ -5,7 +5,7 @@
 //! Entry key: `[ns 2B][slot u16 BE][group segment]` — no key-prefix tail,
 //! the group identity IS the entry. The accumulator travels as bytes
 //! (byte-transparent form, the `Vec<u8>` escape hatch of
-//! `ReduceCodec`): the host language owns the acc layout — okm-dynamic
+//! `ReduceCodec`): the host language owns the acc layout — the dynamic form
 //! only runs get → callable → put inside the calling discipline.
 //!
 //! Calling discipline (the correctness surface — ADR-0008's exactly-once

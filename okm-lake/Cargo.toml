@@ -17,7 +17,6 @@ path = "src/main.rs"
 okm-core = { path = "../okm-core", features = ["schema-serde", "fjall"] }
 okm-value = { path = "../okm-value" }
 okm-wire = { path = "../okm-wire" }
-okm-dynamic = { path = "../okm-dynamic", features = ["arrow", "replay"] }
 arrow = "60"
 parquet = { version = "60", default-features = false, features = ["arrow", "zstd"] }
 parquet-variant = "60"

@@ -15,8 +15,8 @@
 use okm_async::TestStore;
 use okm_core::changelog::replay::{reconcile, replay_table};
 use okm_core::changelog::{ChangelogConfig, ChangelogStore};
+use okm_core::model::dynamic_collection::DynamicCollection;
 use okm_core::{Collection, DocumentEncode, KeyEncode, Vocab};
-use okm_dynamic::DynamicCollection;
 use okm_value::{Dict, Variant};
 
 #[derive(KeyEncode, Clone, PartialEq, Debug, Default)]
@@ -89,7 +89,7 @@ fn replay_rewrites_the_rows_through_the_targets_write_path() {
         .map(|k| {
             let row = target.fetch(k).expect("fetch").expect("a row");
             match row.get("body") {
-                Some(okm_dynamic::Value::Str(s)) => s.clone(),
+                Some(okm_value::Variant::Str(s)) => s.clone(),
                 other => panic!("body: {other:?}"),
             }
         })
@@ -155,7 +155,7 @@ fn reconciliation_repairs_what_the_log_never_carried() {
         .map(|k| {
             let row = target.fetch(k).expect("fetch").expect("a row");
             match row.get("body") {
-                Some(okm_dynamic::Value::Str(s)) => s.clone(),
+                Some(okm_value::Variant::Str(s)) => s.clone(),
                 other => panic!("body: {other:?}"),
             }
         })
@@ -225,12 +225,12 @@ fn a_dynamic_field_survives_the_replay() {
     let row = target.fetch(&key).expect("fetch").expect("a row");
     assert_eq!(
         row.get("colour"),
-        Some(&okm_dynamic::Value::Str("red".to_string())),
+        Some(&okm_value::Variant::Str("red".to_string())),
         "the segment's field arrived with the row: {row:?}"
     );
     assert_eq!(
         row.get("body"),
-        Some(&okm_dynamic::Value::Str("a".to_string()))
+        Some(&okm_value::Variant::Str("a".to_string()))
     );
 }
 
@@ -270,7 +270,7 @@ fn a_dynamic_only_document_survives_replay_and_reconciliation() {
     let row = target.fetch(&pkey).expect("fetch").expect("the document");
     assert_eq!(
         row.get("colour"),
-        Some(&okm_dynamic::Value::Str("blue".to_string()))
+        Some(&okm_value::Variant::Str("blue".to_string()))
     );
 
     // The subtraction half must count the dynamic face as presence, or this
@@ -283,6 +283,6 @@ fn a_dynamic_only_document_survives_replay_and_reconciliation() {
         .expect("still there after reconciliation");
     assert_eq!(
         row.get("colour"),
-        Some(&okm_dynamic::Value::Str("blue".to_string()))
+        Some(&okm_value::Variant::Str("blue".to_string()))
     );
 }

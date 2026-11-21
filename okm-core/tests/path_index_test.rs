@@ -21,10 +21,14 @@
     clippy::panic_in_result_fn
 )]
 
-use okm_async::TestStore;
+use okm_core::field::FieldType;
+use okm_core::model::access_method::AccessMethod;
+use okm_core::model::dynamic_collection::DynamicCollection;
+use okm_core::model::path::Path;
 use okm_core::schema::CollectionSchema;
+use okm_core::testing::TestStore;
 use okm_core::{DocumentEncode, KeyEncode, VirtualStorage};
-use okm_dynamic::{AccessMethod, Dict, DynamicCollection, FieldType, Path, Value};
+use okm_value::{Dict, Variant as Value};
 
 #[derive(KeyEncode, Clone, PartialEq, Debug, Default)]
 pub struct NodeKey {
@@ -147,7 +151,7 @@ fn entry_keys<S: VirtualStorage>(store: &S, slot: u16) -> Vec<Vec<u8>> {
 
 #[test]
 fn nested_and_top_level_paths_resolve_to_entries() {
-    let t = table(TestStore::slatedb_mem());
+    let t = table(TestStore::default());
     t.put(&key(1), &declared(7)).unwrap();
     t.put(
         &key(1),
@@ -188,7 +192,7 @@ fn exact_scan_ignores_a_probe_completed_by_the_key_tail() {
     // whose first byte is 0x31 ('1'), which lets the probe "ad1" match the
     // stored value "ad" in a raw prefix scan. Values mix letters and digits,
     // so that data is legal — the scan's length test is what drops it.
-    let t = table(TestStore::slatedb_mem());
+    let t = table(TestStore::default());
     let trap = 0x3100_0000_0000_0001;
     for (id, name) in [(trap, "ad"), (2, "ad1"), (3, "ad1_to_cart")] {
         t.put(&key(id), &declared(7)).unwrap();
@@ -219,7 +223,7 @@ fn exact_scan_ignores_a_probe_completed_by_the_key_tail() {
 
 #[test]
 fn array_path_fans_out_and_pinned_index_selects_one() {
-    let t = table(TestStore::slatedb_mem());
+    let t = table(TestStore::default());
     t.put(&key(1), &declared(7)).unwrap();
     t.put(
         &key(1),
@@ -240,7 +244,7 @@ fn array_path_fans_out_and_pinned_index_selects_one() {
 
 #[test]
 fn missing_path_and_type_mismatch_produce_no_entry() {
-    let t = table(TestStore::slatedb_mem());
+    let t = table(TestStore::default());
     t.put(&key(1), &declared(7)).unwrap();
     // No `author`, and `meta.rank` carries a Str where the declaration
     // says U32 — both are empty results, never errors.
@@ -258,7 +262,7 @@ fn missing_path_and_type_mismatch_produce_no_entry() {
 
 #[test]
 fn entry_layout_is_ns_slot_value_pkey() {
-    let t = table(TestStore::slatedb_mem());
+    let t = table(TestStore::default());
     t.put(&key(3), &declared(7)).unwrap();
     t.put(
         &key(3),
@@ -275,7 +279,7 @@ fn entry_layout_is_ns_slot_value_pkey() {
 
 #[test]
 fn overwrite_sweeps_stale_entries() {
-    let t = table(TestStore::slatedb_mem());
+    let t = table(TestStore::default());
     t.put(&key(1), &declared(7)).unwrap();
     t.put(
         &key(1),
@@ -312,7 +316,7 @@ fn entry_bytes_depend_on_the_stored_number_not_the_writer_s_variant() {
     // recomputes keys from the read-back map, and a strict variant match
     // would make that recompute land on a DIFFERENT key set than the
     // write built, silently leaving the old entry behind.
-    let t = table(TestStore::slatedb_mem());
+    let t = table(TestStore::default());
     t.put(&key(1), &declared(7)).unwrap();
     t.put(&key(1), &fields(None, &[], Some(Value::U32(4)), &[]))
         .unwrap();
@@ -341,7 +345,7 @@ fn entry_bytes_depend_on_the_stored_number_not_the_writer_s_variant() {
 #[test]
 fn out_of_range_and_non_numeric_values_produce_no_entry() {
     let t = DynamicCollection::new(
-        TestStore::slatedb_mem(),
+        TestStore::default(),
         51,
         schema(),
         vec![
@@ -371,7 +375,7 @@ fn replace_with_the_declared_map_drops_the_entries_and_keeps_the_document() {
     // The segment is no longer independently deletable (ADR-0035 retired the
     // slot-1 verbs): a whole-document `replace` whose map carries no dynamic
     // name empties it, and the path entries ride the sweep.
-    let t = table(TestStore::slatedb_mem());
+    let t = table(TestStore::default());
     t.put(&key(1), &declared(7)).unwrap();
     t.put(
         &key(1),

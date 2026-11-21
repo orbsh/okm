@@ -1,7 +1,7 @@
 //! Steel binding for OKM's dynamic codec (PLAN Phase 5 — "Python first,
 //! then Steel"). Mirrors the PyO3 surface: a VM receives the schema once
 //! (`schema-from-json!`), then encodes/decodes key/payload bytes through
-//! the same `okm-dynamic` codec. Values map to native steel types —
+//! the same dynamic codec. Values map to native steel types —
 //! numbers are exact (steel integers/floats), bytes are bytevectors,
 //! strings are strings; the schema kind drives coercion at encode time,
 //! same as the PyO3 binding.
@@ -13,7 +13,9 @@
 //! gives it no way to apply a `SteelVal::Closure` or reach the VM, so those
 //! stay Python-only (ADR-0022's consequences record the wall).
 use okm_core::schema::CollectionSchema;
-use okm_dynamic::{decode_key, decode_payload, encode_key, encode_payload, Dict, Value};
+use okm_core::decode::{decode_key, decode_payload};
+use okm_core::model::encode::{encode_key, encode_payload};
+use okm_value::{Dict, Variant as Value};
 use std::sync::Arc;
 use steel::rvals::SteelHashMap;
 use steel::steel_vm::engine::Engine;
@@ -178,7 +180,7 @@ pub(crate) fn meta_to_steel(meta: &okm_core::TableMeta) -> SteelVal {
     value_map_to_steel(&m)
 }
 
-fn err(e: okm_dynamic::CodecError) -> Result<SteelVal, String> {
+fn err(e: okm_value::CodecError) -> Result<SteelVal, String> {
     Err(format!("{e}"))
 }
 

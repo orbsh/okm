@@ -375,8 +375,9 @@ fn bench_write_changelog(c: &mut Criterion) {
 // ---------- dynamic codec tax ----------
 
 fn bench_dynamic(c: &mut Criterion) {
+    use okm_core::model::encode::{encode_key, encode_payload};
     use okm_core::schema::CollectionSchema;
-    use okm_dynamic::{Dict, Value, encode_key, encode_payload};
+    use okm_value::{Dict, Variant as Value};
 
     let schema = CollectionSchema::of::<BenchKey, BenchRow>();
     let mut values = Dict::new();

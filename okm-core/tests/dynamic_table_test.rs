@@ -21,11 +21,13 @@
     clippy::panic_in_result_fn
 )]
 
-use okm_async::TestStore;
 use okm_core::engine::storage::ScanIter;
+use okm_core::model::access_method::AccessMethod;
+use okm_core::model::dynamic_collection::DynamicCollection;
 use okm_core::schema::CollectionSchema;
+use okm_core::testing::TestStore;
 use okm_core::{Batch, Collection, Document, DocumentEncode, KeyEncode, VirtualStorage};
-use okm_dynamic::{AccessMethod, Dict, DynamicCollection, Value};
+use okm_value::{Dict, Variant as Value};
 
 #[derive(KeyEncode, Clone, PartialEq, Debug, Default)]
 pub struct UserKey {
@@ -139,14 +141,14 @@ fn row_key(org_id: u32, user_id: u64) -> Vec<u8> {
 }
 
 fn segment_key(org_id: u32, user_id: u64) -> Vec<u8> {
-    okm_dynamic::fields_key(&41u16.to_be_bytes(), &key_bytes(org_id, user_id))
+    okm_core::model::plan_fields::fields_key(&41u16.to_be_bytes(), &key_bytes(org_id, user_id))
 }
 
 #[test]
 fn dynamic_entries_equal_typed_entries() {
     let typed: Collection<TestStore, UserKey, User> =
-        Collection::open(TestStore::slatedb_mem()).unwrap();
-    let dynamic = dynamic_table(TestStore::slatedb_mem());
+        Collection::open(TestStore::default()).unwrap();
+    let dynamic = dynamic_table(TestStore::default());
 
     let document = User {
         level: 4,
@@ -200,7 +202,7 @@ fn dynamic_entries_equal_typed_entries() {
 
 #[test]
 fn dynamic_scan_finds_by_access_method() {
-    let t = dynamic_table(TestStore::slatedb_mem());
+    let t = dynamic_table(TestStore::default());
     t.put(&key_bytes(1, 10), &values(4, 100, "a")).unwrap();
     t.put(&key_bytes(1, 11), &values(9, 100, "b")).unwrap();
     t.put(&key_bytes(1, 12), &values(4, 200, "c")).unwrap();
@@ -230,7 +232,7 @@ fn dynamic_scan_finds_by_access_method() {
 
 #[test]
 fn dynamic_covered_scan_answers_without_fetching_documents() {
-    let t = dynamic_table(TestStore::slatedb_mem());
+    let t = dynamic_table(TestStore::default());
     t.put(&key_bytes(1, 10), &values(4, 100, "a")).unwrap();
     t.put(&key_bytes(1, 11), &values(9, 100, "b")).unwrap();
     t.put(&key_bytes(1, 12), &values(4, 200, "c")).unwrap();
@@ -263,7 +265,7 @@ fn dynamic_covered_str_include_decodes_the_trailing_remainder() {
     // A Str include is the variable-width tail: raw UTF-8 with no length
     // prefix, so the decoder takes the remainder — per entry, not per index.
     let t = DynamicCollection::new(
-        TestStore::slatedb_mem(),
+        TestStore::default(),
         41,
         schema(),
         vec![AccessMethod::plain(
@@ -301,7 +303,7 @@ fn dynamic_covered_str_include_decodes_the_trailing_remainder() {
 #[test]
 fn dynamic_index_keys_answer_the_entry_keys_scan_decodes() {
     let t = DynamicCollection::new(
-        TestStore::slatedb_mem(),
+        TestStore::default(),
         41,
         schema(),
         vec![AccessMethod::plain(
@@ -359,7 +361,7 @@ fn dynamic_index_keys_answer_the_entry_keys_scan_decodes() {
             "every key of one range shares the prefix"
         );
         assert_eq!(
-            &okm_dynamic::decode_key(&schema(), &ekey[ekey.len() - key_len..]).unwrap(),
+            &okm_core::decode::decode_key(&schema(), &ekey[ekey.len() - key_len..]).unwrap(),
             hit,
             "the identity tail decodes to the key the scan answered"
         );
@@ -398,7 +400,7 @@ fn dynamic_index_keys_answer_the_entry_keys_scan_decodes() {
 /// the same bytes either way — a projection choice, not a different range.
 #[test]
 fn dynamic_index_keys_match_a_covered_face() {
-    let t = dynamic_table(TestStore::slatedb_mem());
+    let t = dynamic_table(TestStore::default());
     t.put(&key_bytes(1, 10), &values(4, 100, "a")).unwrap();
     t.put(&key_bytes(1, 11), &values(9, 100, "b")).unwrap();
     t.put(&key_bytes(1, 12), &values(4, 200, "c")).unwrap();
@@ -415,7 +417,7 @@ fn dynamic_index_keys_match_a_covered_face() {
     let key_len = schema().key_len;
     for (ekey, (hit, includes)) in before.iter().zip(&covered) {
         assert_eq!(
-            &okm_dynamic::decode_key(&schema(), &ekey[ekey.len() - key_len..]).unwrap(),
+            &okm_core::decode::decode_key(&schema(), &ekey[ekey.len() - key_len..]).unwrap(),
             hit,
             "the covered scan's key half is the identity the entry key carries"
         );
@@ -445,7 +447,7 @@ fn identity_of(key: &Dict, name: &str) -> u64 {
 
 #[test]
 fn dynamic_overwrite_sweeps_stale_entries() {
-    let t = dynamic_table(TestStore::slatedb_mem());
+    let t = dynamic_table(TestStore::default());
     t.put(&key_bytes(1, 10), &values(4, 100, "a")).unwrap();
 
     // Overwrite changes `level` 4 → 9: the old by_level entry (slot 16,
@@ -460,7 +462,7 @@ fn dynamic_overwrite_sweeps_stale_entries() {
 
 #[test]
 fn dynamic_purge_removes_all_entries() {
-    let t = dynamic_table(TestStore::slatedb_mem());
+    let t = dynamic_table(TestStore::default());
     t.put(&key_bytes(1, 10), &values(4, 100, "a")).unwrap();
     t.purge(&key_bytes(1, 10)).unwrap();
 
@@ -473,7 +475,7 @@ fn dynamic_purge_removes_all_entries() {
 
 #[test]
 fn dynamic_get_round_trips() {
-    let t = dynamic_table(TestStore::slatedb_mem());
+    let t = dynamic_table(TestStore::default());
     t.put(&key_bytes(7, 8), &values(2, 300, "zoe")).unwrap();
     let document = t
         .fetch(&key_bytes(7, 8))
@@ -494,7 +496,7 @@ fn a_verb_reads_only_the_state_its_arm_consumes() {
     // read the segment. So `merge` is not "one read more" than the retired
     // `put` — `put` read the row it was about to rewrite, and so does the
     // declared arm.
-    let t = dynamic_table(Reads::new(TestStore::slatedb_mem()));
+    let t = dynamic_table(Reads::new(TestStore::default()));
     let (row, seg) = (row_key(1, 2), segment_key(1, 2));
 
     // Dynamic names only → the segment, never the row.
@@ -553,7 +555,7 @@ fn an_undeclared_name_is_a_dynamic_name_on_this_side() {
     // name outside the schema is a dynamic name — the segment's normal
     // population, not a caller bug. The typed side keeps the struct (`put(&R)`)
     // and therefore cannot express the mistake at all (ADR-0035).
-    let t = dynamic_table(TestStore::slatedb_mem());
+    let t = dynamic_table(TestStore::default());
     t.put(&key_bytes(1, 2), &values(4, 77, "bob")).unwrap();
     t.put(&key_bytes(1, 2), &dfields(&[("extra", "x")]))
         .unwrap();
@@ -569,7 +571,7 @@ fn dynamic_rejects_key_field_indexes() {
     // ambiguous under key/payload name collisions.
     let bad = AccessMethod::plain(0x1003, vec!["org_id".into()], vec![]);
     assert!(
-        okm_dynamic::index_entries(
+        okm_core::model::access_method::index_entries(
             &schema(),
             &[41],
             &[bad],
@@ -581,7 +583,7 @@ fn dynamic_rejects_key_field_indexes() {
 
     let bad_inc = AccessMethod::plain(0x1003, vec!["level".into()], vec!["user_id".into()]);
     assert!(
-        okm_dynamic::index_entries(
+        okm_core::model::access_method::index_entries(
             &schema(),
             &[41],
             &[bad_inc],
@@ -608,8 +610,8 @@ fn dynamic_fields_equal_typed_fields() {
     use okm_value::Variant;
 
     let typed: Collection<TestStore, UserKey, User> =
-        Collection::open(TestStore::slatedb_mem()).unwrap();
-    let dynamic = dynamic_table(TestStore::slatedb_mem());
+        Collection::open(TestStore::default()).unwrap();
+    let dynamic = dynamic_table(TestStore::default());
 
     let document = User {
         level: 1,
@@ -691,7 +693,7 @@ fn dynamic_fields_equal_typed_fields() {
 
 #[test]
 fn merge_keeps_the_unnamed_dynamic_name_and_never_writes_the_row() {
-    let t = dynamic_table(TestStore::slatedb_mem());
+    let t = dynamic_table(TestStore::default());
     t.put(&key_bytes(1, 3), &values(1, 5, "a")).unwrap();
     t.put(&key_bytes(1, 3), &dfields(&[("a", "x"), ("b", "1")]))
         .unwrap();
@@ -717,7 +719,7 @@ fn merge_keeps_the_unnamed_dynamic_name_and_never_writes_the_row() {
 
 #[test]
 fn replace_is_the_whole_document_and_empty_is_purge() {
-    let t = dynamic_table(TestStore::slatedb_mem());
+    let t = dynamic_table(TestStore::default());
     t.put(&key_bytes(1, 4), &values(1, 5, "a")).unwrap();
     t.put(&key_bytes(1, 4), &dfields(&[("a", "x"), ("b", "1")]))
         .unwrap();
@@ -758,7 +760,7 @@ fn replace_is_the_whole_document_and_empty_is_purge() {
 
 #[test]
 fn purge_is_the_one_deletion_verb_and_takes_both_slots() {
-    let t = dynamic_table(TestStore::slatedb_mem());
+    let t = dynamic_table(TestStore::default());
     t.put(&key_bytes(1, 5), &values(1, 5, "a")).unwrap();
     t.put(&key_bytes(1, 5), &dfields(&[("note", "kept")]))
         .unwrap();
@@ -781,7 +783,7 @@ fn purge_is_the_one_deletion_verb_and_takes_both_slots() {
 
 #[test]
 fn dynamic_fields_carry_composites() {
-    let t = dynamic_table(TestStore::slatedb_mem());
+    let t = dynamic_table(TestStore::default());
     t.put(&key_bytes(1, 6), &values(1, 5, "a")).unwrap();
 
     // Nested Map + heterogeneous Array round-trip through the bridge.
@@ -826,18 +828,18 @@ fn plan_merge_equals_embedded_merge() {
     let ns = 41u16;
     let nsb = ns.to_be_bytes();
     let k = key_bytes(1, 2);
-    let store = TestStore::slatedb_mem();
-    let planner = dynamic_table(TestStore::slatedb_mem()); // schema only; its store is never touched
+    let store = TestStore::default();
+    let planner = dynamic_table(TestStore::default()); // schema only; its store is never touched
 
-    let mut vocab = okm_dynamic::VocabMirror::default();
+    let mut vocab = okm_core::model::plan_fields::VocabMirror::default();
     let p1 = planner
         .plan_merge(
             &k,
             // Every name here is dynamic on this table, so the declared half is
             // empty — the same split the collection makes before planning.
-            &okm_dynamic::Dict::new(),
+            &okm_value::Dict::new(),
             &dfields(&[("note", "hello"), ("weight", "9")]),
-            okm_dynamic::Stored::default(),
+            okm_core::model::dynamic_plan::Stored::default(),
             &|_ek: &[u8]| Ok(None),
             &mut vocab,
         )
@@ -850,7 +852,7 @@ fn plan_merge_equals_embedded_merge() {
     }
     vocab.adopt(&p1.new_vocab_entries);
 
-    let emb = dynamic_table(TestStore::slatedb_mem());
+    let emb = dynamic_table(TestStore::default());
     emb.put(&k, &dfields(&[("note", "hello"), ("weight", "9")]))
         .unwrap();
 
@@ -882,22 +884,22 @@ fn plan_merge_equals_embedded_merge() {
     // The remote read side: frames + the caller's own mirror decode to the
     // same dynamic half the embedded path reads.
     let raw = store
-        .get(&okm_dynamic::fields_key(&nsb, &k))
+        .get(&okm_core::model::plan_fields::fields_key(&nsb, &k))
         .expect("a store read")
         .expect("the segment");
-    let back = okm_dynamic::fields_from_frames(&raw, &vocab).unwrap();
+    let back = okm_core::model::plan_fields::fields_from_frames(&raw, &vocab).unwrap();
     assert_eq!(back, dfields(&[("note", "hello"), ("weight", "9")]));
 }
 
-fn dfields(pairs: &[(&str, &str)]) -> okm_dynamic::Dict {
-    let mut m = okm_dynamic::Dict::new();
+fn dfields(pairs: &[(&str, &str)]) -> okm_value::Dict {
+    let mut m = okm_value::Dict::new();
     for (k, v) in pairs {
         m.insert(
             k.to_string(),
             if v.chars().all(|c| c.is_ascii_digit()) {
-                okm_dynamic::Value::U64(v.parse().unwrap())
+                okm_value::Variant::U64(v.parse().unwrap())
             } else {
-                okm_dynamic::Value::Str(v.to_string())
+                okm_value::Variant::Str(v.to_string())
             },
         );
     }
@@ -929,10 +931,10 @@ fn dynamic_variable_width_index_matches_typed_bytes() {
     }
 
     let typed: Collection<TestStore, EmailKey, Subscriber> =
-        Collection::open(TestStore::slatedb_mem()).unwrap();
+        Collection::open(TestStore::default()).unwrap();
     let schema = CollectionSchema::of::<EmailKey, Subscriber>();
     let dynamic = DynamicCollection::new(
-        TestStore::slatedb_mem(),
+        TestStore::default(),
         43,
         schema.clone(),
         vec![AccessMethod::plain(0x4001, vec!["email".into()], vec![])],
@@ -1052,7 +1054,7 @@ fn dynamic_variable_width_index_declaration_errors() {
         vec!["name".into(), "score".into()],
     );
     assert!(
-        okm_dynamic::index_entries(
+        okm_core::model::access_method::index_entries(
             &schema(),
             &[41],
             &[bad_inc],
@@ -1065,7 +1067,7 @@ fn dynamic_variable_width_index_declaration_errors() {
     // And the write path enforces it too (a Str field first in fields).
     let bad_write = AccessMethod::plain(0x1003, vec!["name".into(), "level".into()], vec![]);
     assert!(
-        okm_dynamic::index_entries(
+        okm_core::model::access_method::index_entries(
             &schema(),
             &[41],
             &[bad_write],
@@ -1091,7 +1093,7 @@ fn a_dynamic_store_stamps_the_number_its_schema_came_with() {
             slot: i.slot,
             fields: i.fields.clone(),
             includes: i.includes.clone(),
-            kind: okm_dynamic::AccessMethodKind::Plain,
+            kind: okm_core::model::access_method::AccessMethodKind::Plain,
             version: 0,
         })
         .collect();
@@ -1115,7 +1117,7 @@ fn a_dynamic_store_stamps_the_number_its_schema_came_with() {
         slot: declared.indexes[0].slot,
         fields: declared.indexes[0].fields.clone(),
         includes: declared.indexes[0].includes.clone(),
-        kind: okm_dynamic::AccessMethodKind::Plain,
+        kind: okm_core::model::access_method::AccessMethodKind::Plain,
         version: 0,
     };
     let table = DynamicCollection::new(store.clone(), 41, declared, vec![first]);
@@ -1194,7 +1196,7 @@ fn a_reader_without_the_declaration_learns_what_each_path_slot_means() {
     let store = TestStore::default();
     let method = AccessMethod::path(
         0x4005,
-        okm_dynamic::Path::parse("note").unwrap(),
+        okm_core::model::path::Path::parse("note").unwrap(),
         okm_core::field::FieldType::Str,
     )
     .unwrap();
@@ -1228,7 +1230,7 @@ fn a_derive_version_is_how_a_changed_callable_becomes_visible() {
         slot: 0x4007,
         fields: Vec::new(),
         includes: Vec::new(),
-        kind: okm_dynamic::AccessMethodKind::Func(Box::new(|d| {
+        kind: okm_core::model::access_method::AccessMethodKind::Func(Box::new(|d| {
             Ok(vec![
                 d.get("name")
                     .map(|v| format!("{v:?}").into_bytes())
@@ -1246,7 +1248,9 @@ fn a_derive_version_is_how_a_changed_callable_becomes_visible() {
         slot: 0x4007,
         fields: Vec::new(),
         includes: Vec::new(),
-        kind: okm_dynamic::AccessMethodKind::Func(Box::new(|_d| Ok(vec![b"other".to_vec()]))),
+        kind: okm_core::model::access_method::AccessMethodKind::Func(Box::new(|_d| {
+            Ok(vec![b"other".to_vec()])
+        })),
         version: 1,
     };
     let t1 = DynamicCollection::new(store.clone(), 41, schema(), vec![v1]);

@@ -11,13 +11,14 @@
     clippy::panic_in_result_fn
 )]
 
+use okm_core::model::dynamic_graph::{DynEdge, DynGraph};
 use okm_core::schema::CollectionSchema;
 use okm_core::storage::VirtualStorage;
+use okm_core::testing::TestStore;
 use okm_core::{Decl, Fragment};
 use okm_core::{
     DocumentEncode, EdgeHead, EdgeKey, Graph as StaticGraph, GraphEncode, KeyEncode, NodeRef,
 };
-use okm_dynamic::{DynEdge, DynGraph};
 use okm_value::{Dict, Variant};
 
 const NS: u16 = 0x0190; // 400
@@ -95,7 +96,7 @@ fn works_at_schema() -> CollectionSchema {
 
 #[test]
 fn dynamic_link_traverse_and_fetch_back() {
-    let store = okm_async::TestStore::slatedb_mem();
+    let store = TestStore::default();
     let mut g: DynGraph<_> = DynGraph::new(store.clone(), NS, works_at_schema());
 
     let key = g
@@ -140,7 +141,7 @@ fn dynamic_link_traverse_and_fetch_back() {
 
 #[test]
 fn dynamic_unlink_removes_all_faces() {
-    let store = okm_async::TestStore::slatedb_mem();
+    let store = TestStore::default();
     let mut g: DynGraph<_> = DynGraph::new(store.clone(), NS, works_at_schema());
 
     let first = g
@@ -167,7 +168,7 @@ fn dynamic_unlink_removes_all_faces() {
 
 #[test]
 fn a_reassertion_is_the_same_row_and_widths_come_from_the_declaration() {
-    let store = okm_async::TestStore::slatedb_mem();
+    let store = TestStore::default();
     let mut g: DynGraph<_> = DynGraph::new(store.clone(), NS, works_at_schema());
     let first = g
         .link(&dyn_edge(person(1), org(9), "works_at", 2020))
@@ -219,7 +220,7 @@ fn member_set_travels_in_the_schema_and_is_enforced() {
         "WorksAtNode::NS_VALUES exported"
     );
 
-    let store = okm_async::TestStore::slatedb_mem();
+    let store = TestStore::default();
     let mut g: DynGraph<_> = DynGraph::new(store.clone(), NS, schema);
     // ns 0x13 is nobody's collection in this graph: rejected at write, the same
     // way the static form's `E::Nodes` rejects it.
@@ -259,7 +260,7 @@ fn member_set_travels_in_the_schema_and_is_enforced() {
 fn assembly_rejects_a_disagreeing_ns_pair() {
     // The pair comes from ONE declaration: an ns argument that disagrees
     // with the schema's own ns is rejected, never overridden.
-    let store = okm_async::TestStore::slatedb_mem();
+    let store = TestStore::default();
     let _g: DynGraph<_> = DynGraph::new(store, NS + 1, works_at_schema());
 }
 
@@ -270,7 +271,7 @@ fn byte_equality_with_fixed_ontology_form() {
     // differ by declaration regime (nTLV in the dynamic segment vs declared
     // payload fields), so the lock covers an edge with NO attributes — the
     // shared wire is everything else, including the empty obj payload.
-    let store_dyn = okm_async::TestStore::slatedb_mem();
+    let store_dyn = TestStore::default();
     let mut gd: DynGraph<_> = DynGraph::new(store_dyn.clone(), NS, works_at_schema());
     gd.link(&DynEdge {
         src: person(1),
@@ -280,7 +281,7 @@ fn byte_equality_with_fixed_ontology_form() {
     })
     .unwrap();
 
-    let store_fix = okm_async::TestStore::slatedb_mem();
+    let store_fix = TestStore::default();
     let mut gf: StaticGraph<_, WorksAt> = StaticGraph::new(store_fix.clone());
     let fragment = Fragment::<WorksAt>::new([Decl::edge(EdgeHead {
         src: person(1),
@@ -289,7 +290,7 @@ fn byte_equality_with_fixed_ontology_form() {
     })]);
     gf.incorporate(fragment).unwrap();
 
-    let collect = |store: &okm_async::TestStore, prefix: &[u8]| -> Vec<Vec<u8>> {
+    let collect = |store: &okm_core::testing::TestStore, prefix: &[u8]| -> Vec<Vec<u8>> {
         let mut out = Vec::new();
         for sfx in store
             .scan_suffix(prefix)
@@ -319,7 +320,7 @@ fn byte_equality_with_fixed_ontology_form() {
 /// once per name, for the life of the handle.
 #[test]
 fn link_promotes_its_vocabulary_allocations() {
-    let store = okm_async::TestStore::slatedb_mem();
+    let store = TestStore::default();
     let mut g: DynGraph<_> = DynGraph::new(store, NS, works_at_schema());
 
     let first = g

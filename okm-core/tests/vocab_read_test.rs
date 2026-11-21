@@ -10,11 +10,12 @@
     clippy::panic_in_result_fn
 )]
 
+use okm_core::model::dynamic_collection::DynamicCollection;
 use okm_core::schema::CollectionSchema;
 use okm_core::{Collection, DocumentEncode, KeyEncode, Vocab};
-use okm_dynamic::{DynamicCollection, Value};
+use okm_value::Variant as Value;
 
-use okm_async::TestStore;
+use okm_core::testing::TestStore;
 #[derive(KeyEncode, Clone, PartialEq, Debug)]
 pub struct VKey {
     pub org: u32,
@@ -34,7 +35,7 @@ pub struct VRow {
 
 #[test]
 fn dynamic_read_names_vocab_labels() {
-    let store = TestStore::slatedb_mem();
+    let store = TestStore::default();
 
     // The typed side writes: interning happens on the write path, so the
     // vocabulary faces exist by the time anybody reads.

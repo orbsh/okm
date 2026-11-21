@@ -4,7 +4,7 @@
 //! keeps, and the same reason it is a cursor at all: a
 //! `DynEdgeStream<'a, S>` borrows the store, and a script's call cannot
 //! hold that borrow, so the binding OWNS the engine handle and the scan
-//! it opened and asks okm-dynamic what each entry means
+//! it opened and asks the dynamic graph module what each entry means
 //! (`edge_face_prefix`, `edge_step`) — the layout stays in one place,
 //! only the position lives here.
 //!
@@ -67,7 +67,7 @@ struct Site {
 /// one because an `Iterator` must answer before it can pull; a
 /// `next!` verb can pull exactly the entry it is about to answer.
 ///
-/// [`DynEdgeStream`]: okm_dynamic::DynEdgeStream
+/// [`DynEdgeStream`]: okm_core::model::dynamic_graph::DynEdgeStream
 struct Hop {
     store: EngineBox,
     ns: u16,
@@ -117,7 +117,7 @@ impl Hop {
         hop.handle = handle;
         let filter = match predicate {
             Some(name) => {
-                match okm_dynamic::predicate_id_in(&hop.store, &ns_bytes, name)
+                match okm_core::model::dynamic_graph::predicate_id_in(&hop.store, &ns_bytes, name)
                     .map_err(|e| e.to_string())?
                 {
                     Some(id) => Some(id),
@@ -133,7 +133,7 @@ impl Hop {
 
     /// Where this walk reads: `[ns][slot][predicate?][near_h]`.
     fn prefix(&self) -> Vec<u8> {
-        okm_dynamic::edge_face_prefix(self.ns.to_be_bytes(), self.dir, self.filter, self.handle)
+        okm_core::model::dynamic_graph::edge_face_prefix(self.ns.to_be_bytes(), self.dir, self.filter, self.handle)
     }
 
     /// Point the cursor at (possibly) another face and open its scan. A
@@ -171,7 +171,7 @@ impl Hop {
                     return Err(format!("graph hop: {e}"));
                 }
                 Some(Ok((key, _))) => {
-                    let Some(step) = okm_dynamic::edge_step(
+                    let Some(step) = okm_core::model::dynamic_graph::edge_step(
                         &key,
                         self.suffix_at,
                         self.dir,
@@ -217,7 +217,7 @@ impl Hop {
                     return Err(format!("graph hop: {e}"));
                 }
                 Some(Ok((key, _))) => {
-                    if okm_dynamic::edge_step(
+                    if okm_core::model::dynamic_graph::edge_step(
                         &key,
                         self.suffix_at,
                         self.dir,
@@ -467,7 +467,7 @@ fn predicate_name(store: &EngineBox, ns: u16, id: u16) -> Result<String, String>
     })
 }
 
-/// `(ns key)` → the ref okm-dynamic takes. The key is the pkey byte vector
+/// `(ns key)` → the ref the dynamic graph takes. The key is the pkey byte vector
 /// the collection verbs hand back (a vector of integers 0-255); a list or
 /// a vector holds the pair, so `(list 16 bytes)` and `(vector 16 bytes)`
 /// both name a node.

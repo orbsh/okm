@@ -11,14 +11,14 @@
 //! reads/writes through that engine — the realm's store, not a private
 //! orphan — and (b) behave exactly like the embedded face (declared
 //! index + preset reduce included). This is what the probe carrier's
-//! python injection rides; the byte contract lives in okm-dynamic,
+//! python injection rides; the byte contract lives in the dynamic form,
 //! already locked there — this test locks the BINDING wiring.
 
 use std::collections::BTreeMap;
 use std::sync::{Arc, Mutex};
 
 use okm::pyo3_impl::{Collection, Engine};
-use okm_dynamic::{Dict, Value};
+use okm_value::{Dict, Variant as Value};
 
 /// A host-owned in-memory engine behind the byte-level face (the realm
 /// store's shape at this seam).

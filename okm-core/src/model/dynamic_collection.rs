@@ -68,7 +68,7 @@ pub struct DynamicCollection<S: VirtualStorage> {
 /// direction, not for behaviour.
 ///
 /// Gated on the feature that carries the replay module itself, not on the
-/// `replay` feature okm-dynamic used to have: the gate travelled with its
+/// `replay` feature the dynamic form used to have: the gate travelled with its
 /// subject, and the old name no longer exists here.
 #[cfg(feature = "schema-serde")]
 impl<S: VirtualStorage> crate::changelog::replay::ReplayTarget for DynamicCollection<S> {

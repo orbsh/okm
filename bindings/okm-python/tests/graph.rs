@@ -2,7 +2,7 @@
 //! two write verbs, the traversal cursor, the cluster reads and the key-set
 //! algebra, over the real engine (no mock store, no parallel layout).
 //!
-//! The layout itself is locked in okm-dynamic's own suite; what is locked HERE
+//! The layout itself is locked in the dynamic form's own suite; what is locked HERE
 //! is the BINDING wiring — that the heads the verbs report are the heads the
 //! reads answer, that a delete cascades (nodes) or does not (edges), that a
 //! walk is lazy enough to abandon, and that a `KeySet` keeps "set algebra
@@ -42,7 +42,10 @@ use std::sync::{Arc, Mutex};
 use okm::pyo3_impl::{Collection, Engine, EngineBox, Graph, KeyRowValue, KeySet};
 use okm_core::schema::CollectionSchema;
 use okm_core::{Direction, EdgeKey, Handle, Handles, NodeRef};
-use okm_dynamic::{Cluster, ClusterRef, Decl, Dict, DynEdge, DynFragment, Kind, Value as Variant};
+use okm_core::model::dynamic_cluster::{Cluster, ClusterRef, Decl, DynFragment, Kind};
+use okm_core::model::dynamic_graph::DynEdge;
+use okm_value::{Dict, Variant};
+use okm_value::Variant as Value;
 
 /// The graph table's ns — a second table in the store, beside the collection's.
 const NS: u16 = 0x0190;
@@ -91,7 +94,7 @@ fn edge(src: NodeRef, dst: NodeRef, predicate: &str) -> DynEdge {
 /// which edge it means and asks the vocabulary what id that tuple carries. A
 /// predicate that was never interned names no edge at all, hence the panic.
 fn key(g: &Graph, src: NodeRef, dst: NodeRef, predicate: &str) -> EdgeKey {
-    let id = okm_dynamic::predicate_id_in(&g.store_handle(), &NS.to_be_bytes(), predicate)
+    let id = okm_core::model::dynamic_graph::predicate_id_in(&g.store_handle(), &NS.to_be_bytes(), predicate)
         .expect("the vocabulary probe")
         .unwrap_or_else(|| panic!("predicate `{predicate}` was never interned"));
     EdgeKey::new(src, id, dst)
@@ -1022,7 +1025,7 @@ mod python_face {
                 "there is no edge id to report any more"
             );
 
-            // ---- a mixed fragment is REFUSED, in okm-dynamic's own words ----
+            // ---- a mixed fragment is REFUSED, in the dynamic form's own words ----
             let mixed = PyDict::new(py);
             let deletes = PyList::empty(py);
             deletes.append(heads[0].clone()).unwrap();

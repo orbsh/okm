@@ -1,6 +1,6 @@
 # 0076 — 机制下沉到声明之下，查询面保持两套
 
-状态：2026-11-21 裁决，同日落地。§1（唯一条目生产者）与 §2（唯一 ledger 编排）已就位；§3 完成——全部机制模块搬入 core（`encode`、`path`、`access_method`、`plan_fields`、`byte_reduce`、`dynamic_collection`、`dynamic_plan`、`dict_write`、`dynamic_graph`、`dynamic_cluster`）。留在外面的是投影那一半：`okm-dynamic` 现在只剩 `arrow` 加再导出，即 92 行的 core 门面。
+状态：2026-11-21 裁决，同日落地。§1（唯一条目生产者）与 §2（唯一 ledger 编排）已就位；§3 完成——全部机制模块搬入 core（`encode`、`path`、`access_method`、`plan_fields`、`byte_reduce`、`dynamic_collection`、`dynamic_plan`、`dict_write`、`dynamic_graph`、`dynamic_cluster`）。投影那一半去了本来就在做投影的 crate——`okm_lake::columns`；`okm-dynamic` 已删除：它的测试搬到被测代码旁，湖、日志、bindings 直接写 core 的模块路径。
 
 ## 背景
 
@@ -16,7 +16,7 @@
 
 2. **一份 ledger；错误归载体所有。** core 的 `reduce_get` / `scan_reduces` / `apply_row` 已经拥有对 accumulator 的 read-modify-write，动态侧在 `Vec<u8>` 上又写了一遍。缝本来就有：`ReduceCodec`（`encode_acc`/`decode_acc`，`okm-core/src/model/reduce.rs:26`），字节 accumulator 就是它的又一个实现。dynamic 的 fold 会失败，因为一个 `Dict` 可能对不上声明，也因为 fold 就是用户代码。给 typed 的 fold 挂上它不可能产生的错误，等于在写路径上付一笔调用方自己造不出来的账；而把 dynamic 的 fold 变成全函数，又让一个拒绝的 callable 无处可说。于是编排对载体的错误类型泛化：读侧是 `ledger_get` / `ledger_scan`，对任意 `ReduceCodec` 生效；写侧是 `apply_group`，跑在 `AccLedger` 上——载体只需回答两件事，`get_acc` 与 `put_acc`。引擎是一种载体（`StoreLedger`），dynamic 的 plan 是另一种（`PlanLedger`：一次写变成调用方记录下来的 ops）。step 拒绝时条目原样未动，因为写发生在 step 同意之后，所以形状检查不需要第二个家。`create` 在这里是参数而不是策略：typed 的写在 unfold 时也建条目，dynamic 的 plan 只在 fold 时建——这个差别比本 ADR 更老，留下来但被写明了。
 
-3. **机制下沉，投影留在外面。** 属于机制的模块——`collection`、`plan`、`plan_fields`、`index`、`path`、`encode`、`reduce`，以及 `cluster`、`graph` 两种 schema-free 形态——移进 `okm-core`。投影不移：schema 驱动的 Arrow 列构建器（`arrow.rs`）以及它之上的一切（Parquet、湖的表格式、快照导出）留在外面，因为 core 不能依赖 arrow（ADR-0045、ADR-0056），而段的一种投影不是生产段的一部分。`okm-dynamic` 保留投影，以及湖、日志、bindings 读的那些 re-export；它的机制模块是移走，不是再 re-export 一遍。
+3. **机制下沉，投影留在外面。** 属于机制的模块——`collection`、`plan`、`plan_fields`、`index`、`path`、`encode`、`reduce`，以及 `cluster`、`graph` 两种 schema-free 形态——移进 `okm-core`。投影不移：schema 驱动的 Arrow 列构建器（`arrow.rs`）以及它之上的一切（Parquet、湖的表格式、快照导出）留在外面，因为 core 不能依赖 arrow（ADR-0045、ADR-0056），而段的一种投影不是生产段的一部分。投影搬进 `okm-lake`（arrow 与 parquet 本来就在那里）；crate 本身被拆掉，不再充当再导出门面。
 
 4. **查询面保持两套，这是裁决本身，不是遗留。** typed 侧按类型问：`scan::<I>(&prefix)`，marker 类型带着槽位与字段表，probe builder 把每个名字断言到键自己的表与 document 自己的表上。动态侧按编号加字节问：`scan(index_slot, encoded_prefix)`，外加 `scan_exact`、`scan_covered`、`scan_access_method_keys`，前缀由调用方编码（`encode_fields`）。两者的载体不同——编译期类型对数据——谁也不吸收谁：没有类型就构造不出 typed 探针，而宿主语言只能交出字节。统一的是**存储侧**（槽位、entry 布局、ledger），从来不是**提问侧**。
 
@@ -37,3 +37,9 @@
 - **保留两份生产者、靠字节相等测试兜底。** 测试能观察到漂移，阻止不了漂移；而且漂移在读侧是静默的——一条排序位置变了的 entry 仍然是一条格式良好的 entry。
 - **按 collection 编译或缓存 plan。** typed 的 plan 是 const；缓存等于把 plan 存在的意义要消掉的那次查表，重新装回写路径。
 - **删掉 `okm-dynamic`、用它的名字 re-export core。** 名字会比 crate 活得久，却指向另一个实体；投影那半仍然需要落点，而 re-export 给不了落点。
+
+## 追记（2026-11-21）：crate 拆掉，没有任何东西再用它的名字再导出
+
+机制搬完之后，`okm-dynamic` 剩下的是 `arrow.rs` 和 44 条 `pub use`。投影搬进 `okm_lake::columns`——湖本来就持有 arrow、parquet 以及段的其它一切投影，列构建器在那里有现成的落点——十一个测试文件搬去各自被测的 crate（core 的动态形态、湖的 baseline 与 replay）。
+
+再导出那一半不是保留，是删除。一个整库都是 `pub use` 的 crate 换来的是名字稳定和一份裁剪过的名字清单，换不来边界：`pub use` 是透明的，消费方随时能写出真实路径，而每次机制搬家都要在这里手工镜像。这笔账在"表面要被工作区外的人版本化"时才划算；这里 bindings、湖、日志与 core 在同一个 commit 上编译，所以这层唯一保证的事情是"搬一次家要改两处"。上面那条被否的方案（"删掉 `okm-dynamic`、用它的名字再导出 core"）说的不是这件事：现在没有任何东西用那个名字再导出了。

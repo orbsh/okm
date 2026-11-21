@@ -97,10 +97,9 @@ def run_rust_helper() -> dict:
             "[dependencies]\n"
             "okm-core={path='%s', features=['schema-serde','test-engines']}\n"
             "okm-derive={path='%s'}\n"
-            "okm-dynamic={path='%s'}\n"
             "okm-wire={path='%s'}\n"
             % tuple(os.path.abspath("../../" + p)
-                    for p in ("okm-core", "okm-derive", "okm-dynamic", "okm-wire"))
+                    for p in ("okm-core", "okm-derive", "okm-wire"))
         )
         out = subprocess.run(
             ["cargo", "run", "--quiet", "--manifest-path", os.path.join(d, "Cargo.toml")],

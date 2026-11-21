@@ -451,7 +451,9 @@ t.purge(&key)?;                               // -> bool（原来有东西）
 访问方法可以命名一条指向无 schema 区的**路径**，而不只是声明字段：
 
 ```rust
-use okm_dynamic::{AccessMethod, FieldType, Path};
+use okm_core::model::access_method::AccessMethod;
+use okm_core::field::FieldType;
+use okm_core::model::path::Path;
 
 // 嵌套对象字段
 let by_author = AccessMethod::path(0x4001, Path::parse("author.name")?, FieldType::Str)?;
@@ -922,10 +924,10 @@ let colleagues = graph.walk(&user).flat_map(|step| graph.walk(&step.far));
 
 ### 声明是数据时，同一批簇
 
-`okm-dynamic` 是「没有 Rust 声明类型」的存储用的那一形态：schema 以数据形式到达（`CollectionSchema`），端点是 `NodeRef`，载荷一律是 `Dict`。它带着**相同**的簇面——簇行（值以 `[parent_id u64 BE][载荷]` 开头）、边成员面（以边存下来的行做键）、节点成员面（以句柄做键）、派生子簇索引与两张镜像——因为键由同一批函数拼出，词汇也是同一套：一个簇仍然由 `(kind, hyper_id)` 命名。变的只是这一形态一贯变的那部分：没有 `#[ok_nodes]` 成员集要校验，没有声明类型，也没有节点声明——这一形态下节点就是端点或声明的成员，此外什么都不是，一个 `NodeRef`（ns + 裸键字节）就是它的全部地址。
+动态形态——`okm_core::model::dynamic_collection` 连同它的兄弟 `dynamic_cluster`、`dynamic_graph`、`dynamic_plan`——是「没有 Rust 声明类型」的存储用的那一形态：schema 以数据形式到达（`CollectionSchema`），端点是 `NodeRef`，载荷一律是 `Dict`。它带着**相同**的簇面——簇行（值以 `[parent_id u64 BE][载荷]` 开头）、边成员面（以边存下来的行做键）、节点成员面（以句柄做键）、派生子簇索引与两张镜像——因为键由同一批函数拼出，词汇也是同一套：一个簇仍然由 `(kind, hyper_id)` 命名。变的只是这一形态一贯变的那部分：没有 `#[ok_nodes]` 成员集要校验，没有声明类型，也没有节点声明——这一形态下节点就是端点或声明的成员，此外什么都不是，一个 `NodeRef`（ns + 裸键字节）就是它的全部地址。
 
 ```rust
-let mut fragment = okm_dynamic::DynFragment::new([
+let mut fragment = okm_core::model::dynamic_cluster::DynFragment::new([
     Decl::edge(DynEdge { src: alice(), dst: acme(), predicate: "works_at".into(), attrs }),
     Decl::edge(DynEdge { src: bob(), dst: acme(), predicate: "works_at".into(), attrs }),
 ]);

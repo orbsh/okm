@@ -234,7 +234,7 @@ The application then formats it — a markdown memory block such as `## Communit
 
 ## The two forms, one query surface
 
-`Graph<S, E>` (fixed ontology: attributes are declared struct fields, typed attrs bodies) and `okm_dynamic::Graph<S>` (attributes are runtime nTLV frames, `DynEdge { predicate: String, attrs: Dict }`) expose the SAME read methods over the SAME faces. Differences visible to queries:
+`Graph<S, E>` (fixed ontology: attributes are declared struct fields, typed attrs bodies) and `okm_core::model::dynamic_graph::DynGraph<S>` (attributes are runtime nTLV frames, `DynEdge { predicate: String, attrs: Dict }`) expose the SAME read methods over the SAME faces. Differences visible to queries:
 
 - `get_edge` returns the raw body (`EdgeBody.payload` = payload bytes) and `edge` decodes it into the declaration's type, vs a decoded `DynEdge` (attrs resolved through the field-name vocabulary).
 - The dynamic form has NO declared attribute faces (attribute names are runtime data, so exact-match attr scans are structurally absent — predicate filtering via 0x08/0x09 is complete, not a gap).

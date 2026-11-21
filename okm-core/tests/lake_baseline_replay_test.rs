@@ -5,7 +5,7 @@
 //! the version covers are gone from the directory; and `replay_after` applies exactly the
 //! deltas that came after it, through the target's own write path.
 
-#![cfg(feature = "replay")]
+#![cfg(feature = "schema-serde")]
 #![allow(
     clippy::unwrap_used,
     clippy::expect_used,
@@ -14,12 +14,12 @@
     clippy::panic_in_result_fn
 )]
 
-use okm_async::TestStore;
 use okm_core::changelog::replay::{replay_after, replay_table};
 use okm_core::changelog::{ChangelogConfig, ChangelogStore, lake_baseline, table_dir};
+use okm_core::model::dynamic_collection::DynamicCollection;
 use okm_core::schema::CollectionSchema;
+use okm_core::testing::TestStore;
 use okm_core::{Collection, Document, DocumentEncode, KeyEncode};
-use okm_dynamic::DynamicCollection;
 
 #[derive(KeyEncode, Clone, PartialEq, Debug, Default)]
 pub struct K {
@@ -36,7 +36,7 @@ pub struct LRow {
 
 fn store(root: &std::path::Path) -> ChangelogStore<TestStore> {
     ChangelogStore::new(
-        TestStore::slatedb_mem(),
+        TestStore::default(),
         ChangelogConfig {
             // One segment per commit: the test needs to see what pruning removed.
             segment_bytes: 1,
@@ -108,7 +108,7 @@ fn the_reference_names_the_version_and_a_replay_owes_only_the_tail() {
     );
 
     let target = DynamicCollection::new(
-        TestStore::slatedb_mem(),
+        TestStore::default(),
         u16::from_be_bytes([header[0], header[1]]),
         CollectionSchema::of::<K, LRow>(),
         Vec::new(),

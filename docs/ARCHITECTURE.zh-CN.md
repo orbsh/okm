@@ -29,7 +29,7 @@ Collection::put/get/scan ───────── 两层在此汇合
 VirtualStorage (Fjall / redb / slatedb)
 ```
 
-**为什么这个拆分重要**：声明的消费者——schema 导出（`CollectionSchema::of`）、动态 reader（okm-dynamic）、Arrow/Parquet 桥、快照工具——需要的是 schema 的**知识**，不是它的**代码**。它们读常量。加一个消费者永远不需要碰 derive；加一个字段只需要 derive 知道多发射一条常量项。两层独立扩展，仅由 `Document` trait 的关联项耦合。
+**为什么这个拆分重要**：声明的消费者——schema 导出（`CollectionSchema::of`）、动态 reader（在 core 里）、Arrow/Parquet 桥、快照工具——需要的是 schema 的**知识**，不是它的**代码**。它们读常量。加一个消费者永远不需要碰 derive；加一个字段只需要 derive 知道多发射一条常量项。两层独立扩展，仅由 `Document` trait 的关联项耦合。
 
 这也是动态模式能存在的原因：`CollectionSchema`（从常量组装而来）是 schema 的完整、可序列化描述——Python 与 Steel 绑定从它构建 collection，全程不出现任何 Rust 类型。
 

@@ -30,9 +30,9 @@
 //!
 //! **Where this lives, and why.** The mechanism is core's: which segments to apply in
 //! which order, how a captured row is decoded and re-interned, what a removal means.
-//! What core cannot name is the TARGET — the schema-driven collection lives in
-//! `okm-dynamic`, a crate above core — so the seam is a trait here ([`ReplayTarget`])
-//! and the implementation sits with the type that implements it.
+//! What the mechanism cannot name is the TARGET — the schema-driven collection —
+//! so the seam is a trait here ([`ReplayTarget`]) and the implementation sits with
+//! the type that implements it, which is the same crate but a different module.
 //!
 //! The sequence, because the order is what makes it safe (ADR-0056 §6): the new build
 //! runs as a second process and replays what is already sealed WHILE the old instance
@@ -53,10 +53,11 @@ use std::path::{Path, PathBuf};
 
 /// What a replay needs from the thing it replays INTO (ADR-0056 §5).
 ///
-/// The trait exists because the mechanism and the target belong on different sides of
-/// the dependency line: the log is core's, the schema-driven collection is
-/// `okm-dynamic`'s (which depends on core, so core cannot name it). Core owns the
-/// seam; the crate above implements it once, by delegation.
+/// The trait keeps the mechanism from naming one concrete target: the log is core's,
+/// and so are the two collections it can replay into, but the seam is what lets the
+/// replay module speak about "a target" rather than about `DynamicCollection` — and
+/// it is what an out-of-tree collection would implement. The dynamic form implements
+/// it once, by delegation.
 pub trait ReplayTarget {
     type Store: VirtualStorage;
     /// The store behind the target — replay reads the target's OWN vocabulary while it

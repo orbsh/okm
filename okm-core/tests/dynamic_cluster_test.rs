@@ -5,7 +5,7 @@
 //! Every assertion is about BYTES or about an answer a read verb gives — no mock
 //! store, no parallel implementation of the layout. Keys are built by hand in the
 //! helper below on purpose: the test states the layout the ADR states, so a drift
-//! in `okm-dynamic/src/cluster.rs` fails here instead of agreeing with itself.
+//! in `model/dynamic_cluster.rs` fails here instead of agreeing with itself.
 //!
 //! The seven claims:
 //!
@@ -33,16 +33,18 @@ use std::rc::Rc;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicUsize, Ordering};
 
-use okm_async::TestStore;
 use okm_core::engine::storage::{ExternalScan, ScanIter};
 use okm_core::error::Result as CoreResult;
+use okm_core::model::dynamic_cluster::{Cluster, Decl, DynFragment, Kind};
+use okm_core::model::dynamic_graph::{DynEdge, DynGraph};
 use okm_core::model::hyper::intern_kind;
 use okm_core::schema::CollectionSchema;
+use okm_core::testing::TestStore;
 use okm_core::{
     DocumentEncode, EdgeKey, EdgeStep, GraphEncode, HandleKey, KeyEncode, NodeRef, Seekable,
     VirtualStorage, write_slot,
 };
-use okm_dynamic::{Cluster, Decl, DynEdge, DynFragment, DynGraph, EdgeSet, Kind, NodeSet};
+use okm_core::{EdgeSet, NodeSet};
 use okm_query::intersect_seek;
 use okm_value::{Dict, Variant};
 
@@ -1816,7 +1818,11 @@ fn a_walk_names_a_selection_and_its_boundary_dynamic() {
 
         // Zero hops: the seed alone, every edge of it on the boundary.
         let near = g
-            .subgraph(okm_dynamic::Selection::of([person(1)]), 0, &[])
+            .subgraph(
+                okm_core::model::dynamic_cluster::Selection::of([person(1)]),
+                0,
+                &[],
+            )
             .unwrap_or_else(|e| panic!("{engine}: walk: {e}"));
         assert_eq!(near.members, vec![person(1)], "{engine}: the seed alone");
         assert!(near.interior.is_empty(), "{engine}: nothing inside yet");
@@ -1828,7 +1834,11 @@ fn a_walk_names_a_selection_and_its_boundary_dynamic() {
 
         // One hop: neighbours join, their edges become the boundary.
         let one = g
-            .subgraph(okm_dynamic::Selection::of([person(1)]), 1, &[])
+            .subgraph(
+                okm_core::model::dynamic_cluster::Selection::of([person(1)]),
+                1,
+                &[],
+            )
             .unwrap_or_else(|e| panic!("{engine}: walk: {e}"));
         assert_eq!(one.members.len(), 3, "{engine}: 1, 2 and the org");
         assert_eq!(one.interior.len(), 3, "{engine}: every edge among them");
@@ -1842,7 +1852,11 @@ fn a_walk_names_a_selection_and_its_boundary_dynamic() {
 
         // The predicate limits the walk, so it limits what the answer can report.
         let filtered = g
-            .subgraph(okm_dynamic::Selection::of([person(1)]), 1, &["knows"])
+            .subgraph(
+                okm_core::model::dynamic_cluster::Selection::of([person(1)]),
+                1,
+                &["knows"],
+            )
             .unwrap_or_else(|e| panic!("{engine}: walk: {e}"));
         assert_eq!(
             filtered.members.len(),
@@ -1865,7 +1879,7 @@ fn a_selection_can_be_persisted_dynamic() {
         let mut g = graph(&store);
         let set = g
             .materialize(
-                okm_dynamic::Selection::of([person(1), person(2), person(2)]),
+                okm_core::model::dynamic_cluster::Selection::of([person(1), person(2), person(2)]),
                 "scope",
                 Dict::new(),
             )

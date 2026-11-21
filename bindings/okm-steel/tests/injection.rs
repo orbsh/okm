@@ -16,7 +16,10 @@
 
 use okm_core::schema::CollectionSchema;
 use okm_core::{DocumentEncode, KeyEncode, NodeRef};
-use okm_dynamic::{Decl, Dict, DynEdge, DynFragment, Graph};
+use okm_core::model::dynamic_cluster::{Decl, DynFragment};
+use okm_core::model::dynamic_graph::DynEdge;
+use okm_value::Dict;
+use okm_core::model::dynamic_graph::DynGraph as Graph;
 use okm_steel::collection::StorageRegistry;
 use okm_steel::hop::GraphRegistry;
 use okm_steel::keyset::KeySetRegistry;
@@ -429,7 +432,7 @@ impl Engine for CountingEngine {
 }
 
 /// Write edges the HOST-side way: the binding is a read face for traversal, and
-/// `incorporate` is okm-dynamic's single write entry point. This is also the
+/// `incorporate` is the dynamic graph's single write entry point. This is also the
 /// proof that the carrier and the script share one keyspace — the walk below
 /// reads rows this call wrote behind the same `Arc`.
 fn write_edges(engine: &Arc<CountingEngine>, edges: &[(NodeRef, &str, NodeRef)]) {

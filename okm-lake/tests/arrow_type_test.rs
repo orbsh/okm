@@ -2,7 +2,7 @@
 //! column builder: a second restatement would export the same table as two schemas.
 
 use okm_core::FieldType;
-use okm_dynamic::arrow::arrow_type;
+use okm_lake::columns::arrow_type;
 
 #[test]
 fn a_uuid_exports_as_a_fixed_sixteen_byte_column() {

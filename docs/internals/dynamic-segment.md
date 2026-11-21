@@ -8,7 +8,7 @@ Mechanism/implementation document for the value stored under slot `0x01` — the
 
 `[partition?][ns 2B BE][0x01][pkey]` → one entry per obj; the value is the whole segment. An empty map writes no entry at all (a delete, never a zero-entry table), so "absent" and "empty" are one state (`document.rs::slot1_into` / `slot1_map`).
 
-`okm_core::model::obj_segment` owns both directions (`encode` / `decode`); `obj_dynamic` keeps the currency (`Variant`, `DynamicField`, `NameResolver`) and its `decode_named` / `decode_variants` are thin delegates. Every writer goes through `encode`: `document.rs::slot1_into`, `model/graph.rs` (edge attributes), `okm_dynamic::graph`, `okm_dynamic::plan_fields`.
+`okm_core::model::obj_segment` owns both directions (`encode` / `decode`); `obj_dynamic` keeps the currency (`Variant`, `DynamicField`, `NameResolver`) and its `decode_named` / `decode_variants` are thin delegates. Every writer goes through `encode`: `document.rs::slot1_into`, `model/graph.rs` (edge attributes), `model::dynamic_graph`, `model::plan_fields`.
 
 ## The value: three regions
 

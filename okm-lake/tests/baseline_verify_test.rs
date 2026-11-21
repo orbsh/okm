@@ -19,9 +19,9 @@ use okm_core::changelog::{
     ChangelogConfig, ChangelogStore, LakeBaseline, header_hex, lake_baseline, last_sealed,
     table_dir,
 };
+use okm_core::model::dynamic_collection::DynamicCollection;
 use okm_core::schema::CollectionSchema;
 use okm_core::{Collection, Document, DocumentEncode, KeyEncode};
-use okm_dynamic::DynamicCollection;
 use okm_lake::baseline::{compact_against, verify_at};
 use okm_lake::restore::restore_at;
 use okm_lake::{DrainConfig, drain};

@@ -121,7 +121,7 @@ pub use testing::TestStore;
 pub use engine::fjall_backend::FjallStore;
 
 // ================= path-compat re-exports =================
-// Downstream crates (okm-dynamic, okm-query, bindings) and tests import
+// Downstream crates (okm-query, the lake, the log, the bindings) and tests import
 // these module paths; keep them valid while callers migrate.
 
 #[cfg(feature = "fjall")]

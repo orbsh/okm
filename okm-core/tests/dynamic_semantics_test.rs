@@ -18,12 +18,13 @@
     clippy::panic_in_result_fn
 )]
 
-use okm_async::TestStore;
+use okm_core::model::access_method::{AccessMethod, AccessMethodKind};
+use okm_core::model::byte_reduce::{BoundReduce, ReduceSpec};
+use okm_core::model::dynamic_collection::DynamicCollection;
 use okm_core::schema::CollectionSchema;
+use okm_core::testing::TestStore;
 use okm_core::{DocumentEncode, KeyEncode, VirtualStorage};
-use okm_dynamic::{
-    AccessMethod, AccessMethodKind, BoundReduce, Dict, DynamicCollection, ReduceSpec, Value,
-};
+use okm_value::{Dict, Variant as Value};
 
 #[derive(KeyEncode, Clone, PartialEq, Debug, Default)]
 pub struct UserKey {
@@ -137,7 +138,7 @@ fn func_tags(document: &Dict) -> Result<Vec<Vec<u8>>, String> {
 /// `Default::default()` counterpart (8B BE zero for a u64 counter).
 struct GroupCount;
 
-impl okm_dynamic::ByteReduce for GroupCount {
+impl okm_core::model::byte_reduce::ByteReduce for GroupCount {
     fn seed(&self) -> Vec<u8> {
         0u64.to_be_bytes().to_vec()
     }
@@ -221,7 +222,7 @@ fn acc_of(t: &DynamicCollection<TestStore>, level: u32) -> Option<u64> {
 
 #[test]
 fn func_index_fans_out_and_sweeps() {
-    let t = dynamic_table(TestStore::slatedb_mem());
+    let t = dynamic_table(TestStore::default());
     // "bob" → entries for 'b' 'o' 'b' (two 'b' entries, one 'o').
     t.put(&key_bytes(1, 2), &values(4, 77, "bob")).unwrap();
 
@@ -246,7 +247,7 @@ fn func_index_fans_out_and_sweeps() {
 
 #[test]
 fn partial_index_admits_gates_entries() {
-    let t = dynamic_table(TestStore::slatedb_mem());
+    let t = dynamic_table(TestStore::default());
     // Not active ("bob"): no entry in the partial index.
     t.put(&key_bytes(1, 10), &values(4, 100, "bob")).unwrap();
     assert!(t.scan(0x4003, &4u32.to_be_bytes()).unwrap().is_empty());
@@ -268,7 +269,7 @@ fn partial_index_admits_gates_entries() {
 
 #[test]
 fn reduce_calling_discipline() {
-    let t = dynamic_table(TestStore::slatedb_mem());
+    let t = dynamic_table(TestStore::default());
 
     // put (no old document): fold only. Two documents in group level=4.
     t.put(&key_bytes(1, 10), &values(4, 100, "a")).unwrap();
@@ -307,7 +308,7 @@ fn reduce_entry_layout_matches_rust_side() {
     // The dynamic reduce entry key must be byte-identical to the
     // Rust-side Reduce::entry_key layout: [ns 2B][slot u16 BE][group
     // segment].
-    let t = dynamic_table(TestStore::slatedb_mem());
+    let t = dynamic_table(TestStore::default());
     t.put(&key_bytes(1, 10), &values(4, 100, "a")).unwrap();
 
     let expected = reduce_entry_key(&t, 4);
@@ -359,7 +360,7 @@ fn reduce_entry_layout_matches_rust_side() {
 
 #[test]
 fn func_index_exact_scan() {
-    let t = dynamic_table(TestStore::slatedb_mem());
+    let t = dynamic_table(TestStore::default());
     t.put(&key_bytes(1, 10), &values(4, 100, "zig")).unwrap();
     let z = (b'z' as u32).to_be_bytes();
     assert_eq!(

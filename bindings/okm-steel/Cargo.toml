@@ -5,7 +5,7 @@ edition = "2021"
 
 [dependencies]
 okm-core = { path = "../../okm-core", features = ["schema-serde"] }
-okm-dynamic = { path = "../../okm-dynamic" }
+okm-value = { path = "../../okm-value" }
 okm-entry = { path = "../okm-entry" }
 # The set ALGEBRA over two held key sets lives one crate up (okm-core owns the
 # container, `okm-query` owns `intersect`/`union`/`difference` over ordered keys

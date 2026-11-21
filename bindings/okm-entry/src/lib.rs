@@ -12,7 +12,7 @@
 //! this crate's errors are plain strings the shells wrap.
 
 use okm_core::schema::CollectionSchema;
-use okm_dynamic::{AccessMethod, AccessMethodKind};
+use okm_core::model::access_method::{AccessMethod, AccessMethodKind};
 use std::sync::Arc;
 
 /// The injected engine face (ADR-0037 4.16a): a host (probe's carrier,
@@ -118,7 +118,7 @@ impl okm_core::storage::VirtualStorage for EngineBox {
 /// includes, kind}], "reduces": [{name, slot, group, kind}] }` (the
 /// bare schema object is also accepted). Declared indexes must be plain
 /// (host callables — func/partial — register through the embedded
-/// add_* surface instead); reduce kinds take the okm-dynamic preset
+/// add_* surface instead); reduce kinds take the dynamic form's preset
 /// spellings ("count", {"high_water": f}, {"low_water": f}). ns is NOT
 /// in the entry — the DSL's rule: it binds at construction, per
 /// binding.
@@ -126,7 +126,7 @@ pub fn collection_from_entry(
     engine: EngineBox,
     entry: &serde_json::Value,
     ns: u16,
-) -> Result<(CollectionSchema, okm_dynamic::DynamicCollection<EngineBox>), String> {
+) -> Result<(CollectionSchema, okm_core::model::dynamic_collection::DynamicCollection<EngineBox>), String> {
     let raw = entry
         .get("schema")
         .cloned()
@@ -139,14 +139,14 @@ pub fn collection_from_entry(
             indexes.push(plain_access_method(e)?);
         }
     }
-    let mut reduces: Vec<okm_dynamic::ReduceSpec> = Vec::new();
+    let mut reduces: Vec<okm_core::model::byte_reduce::ReduceSpec> = Vec::new();
     if let Some(list) = entry.get("reduces").and_then(|x| x.as_array()) {
         for e in list {
             reduces.push(preset_reduce(e)?);
         }
     }
     let table =
-        okm_dynamic::DynamicCollection::with_reduces(engine, ns, schema.clone(), indexes, reduces);
+        okm_core::model::dynamic_collection::DynamicCollection::with_reduces(engine, ns, schema.clone(), indexes, reduces);
     Ok((schema, table))
 }
 
@@ -193,10 +193,10 @@ pub fn plain_access_method(v: &serde_json::Value) -> Result<AccessMethod, String
 
 /// One declared preset reduce from the schema-data spelling:
 /// `{ "slot": N, "group": [fields], "kind": "count" |
-/// {"high_water": f} | {"low_water": f} }` — the okm-dynamic presets
+/// {"high_water": f} | {"low_water": f} }` — the dynamic form's presets
 /// (the u64 BE accumulator shared with the derive and the aura
 /// executor: one implementation, every host).
-pub fn preset_reduce(v: &serde_json::Value) -> Result<okm_dynamic::ReduceSpec, String> {
+pub fn preset_reduce(v: &serde_json::Value) -> Result<okm_core::model::byte_reduce::ReduceSpec, String> {
     let obj = v
         .as_object()
         .ok_or_else(|| "reduce entry must be an object".to_string())?;
@@ -218,7 +218,7 @@ pub fn preset_reduce(v: &serde_json::Value) -> Result<okm_dynamic::ReduceSpec, S
         .ok_or_else(|| "reduce missing kind".to_string())?;
     let kind = if let Some(s) = kind_v.as_str() {
         match s {
-            "count" => okm_dynamic::PresetKind::Count,
+            "count" => okm_core::model::byte_reduce::PresetKind::Count,
             other => return Err(format!("unknown reduce kind `{other}`")),
         }
     } else if let Some((k, f)) = kind_v
@@ -231,16 +231,16 @@ pub fn preset_reduce(v: &serde_json::Value) -> Result<okm_dynamic::ReduceSpec, S
             .ok_or_else(|| "reduce kind field must be a string".to_string())?
             .to_string();
         match k.as_str() {
-            "high_water" => okm_dynamic::PresetKind::HighWater(field),
-            "low_water" => okm_dynamic::PresetKind::LowWater(field),
+            "high_water" => okm_core::model::byte_reduce::PresetKind::HighWater(field),
+            "low_water" => okm_core::model::byte_reduce::PresetKind::LowWater(field),
             other => return Err(format!("unknown reduce kind `{other}`")),
         }
     } else {
         return Err("reduce kind must be a string or {kind: field}".to_string());
     };
-    Ok(okm_dynamic::ReduceSpec {
+    Ok(okm_core::model::byte_reduce::ReduceSpec {
         slot,
         group_fields,
-        logic: Box::new(okm_dynamic::PresetLogic { kind }),
+        logic: Box::new(okm_core::model::byte_reduce::PresetLogic { kind }),
     })
 }

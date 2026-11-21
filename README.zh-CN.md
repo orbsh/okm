@@ -102,7 +102,7 @@ let archive: Collection<_, UserKey, User> = Collection::new(Fjall::open("data/ar
 
 - **Ad-hoc 分析 / BI** → CDC 淌业务日志持续导出 Delta Lake，分析侧任意引擎（DuckDB / Spark / Trino）
 - **Schema 演进** → 模式变更是编译期事件：蓝绿两进程各跑各的版本，共享 COW 快照
-- **动态模式**（租户自定义字段）→ okm-dynamic：结构是数据而不是类型，外层访问仍是静态优化路径
+- **动态模式**（租户自定义字段）→ `okm_core::model::dynamic_*`：结构是数据而不是类型，外层访问仍是静态优化路径
 
 ## 状态
 
@@ -387,7 +387,7 @@ graph.incorporate(x)?;                                              // 行、面
 | 引擎契约 | `VirtualStorage` / `SharedVirtualStorage`（`okm-core/src/engine/storage.rs`）；`VirtualStorageAsync` 是它在 `okm-async` 里的镜像（ADR-0059） | 编码字节上的七个方法——后端唯一必须说的一种语言；异步镜像只服务于「自身 API 就是异步」的引擎与传输 |
 | 消费层 | okm-query / okm-stream / okm-graph / okm-vector / okm-ngram / bindings | 位于装配层之上，消费它的产物（有序扫描流、subscribe 事件、document），对 core 零改动 |
 
-两种 schema 载体——编译期声明（okm-derive）与 schema 数据（okm-dynamic）——落到的都是下面
+两种 schema 载体——编译期声明（okm-derive）与 schema 数据（`CollectionSchema`，core 里的动态形态）——落到的都是下面
 同样两层，所以「用哪种模式」从不改变引擎契约，也不改变字节。
 
 ### 引擎层的全貌

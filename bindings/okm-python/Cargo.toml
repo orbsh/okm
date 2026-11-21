@@ -38,7 +38,7 @@ required-features = ["host-tests"]
 [dependencies]
 okm-core = { path = "../../okm-core", features = ["schema-serde"] }
 okm-async = { path = "../../okm-async", features = ["slatedb"] }
-okm-dynamic = { path = "../../okm-dynamic" }
+okm-value = { path = "../../okm-value" }
 okm-entry = { path = "../okm-entry", features = ["test-engines"] }
 okm-query = { path = "../../okm-query" }
 okm-wire = { path = "../../okm-wire" }

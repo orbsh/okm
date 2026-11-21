@@ -8,7 +8,7 @@
 
 `[partition?][ns 2B BE][0x01][pkey]` → 一个 obj 一条 entry，值就是整段。空 map 不写 entry（是删除，不是写一张零条目的表），所以「没有」和「空」是同一种状态（`document.rs::slot1_into` / `slot1_map`）。
 
-`okm_core::model::obj_segment` 独占两个方向（`encode` / `decode`）；`obj_dynamic` 只保留货币类型（`Variant`、`DynamicField`、`NameResolver`），它的 `decode_named` / `decode_variants` 是薄委托。所有写者都走 `encode`：`document.rs::slot1_into`、`model/graph.rs`（边属性）、`okm_dynamic::graph`、`okm_dynamic::plan_fields`。
+`okm_core::model::obj_segment` 独占两个方向（`encode` / `decode`）；`obj_dynamic` 只保留货币类型（`Variant`、`DynamicField`、`NameResolver`），它的 `decode_named` / `decode_variants` 是薄委托。所有写者都走 `encode`：`document.rs::slot1_into`、`model/graph.rs`（边属性）、`model::dynamic_graph`、`model::plan_fields`。
 
 ## 值：三个区
 

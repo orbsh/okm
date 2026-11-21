@@ -503,7 +503,9 @@ the dynamic codec for embedded-language readers — Python (PyO3) and Steel bind
 An access method can name a PATH into the schema-free zone instead of a declared field:
 
 ```rust
-use okm_dynamic::{AccessMethod, FieldType, Path};
+use okm_core::model::access_method::AccessMethod;
+use okm_core::field::FieldType;
+use okm_core::model::path::Path;
 
 // nested object field
 let by_author = AccessMethod::path(0x4001, Path::parse("author.name")?, FieldType::Str)?;
@@ -1012,10 +1014,10 @@ A cluster is an assertion, so the cluster row and both member faces are Truth in
 
 ### The same clusters when the schema is data
 
-`okm-dynamic` is the form a store without declared Rust types uses: the schema arrives as data (`CollectionSchema`), an endpoint is a `NodeRef` and every payload is a `Dict`. It carries the **same** cluster faces — the cluster row with its `[parent_id u64 BE][payload]` head, the edge member face (keyed by the edge's stored row), the node member face (keyed by the handle), the derived child index and both mirrors — because the keys are built by the same functions and the vocabulary is the same one: a cluster is still addressed by `(kind, hyper_id)`. What changes is only what this form always changes: no `#[ok_nodes]` member set to check, no declared payload type, and no node declarations at all — on this form a node is an endpoint or a declared member and nothing else, so a `NodeRef` (ns + bare key bytes) is the whole address.
+The dynamic form — `okm_core::model::dynamic_collection` and its siblings `dynamic_cluster`, `dynamic_graph`, `dynamic_plan` — is what a store without declared Rust types uses: the schema arrives as data (`CollectionSchema`), an endpoint is a `NodeRef` and every payload is a `Dict`. It carries the **same** cluster faces — the cluster row with its `[parent_id u64 BE][payload]` head, the edge member face (keyed by the edge's stored row), the node member face (keyed by the handle), the derived child index and both mirrors — because the keys are built by the same functions and the vocabulary is the same one: a cluster is still addressed by `(kind, hyper_id)`. What changes is only what this form always changes: no `#[ok_nodes]` member set to check, no declared payload type, and no node declarations at all — on this form a node is an endpoint or a declared member and nothing else, so a `NodeRef` (ns + bare key bytes) is the whole address.
 
 ```rust
-let mut fragment = okm_dynamic::DynFragment::new([
+let mut fragment = okm_core::model::dynamic_cluster::DynFragment::new([
     Decl::edge(DynEdge { src: alice(), dst: acme(), predicate: "works_at".into(), attrs }),
     Decl::edge(DynEdge { src: bob(), dst: acme(), predicate: "works_at".into(), attrs }),
 ]);

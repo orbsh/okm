@@ -22,7 +22,7 @@
 //!   binds it at inject time.
 
 use okm_core::storage::VirtualStorage;
-use okm_dynamic::Dict;
+use okm_value::Dict;
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
 use steel::steel_vm::engine::Engine;
@@ -36,7 +36,7 @@ use steel::SteelVal;
 /// beside the handle).
 #[derive(Clone)]
 struct Bound {
-    table: Arc<Mutex<okm_dynamic::DynamicCollection<okm_entry::EngineBox>>>,
+    table: Arc<Mutex<okm_core::model::dynamic_collection::DynamicCollection<okm_entry::EngineBox>>>,
     schema: Arc<okm_core::schema::CollectionSchema>,
     ns: u16,
 }
@@ -101,7 +101,7 @@ impl StorageRegistry {
     pub fn table_of(
         &self,
         name: &str,
-    ) -> Option<Arc<Mutex<okm_dynamic::DynamicCollection<okm_entry::EngineBox>>>> {
+    ) -> Option<Arc<Mutex<okm_core::model::dynamic_collection::DynamicCollection<okm_entry::EngineBox>>>> {
         self.inner
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner)
@@ -303,7 +303,7 @@ impl StorageRegistry {
                             .table
                             .lock()
                             .unwrap_or_else(std::sync::PoisonError::into_inner);
-                        okm_dynamic::scan_reduces(guard.store(), &b.ns.to_be_bytes(), slot as u16)
+                        okm_core::model::byte_reduce::scan_reduces(guard.store(), &b.ns.to_be_bytes(), slot as u16)
                             .map_err(|e| e.to_string())?
                     };
                     Ok(vector_of(

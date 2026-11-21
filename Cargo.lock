@@ -2149,7 +2149,6 @@ dependencies = [
  "fjall",
  "getrandom 0.3.4",
  "okm-derive",
- "okm-dynamic",
  "okm-query",
  "okm-value",
  "okm-wire",
@@ -2177,20 +2176,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "okm-dynamic"
-version = "0.1.0"
-dependencies = [
- "arrow",
- "okm-async",
- "okm-core",
- "okm-derive",
- "okm-query",
- "okm-value",
- "serde",
- "tempfile",
-]
-
-[[package]]
 name = "okm-graph"
 version = "0.1.0"
 dependencies = [
@@ -2209,7 +2194,6 @@ dependencies = [
  "okm-async",
  "okm-core",
  "okm-derive",
- "okm-dynamic",
  "okm-value",
  "okm-wire",
  "parquet",
@@ -2226,7 +2210,6 @@ version = "0.1.0"
 dependencies = [
  "okm-core",
  "okm-derive",
- "okm-dynamic",
  "tempfile",
 ]
 

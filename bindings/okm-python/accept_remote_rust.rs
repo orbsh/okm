@@ -13,9 +13,10 @@
 
 use okm_core::{KeyEncode, DocumentEncode};
 use okm_core::schema::CollectionSchema;
-use okm_dynamic::{
-    AccessMethod, AccessMethodKind, ByteReduce, DynamicCollection, ReduceSpec, Value, Dict,
-};
+use okm_core::model::access_method::{AccessMethod, AccessMethodKind};
+use okm_core::model::byte_reduce::{ByteReduce, ReduceSpec};
+use okm_core::model::dynamic_collection::DynamicCollection;
+use okm_value::{Dict, Variant as Value};
 use okm_async::TestStore;
 use std::collections::BTreeMap;
 

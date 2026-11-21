@@ -374,7 +374,7 @@ fn collect_fields(
     Ok(out)
 }
 
-/// okm-dynamic `Value` -> okm-core `Variant` (the dynamic
+/// the dynamic form's `Value` -> okm-core `Variant` (the dynamic
 /// segment's currency). Composites map natively (the dynamic segment is
 /// the schema-free zone).
 pub(crate) fn value_to_dyn_value(v: &Value) -> Result<okm_value::Variant, String> {
