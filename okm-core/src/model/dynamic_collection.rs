@@ -113,6 +113,11 @@ impl<S: VirtualStorage> DynamicCollection<S> {
     /// discriminate within). Slots on the access methods are caller-
     /// allocated (1-based, unique per table) — mirroring declaration
     /// order in the typed path.
+    ///
+    /// No I/O: this is the declaration, and the meta row is written by the first
+    /// `ensure_layout`. [`open`] is the other side — a handle for a table the store
+    /// already describes, which carries no access methods because the store never
+    /// records them (ADR-0076).
     pub fn new(store: S, ns: u16, schema: CollectionSchema, indexes: Vec<AccessMethod>) -> Self {
         Self::with_reduces(store, ns, schema, indexes, Vec::new())
     }
