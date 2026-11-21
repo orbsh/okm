@@ -128,6 +128,41 @@ pub trait Reduce: ReduceLogic {
     }
 }
 
+/// Read one ledger entry, whatever produced its key.
+///
+/// The one read path for a reduce entry (ADR-0076 §2): `A` is the accumulator's codec, and
+/// the caller owns the key because the two forms name a group differently — a typed reduce
+/// derives it from the document and its own `SLOT`/`GROUP`, a dynamic one from the group's
+/// encoded bytes and the slot its caller declared. What is shared is the decode, which is
+/// what makes one accumulator layout.
+pub fn ledger_get<S: VirtualStorage, A: ReduceCodec>(
+    store: &S,
+    entry_key: &[u8],
+) -> crate::error::Result<Option<A>> {
+    let Some(bytes) = store.get(entry_key)? else {
+        return Ok(None);
+    };
+    Ok(Some(A::decode_acc(&bytes)))
+}
+
+/// Every group of one ledger: the group segment and its accumulator, in key order.
+///
+/// The prefix is `[ns][slot]`, so each suffix IS the group segment — the same shape for a
+/// typed reduce and a dynamic one.
+pub fn ledger_scan<S: VirtualStorage, A: ReduceCodec>(
+    store: &S,
+    ns_prefix: &[u8],
+    slot: crate::model::index::Slot,
+) -> crate::error::Result<Vec<(Vec<u8>, A)>> {
+    let mut prefix = Vec::with_capacity(ns_prefix.len() + crate::model::index::slot_len(slot));
+    prefix.extend_from_slice(ns_prefix);
+    crate::model::index::write_slot(&mut prefix, slot);
+    Ok(scan_suffix_kv(store, &prefix)?
+        .into_iter()
+        .map(|(suffix, value)| (suffix, A::decode_acc(&value)))
+        .collect())
+}
+
 /// Read one group's current accumulator (None = group not yet created).
 pub fn reduce_get<S: VirtualStorage, A: Reduce>(
     store: &S,
@@ -135,10 +170,7 @@ pub fn reduce_get<S: VirtualStorage, A: Reduce>(
     key: &<A::Document as Document>::Key,
     document: &A::Document,
 ) -> crate::error::Result<Option<A::Acc>> {
-    let Some(bytes) = store.get(&A::entry_key(ns_prefix, key, document))? else {
-        return Ok(None);
-    };
-    Ok(Some(A::Acc::decode_acc(&bytes)))
+    ledger_get::<S, A::Acc>(store, &A::entry_key(ns_prefix, key, document))
 }
 
 /// Scan every group of one reduce: full group segment + acc bytes.
@@ -147,13 +179,7 @@ pub fn scan_reduces<S: VirtualStorage, A: Reduce>(
     store: &S,
     ns_prefix: &[u8],
 ) -> crate::error::Result<Vec<(Vec<u8>, A::Acc)>> {
-    let mut prefix = Vec::with_capacity(ns_prefix.len() + crate::model::index::slot_len(A::SLOT));
-    prefix.extend_from_slice(ns_prefix);
-    crate::model::index::write_slot(&mut prefix, A::SLOT);
-    Ok(scan_suffix_kv(store, &prefix)?
-        .into_iter()
-        .map(|(suffix, value)| (suffix, A::Acc::decode_acc(&value)))
-        .collect())
+    ledger_scan::<S, A::Acc>(store, ns_prefix, A::SLOT)
 }
 
 /// The write-side hook on the Document trait (default no-op: undecorated

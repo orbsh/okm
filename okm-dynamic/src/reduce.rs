@@ -158,7 +158,9 @@ pub fn reduce_get<S: VirtualStorage>(
     store: &S,
     entry_key: &[u8],
 ) -> Result<Option<Vec<u8>>, String> {
-    store.get(entry_key).map_err(|e| e.to_string())
+    // The byte accumulator is one `ReduceCodec` (ADR-0076 §2): the typed side decodes a u64
+    // here, this side keeps the bytes, and the read itself is the same code.
+    okm_core::model::reduce::ledger_get::<S, Vec<u8>>(store, entry_key).map_err(|e| e.to_string())
 }
 
 /// Scan every group of one reduce: group segment + acc bytes. Prefix
@@ -168,10 +170,7 @@ pub fn scan_reduces<S: VirtualStorage>(
     ns: &[u8],
     slot: u16,
 ) -> Result<GroupAccs, String> {
-    let mut prefix = Vec::with_capacity(ns.len() + 2);
-    prefix.extend_from_slice(ns);
-    okm_core::write_slot(&mut prefix, slot);
-    okm_core::storage::scan_suffix_kv(store, &prefix).map_err(|e| e.to_string())
+    okm_core::model::reduce::ledger_scan::<S, Vec<u8>>(store, ns, slot).map_err(|e| e.to_string())
 }
 
 /// One reduce's groups: `(group segment, accumulator bytes)` per group, in
