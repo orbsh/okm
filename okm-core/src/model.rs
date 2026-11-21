@@ -20,6 +20,7 @@
 )]
 
 pub mod access_method;
+pub mod byte_reduce;
 pub mod document;
 pub mod encode;
 pub mod entries;

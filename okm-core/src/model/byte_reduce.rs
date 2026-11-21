@@ -1,6 +1,6 @@
-//! Dynamic-side reduce (ADR-0022): the mutable-reduce entry driven by
-//! host-language callables, byte-layout-aligned with the Rust-side
-//! `ReduceLogic` path (okm-core/src/model/reduce.rs).
+//! The byte accumulator's reduce (ADR-0022, ADR-0076 §3): the same mutable-reduce entry as
+//! `model::reduce`, driven by host-language callables — the acc layout is the host's, so the
+//! fold is a callable over bytes instead of a typed marker.
 //!
 //! Entry key: `[ns 2B][slot u16 BE][group segment]` — no key-prefix tail,
 //! the group identity IS the entry. The accumulator travels as bytes
@@ -23,14 +23,14 @@
 //! leaves an empty group, not a deleted entry. No zero-garbage-collect —
 //! a zero-detection policy is the caller's (same as the Rust side).
 
-use crate::{Dict, Value};
-use okm_core::storage::VirtualStorage;
+use crate::storage::VirtualStorage;
+use okm_value::{Dict, Variant as Value};
 
-/// The host-language reduce logic — one object, the mirror of the
-/// Rust-side `ReduceLogic` + `ReduceCodec: Default` pair (ADR-0022).
+/// A fold over bytes — one object, the mirror of [`crate::model::reduce::ReduceLogic`] +
+/// `ReduceCodec: Default` on the typed side (ADR-0022).
 /// The acc is byte-transparent (`Vec<u8>`): the layout is the host's
 /// contract, declared and seeded by the same object.
-pub trait ReduceLogic: Send + Sync {
+pub trait ByteReduce: Send + Sync {
     /// Seed accumulator: the `Default::default()` of the acc layout.
     /// Called when a group's entry does not exist yet.
     fn seed(&self) -> Vec<u8>;
@@ -45,7 +45,7 @@ pub trait ReduceLogic: Send + Sync {
 
 /// Object-safe alias the collection holds (host languages bridge their
 /// class instances into this).
-pub type ReduceLogicObj = Box<dyn ReduceLogic>;
+pub type ByteReduceObj = Box<dyn ByteReduce>;
 
 /// One declared dynamic reduce: slot + group fields + the host logic.
 pub struct ReduceSpec {
@@ -57,7 +57,7 @@ pub struct ReduceSpec {
     /// the entry's group segment.
     pub group_fields: Vec<String>,
     /// The fold/unfold/seed logic (one host object).
-    pub logic: ReduceLogicObj,
+    pub logic: ByteReduceObj,
 }
 
 impl std::fmt::Debug for ReduceSpec {
@@ -86,7 +86,7 @@ impl BoundReduce {
     /// the row being folded (the embedded path's `&Key` twin).
     pub fn group_bytes(
         &self,
-        schema: &okm_core::schema::CollectionSchema,
+        schema: &crate::schema::CollectionSchema,
         key: &Dict,
         document: &Dict,
     ) -> Result<Vec<u8>, String> {
@@ -120,11 +120,11 @@ impl BoundReduce {
             // segments: group segments take fixed-width kinds, matching
             // the Rust-side walk).
             let bytes = match (f.ty, v) {
-                (okm_core::field::FieldType::U8, Value::U8(n)) => vec![*n],
-                (okm_core::field::FieldType::U16, Value::U16(n)) => n.to_be_bytes().to_vec(),
-                (okm_core::field::FieldType::U32, Value::U32(n)) => n.to_be_bytes().to_vec(),
-                (okm_core::field::FieldType::U64, Value::U64(n)) => n.to_be_bytes().to_vec(),
-                (okm_core::field::FieldType::FixedBytes, Value::Bytes(b)) => b.clone(),
+                (crate::field::FieldType::U8, Value::U8(n)) => vec![*n],
+                (crate::field::FieldType::U16, Value::U16(n)) => n.to_be_bytes().to_vec(),
+                (crate::field::FieldType::U32, Value::U32(n)) => n.to_be_bytes().to_vec(),
+                (crate::field::FieldType::U64, Value::U64(n)) => n.to_be_bytes().to_vec(),
+                (crate::field::FieldType::FixedBytes, Value::Bytes(b)) => b.clone(),
                 _ => {
                     return Err(format!(
                         "group field `{name}`: fixed-width numeric/bytes kind required"
@@ -139,7 +139,7 @@ impl BoundReduce {
     /// Full entry key `[ns 2B][slot u16 BE][group segment]`.
     pub fn entry_key(
         &self,
-        schema: &okm_core::schema::CollectionSchema,
+        schema: &crate::schema::CollectionSchema,
         ns: &[u8],
         key: &Dict,
         document: &Dict,
@@ -147,7 +147,7 @@ impl BoundReduce {
         let g = self.group_bytes(schema, key, document)?;
         let mut buf = Vec::with_capacity(ns.len() + 2 + g.len());
         buf.extend_from_slice(ns);
-        okm_core::write_slot(&mut buf, self.spec.slot);
+        crate::write_slot(&mut buf, self.spec.slot);
         buf.extend_from_slice(&g);
         Ok(buf)
     }
@@ -160,7 +160,7 @@ pub fn reduce_get<S: VirtualStorage>(
 ) -> Result<Option<Vec<u8>>, String> {
     // The byte accumulator is one `ReduceCodec` (ADR-0076 §2): the typed side decodes a u64
     // here, this side keeps the bytes, and the read itself is the same code.
-    okm_core::model::reduce::ledger_get::<S, Vec<u8>>(store, entry_key).map_err(|e| e.to_string())
+    crate::model::reduce::ledger_get::<S, Vec<u8>>(store, entry_key).map_err(|e| e.to_string())
 }
 
 /// Scan every group of one reduce: group segment + acc bytes. Prefix
@@ -170,7 +170,7 @@ pub fn scan_reduces<S: VirtualStorage>(
     ns: &[u8],
     slot: u16,
 ) -> Result<GroupAccs, String> {
-    okm_core::model::reduce::ledger_scan::<S, Vec<u8>>(store, ns, slot).map_err(|e| e.to_string())
+    crate::model::reduce::ledger_scan::<S, Vec<u8>>(store, ns, slot).map_err(|e| e.to_string())
 }
 
 /// One reduce's groups: `(group segment, accumulator bytes)` per group, in
@@ -207,7 +207,7 @@ impl PresetLogic {
     }
 }
 
-impl ReduceLogic for PresetLogic {
+impl ByteReduce for PresetLogic {
     fn seed(&self) -> Vec<u8> {
         match self.kind {
             PresetKind::Count | PresetKind::HighWater(_) => 0u64.to_be_bytes().to_vec(),

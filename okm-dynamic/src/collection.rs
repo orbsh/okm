@@ -18,9 +18,9 @@
 
 use okm_core::storage::VirtualStorage;
 
-use crate::reduce::{BoundReduce, ReduceSpec};
 use crate::{CollectionSchema, Dict, decode_payload};
 use okm_core::model::access_method::{AccessMethod, scan_access_method};
+use okm_core::model::byte_reduce::{BoundReduce, ReduceSpec};
 
 /// Codec errors surfaced as strings (dynamic callers are host-language
 /// bridges — error values, not typed hierarchies).
