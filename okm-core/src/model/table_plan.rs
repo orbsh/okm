@@ -49,8 +49,8 @@ impl TablePlan {
             slots.predicate_vocab_name,
             crate::model::index::CLUSTER_KIND_ID_SLOT,
             crate::model::index::CLUSTER_KIND_NAME_SLOT,
-            crate::model::hyper::CLUSTER_SLOT,
-            crate::model::hyper::EDGE_MEMBER_SLOT,
+            crate::model::layout::CLUSTER_SLOT,
+            crate::model::layout::EDGE_MEMBER_SLOT,
         ];
         let mut i = 0;
         while i < named.len() {

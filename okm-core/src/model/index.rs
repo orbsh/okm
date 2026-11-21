@@ -113,7 +113,7 @@ pub const fn slot_len(slot: Slot) -> usize {
 ///
 /// They are re-exported here because `Slot`, `write_slot` and the family bases
 /// are this module's, and because every existing path
-/// (`index::PRIMARY_SLOT`, `hyper::CLUSTER_SLOT`, `handles::HANDLE_NODE_SLOT`)
+/// (`index::PRIMARY_SLOT`, `layout::CLUSTER_SLOT`, `layout::HANDLE_NODE_SLOT`)
 /// should keep resolving to the same constant rather than to a copy.
 pub use crate::model::layout::{
     CLUSTER_KIND_ID_SLOT, CLUSTER_KIND_NAME_SLOT, DYNAMIC_SLOT, FIELD_VOCAB_ID_SLOT,

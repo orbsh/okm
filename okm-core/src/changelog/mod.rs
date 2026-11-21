@@ -110,7 +110,8 @@ pub fn side_of(slots: &SlotMap, slot: u16) -> Side {
     // of the edge rows produces it (two sets over the same edges are different
     // sets). The child index is the derived half, so it stays off the log: it
     // rebuilds from `parent_id` in the cluster rows.
-    if slot == crate::model::hyper::CLUSTER_SLOT || slot == crate::model::hyper::EDGE_MEMBER_SLOT {
+    if slot == crate::model::layout::CLUSTER_SLOT || slot == crate::model::layout::EDGE_MEMBER_SLOT
+    {
         return Side::Truth;
     }
     // The DERIVED half of that band, named rather than left to the family
@@ -118,8 +119,8 @@ pub fn side_of(slots: &SlotMap, slot: u16) -> Side {
     // cluster rows, and the edge → cluster index (0x0F) rebuilds from the member
     // rows on 0x0D. Neither is an assertion of its own, so neither reaches the
     // log — replaying the truth reproduces both.
-    if slot == crate::model::hyper::CHILD_INDEX_SLOT
-        || slot == crate::model::hyper::EDGE_CLUSTER_SLOT
+    if slot == crate::model::layout::CHILD_INDEX_SLOT
+        || slot == crate::model::layout::EDGE_CLUSTER_SLOT
     {
         return Side::Derived;
     }
