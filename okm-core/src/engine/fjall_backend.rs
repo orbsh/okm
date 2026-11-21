@@ -5,7 +5,7 @@
 //! key encoding itself, so different edge types sharing a keyspace do not
 //! conflict.
 
-use crate::engine::storage::{Batch, VirtualStorage};
+use crate::engine::storage::{AttachSet, Batch, VirtualStorage};
 use fjall::{Database, Keyspace, KeyspaceCreateOptions};
 
 /// Clone is a handle clone: Arc-inner in fjall, clones share the keyspace.
@@ -13,6 +13,8 @@ use fjall::{Database, Keyspace, KeyspaceCreateOptions};
 pub struct FjallStore {
     db: Database,
     ks: Keyspace,
+    /// Tables this handle attested (ADR-0078). Shared by every clone: clones are one store.
+    attach: std::sync::Arc<AttachSet>,
 }
 
 impl FjallStore {
@@ -20,7 +22,11 @@ impl FjallStore {
     pub fn open(path: &std::path::Path, name: &str) -> fjall::Result<Self> {
         let db = Database::create_or_recover(fjall::Config::new(path))?;
         let ks = db.keyspace(name, KeyspaceCreateOptions::default)?;
-        Ok(Self { db, ks })
+        Ok(Self {
+            db,
+            ks,
+            attach: Default::default(),
+        })
     }
 
     /// 从已存在的 Database 挂一个 keyspace
@@ -28,6 +34,7 @@ impl FjallStore {
         Ok(Self {
             ks: db.keyspace(name, KeyspaceCreateOptions::default)?,
             db,
+            attach: Default::default(),
         })
     }
 
@@ -45,6 +52,14 @@ impl crate::engine::storage::SharedVirtualStorage for FjallStore {
 }
 
 impl VirtualStorage for FjallStore {
+    fn attached(&self, header: &[u8], decl: &'static str) -> bool {
+        self.attach.contains(header, decl)
+    }
+
+    fn mark_attached(&self, header: &[u8], decl: &'static str) {
+        self.attach.insert(header, decl);
+    }
+
     fn put(&self, key: Vec<u8>, value: Vec<u8>) -> crate::error::Result<()> {
         self.ks
             .insert(key, value)

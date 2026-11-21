@@ -128,6 +128,26 @@ impl SharedVirtualStorage for TestStore {
 }
 
 impl VirtualStorage for TestStore {
+    fn attached(&self, header: &[u8], decl: &'static str) -> bool {
+        match self {
+            Self::Ephemeral(store) => store.attached(header, decl),
+            #[cfg(feature = "fjall")]
+            Self::Fjall { store, .. } => store.attached(header, decl),
+            #[cfg(feature = "redb")]
+            Self::Redb { store, .. } => store.attached(header, decl),
+        }
+    }
+
+    fn mark_attached(&self, header: &[u8], decl: &'static str) {
+        match self {
+            Self::Ephemeral(store) => store.mark_attached(header, decl),
+            #[cfg(feature = "fjall")]
+            Self::Fjall { store, .. } => store.mark_attached(header, decl),
+            #[cfg(feature = "redb")]
+            Self::Redb { store, .. } => store.mark_attached(header, decl),
+        }
+    }
+
     fn put(&self, key: Vec<u8>, value: Vec<u8>) -> crate::error::Result<()> {
         match self {
             Self::Ephemeral(store) => store.put(key, value),

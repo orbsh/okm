@@ -61,7 +61,7 @@ use std::path::{Path, PathBuf};
 use std::time::Instant;
 
 use crate::OpFrame;
-use crate::engine::storage::{Batch, VirtualStorage};
+use crate::engine::storage::{AttachSet, Batch, VirtualStorage};
 use crate::error::{Error, Result};
 use crate::model::faces::FINGERPRINT_LEN;
 use crate::model::index::{FIXED_FACE_MAX, Slot, segment};
@@ -1686,6 +1686,8 @@ pub struct ChangelogStore<S> {
     /// The claims this store holds. Kept here for the store's lifetime because a dropped
     /// lease stops polling, and a gate nobody polls is a gate that never closes.
     leases: RefCell<Vec<std::sync::Arc<owner::Lease>>>,
+    /// Tables this wrapper attested (ADR-0078), keyed by header and declaration.
+    attach: AttachSet,
 }
 
 impl<S> ChangelogStore<S> {
@@ -1698,6 +1700,7 @@ impl<S> ChangelogStore<S> {
             known: RefCell::new(BTreeMap::new()),
             ns_index: RefCell::new(std::collections::HashMap::new()),
             odd_headers: RefCell::new(Vec::new()),
+            attach: Default::default(),
             tables: RefCell::new(BTreeMap::new()),
             gate: None,
             holder: RefCell::new(None),
@@ -2276,6 +2279,17 @@ impl<S> ChangelogStore<S> {
 }
 
 impl<S: VirtualStorage> VirtualStorage for ChangelogStore<S> {
+    /// ADR-0078. Its own set rather than a hit in `header → Known`: `known` holds one plan per
+    /// header, so it cannot tell two declarations that share one ns apart, and the second one
+    /// would be skipped past the comparison that is there to refuse it.
+    fn attached(&self, header: &[u8], decl: &'static str) -> bool {
+        self.attach.contains(header, decl)
+    }
+
+    fn mark_attached(&self, header: &[u8], decl: &'static str) {
+        self.attach.insert(header, decl);
+    }
+
     /// Learn a table from the store's own meta row instead of from a registration call
     /// (ADR-0074 §3): attach has just written it, so the row says whether this table is
     /// captured (`capture = 0`), and — when it is — what a segment of it is stamped with.

@@ -27,6 +27,33 @@ pub fn prefix_end(prefix: &[u8]) -> Option<Vec<u8>> {
     None
 }
 
+/// The tables a store has attested in this process (ADR-0078).
+///
+/// A header is two to four bytes and the set holds one entry per table the store carries, so a
+/// linear scan beats hashing at this size; the lock is taken on `open`, never on a write.
+#[derive(Default)]
+pub struct AttachSet(std::sync::Mutex<Vec<(Vec<u8>, &'static str)>>);
+
+impl AttachSet {
+    /// Has this header been attested by this declaration?
+    ///
+    /// The declaration is part of the key because two declarations can occupy one header: a
+    /// `#[ok_shared_ns_in_tests]` twin, which exists precisely to be refused. Keyed by header
+    /// alone, the twin would take the fast path and never be compared.
+    pub fn contains(&self, header: &[u8], decl: &'static str) -> bool {
+        let seen = self.0.lock().unwrap_or_else(|e| e.into_inner());
+        seen.iter().any(|(h, d)| h == header && *d == decl)
+    }
+
+    /// Record it. Called from attach, once per table per store per process.
+    pub fn insert(&self, header: &[u8], decl: &'static str) {
+        let mut seen = self.0.lock().unwrap_or_else(|e| e.into_inner());
+        if !seen.iter().any(|(h, d)| h == header && *d == decl) {
+            seen.push((header.to_vec(), decl));
+        }
+    }
+}
+
 pub trait VirtualStorage {
     /// Announce that a table exists, so a wrapper that keeps history can learn about it
     /// (ADR-0074 §3).
@@ -38,6 +65,27 @@ pub trait VirtualStorage {
     /// declaration in hand and the log does not, so the one place that knows what the table is
     /// answers once, and every later commit indexes that answer (ADR-0074 §3).
     fn note_table(&self, _plan: &'static crate::model::table_plan::TablePlan) {}
+    /// Has this store already attested this table? (ADR-0078)
+    ///
+    /// Attach is the only place a table is verified against its store, and nothing it checks can
+    /// move under a running binary: the declaration is compiled in, and a store has one writer,
+    /// so the row it wrote cannot change beneath it. A store that answered once can therefore
+    /// answer from memory, and the second and every later `Collection::open` in the process
+    /// costs a lookaside hit instead of a point read plus a schema comparison.
+    ///
+    /// The header (`[partition][ns]`) is the key, not the ns: two partitions are two tables.
+    ///
+    /// The default is `false` — always correct, and the behaviour every engine had before this
+    /// method existed. A store opts in by carrying an [`AttachSet`] and forwarding both calls.
+    /// The declaration is `std::any::type_name::<R>()` rather than a `TypeId`: `Document` does
+    /// not require `'static`, and the key only has to be unique inside this process.
+    fn attached(&self, _header: &[u8], _decl: &'static str) -> bool {
+        false
+    }
+
+    /// Remember the attestation. Called by attach after the row was written or confirmed, never
+    /// before, so a failed attach leaves no claim behind.
+    fn mark_attached(&self, _header: &[u8], _decl: &'static str) {}
     /// Point write. `Err` is the engine refusing the bytes — the mirror of
     /// `get`'s error, and the reason this answers `Result` instead of `()`:
     /// a write that cannot report a refused commit has no error channel at all,
@@ -395,6 +443,14 @@ impl<S: VirtualStorage + ?Sized> VirtualStorage for &S {
         // A wrapper that forgets this one is a silent hole: attach speaks to `&store`, and the
         // log behind it would never learn the table.
         (**self).note_table(plan)
+    }
+
+    fn attached(&self, header: &[u8], decl: &'static str) -> bool {
+        (**self).attached(header, decl)
+    }
+
+    fn mark_attached(&self, header: &[u8], decl: &'static str) {
+        (**self).mark_attached(header, decl)
     }
 
     fn put(&self, key: Vec<u8>, value: Vec<u8>) -> crate::error::Result<()> {

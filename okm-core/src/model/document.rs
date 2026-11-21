@@ -197,6 +197,15 @@ impl<S: VirtualStorage, K: KeyEncode, R: Document<Key = K>> Collection<S, K, R> 
     /// after the fact is exactly the assembly-time switch ADR-0074 removed.
     fn attach(&self) -> crate::error::Result<()> {
         let header = self.header();
+        // Fast path (ADR-0078): this store attested this table earlier in this process. The plan
+        // static is the one thing that must still be warm — every commit reads it, and filling
+        // it is a pure function of the declaration.
+        let decl = std::any::type_name::<R>();
+        if self.store.attached(header, decl) {
+            let derived = crate::model::schema::CollectionSchema::of::<K, R>();
+            R::PLAN.get_or_init(|| crate::model::table_plan::TablePlan::compile(&derived));
+            return Ok(());
+        }
         let mut meta = self.ensure_layout()?;
         let derived = crate::model::schema::CollectionSchema::of::<K, R>();
         let mut dirty = false;
@@ -248,6 +257,9 @@ impl<S: VirtualStorage, K: KeyEncode, R: Document<Key = K>> Collection<S, K, R> 
         // row (or seeded into it): one plan per table per process, at a constant address.
         let plan = R::PLAN.get_or_init(|| crate::model::table_plan::TablePlan::compile(&derived));
         self.store.note_table(plan);
+        // Last, once the row is written and the store has been told: the claim is made only
+        // after the work it stands for.
+        self.store.mark_attached(header, decl);
         Ok(())
     }
 

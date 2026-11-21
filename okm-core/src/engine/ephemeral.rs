@@ -1204,12 +1204,15 @@ fn too_big() -> crate::error::Error {
 #[derive(Clone)]
 pub struct EphemeralStore {
     inner: Arc<RwLock<Inner>>,
+    /// Tables this handle attested (ADR-0078). Shared by every clone: clones are one store.
+    attach: Arc<crate::engine::storage::AttachSet>,
 }
 
 impl Default for EphemeralStore {
     fn default() -> Self {
         Self {
             inner: Arc::new(RwLock::new(Inner::new())),
+            attach: Arc::default(),
         }
     }
 }
@@ -1250,6 +1253,14 @@ impl EphemeralStore {
 }
 
 impl VirtualStorage for EphemeralStore {
+    fn attached(&self, header: &[u8], decl: &'static str) -> bool {
+        self.attach.contains(header, decl)
+    }
+
+    fn mark_attached(&self, header: &[u8], decl: &'static str) {
+        self.attach.insert(header, decl);
+    }
+
     fn put(&self, key: Vec<u8>, value: Vec<u8>) -> crate::error::Result<()> {
         let mut g = self.write();
         g.insert(&key, &value)?;

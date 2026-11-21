@@ -13,7 +13,7 @@
 //! `shared_handle` is an Arc-kernel clone (`Database` clones share the
 //! file lock and keyspace).
 
-use crate::engine::storage::{Batch, VirtualStorage};
+use crate::engine::storage::{AttachSet, Batch, VirtualStorage};
 use redb::{Database, ReadableDatabase, TableDefinition};
 
 /// The single table holding the whole OKM keyspace (ns prefixes come
@@ -30,6 +30,8 @@ const TABLE: TableDefinition<&[u8], &[u8]> = TableDefinition::new("okm");
 #[derive(Clone)]
 pub struct RedbStore {
     db: std::sync::Arc<Database>,
+    /// Tables this handle attested (ADR-0078). Shared by every clone: clones are one store.
+    attach: std::sync::Arc<AttachSet>,
 }
 
 impl RedbStore {
@@ -37,13 +39,17 @@ impl RedbStore {
     pub fn open(path: &std::path::Path) -> Result<Self, redb::DatabaseError> {
         Ok(Self {
             db: std::sync::Arc::new(Database::create(path)?),
+            attach: Default::default(),
         })
     }
 
     /// Open over an existing `Arc<Database>` (the caller configured the
     /// builder; `Database::builder().create(path)` produces it).
     pub fn from_db(db: std::sync::Arc<Database>) -> Self {
-        Self { db }
+        Self {
+            db,
+            attach: Default::default(),
+        }
     }
 }
 
@@ -61,6 +67,14 @@ fn one_error(e: crate::error::Error) -> super::storage::ScanIter {
 }
 
 impl VirtualStorage for RedbStore {
+    fn attached(&self, header: &[u8], decl: &'static str) -> bool {
+        self.attach.contains(header, decl)
+    }
+
+    fn mark_attached(&self, header: &[u8], decl: &'static str) {
+        self.attach.insert(header, decl);
+    }
+
     /// redb note: the table is created on first write (`open_table`
     /// inside a write transaction creates it; read paths treat a
     /// missing table as an empty keyspace).
