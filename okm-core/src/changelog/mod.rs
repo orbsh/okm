@@ -141,6 +141,7 @@ pub mod owner;
 
 pub use hook::HandoverHook;
 
+pub mod migrate;
 /// The window join: the drain's reading half, beside the segments it reads.
 ///
 /// Gated on `schema-serde`, because a window cannot be read without a

@@ -1,0 +1,142 @@
+//! A generation change driven end to end (ADR-0075 §5–§7).
+//!
+//! The mechanism is three legs and this pins each of them: the verdict refuses a move that
+//! does not flip the parity, the copy re-encodes through both declarations, and the flip is
+//! one record — after which the new generation reads the rows and the old range is still
+//! there with the old declaration's address on it.
+
+#![allow(
+    clippy::unwrap_used,
+    clippy::expect_used,
+    clippy::panic,
+    clippy::unwrap_in_result,
+    clippy::panic_in_result_fn
+)]
+
+use okm_core::changelog::migrate::migrate_table;
+use okm_core::model::dynamic_collection::DynamicCollection;
+use okm_core::schema::CollectionSchema;
+use okm_core::testing::TestStore;
+use okm_core::{Collection, Document, DocumentEncode, KeyEncode};
+
+#[derive(KeyEncode, Clone, PartialEq, Debug, Default)]
+pub struct K {
+    pub id: u64,
+}
+
+/// Generation 1 — the build that wrote first.
+#[derive(DocumentEncode, Clone, PartialEq, Debug)]
+#[ok_ref(K)]
+#[ok_ns(120)]
+pub struct Gen1 {
+    pub level: u32,
+}
+
+/// Generation 2 — the same table declared afresh: an extra field, and the version the address'
+/// parity is derived from.
+#[derive(DocumentEncode, Clone, PartialEq, Debug)]
+#[ok_shared_ns_in_tests]
+#[ok_ref(K)]
+#[ok_ns(120)]
+#[ok_layout(version = 2)]
+pub struct Gen2 {
+    pub level: u32,
+    pub score: u32,
+}
+
+/// Generation 3 — a bump that would land on generation 1's parity, which is the move the
+/// verdict exists to refuse.
+#[derive(DocumentEncode, Clone, PartialEq, Debug)]
+#[ok_shared_ns_in_tests]
+#[ok_ref(K)]
+#[ok_ns(120)]
+#[ok_layout(version = 3)]
+pub struct Gen3 {
+    pub level: u32,
+    pub score: u32,
+}
+
+fn seeded() -> TestStore {
+    let store = TestStore::default();
+    let one: Collection<_, K, Gen1> = Collection::open(store.clone()).expect("attach");
+    one.put(&K { id: 1 }, &Gen1 { level: 7 }).expect("put");
+    one.put(&K { id: 2 }, &Gen1 { level: 8 }).expect("put");
+    drop(one);
+    store
+}
+
+#[test]
+fn a_table_moves_to_the_next_generation_in_place() {
+    let store = seeded();
+    let target = CollectionSchema::of::<K, Gen2>();
+
+    let report = migrate_table(&store, None, <Gen1 as Document>::NS_PREFIX, &target)
+        .expect("migrate generation 1 to 2");
+
+    assert_eq!((report.from, report.to), (1, 2));
+    assert_eq!(report.copied, 2, "both rows came across");
+    assert_ne!(
+        report.from_address, report.to_address,
+        "one bit of the address separates the two ranges"
+    );
+    assert_eq!(report.replayed, 0, "no log was given, so there was no tail");
+
+    // The new generation's own declaration reads what the migration wrote.
+    let two: Collection<_, K, Gen2> = Collection::open(store.clone()).expect("attach generation 2");
+    assert_eq!(
+        two.get_row(&K { id: 1 }).expect("read").expect("the row"),
+        Gen2 { level: 7, score: 0 },
+        "the field the old layout did not carry takes the declaration's default"
+    );
+    assert_eq!(
+        two.get_row(&K { id: 2 }).expect("read").expect("the row"),
+        Gen2 { level: 8, score: 0 }
+    );
+}
+
+#[test]
+fn the_old_range_still_answers_the_old_declaration() {
+    let store = seeded();
+    let target = CollectionSchema::of::<K, Gen2>();
+    migrate_table(&store, None, <Gen1 as Document>::NS_PREFIX, &target).expect("migrate");
+
+    // A handle declared at the OLD generation addresses the old range, and the rows are still
+    // there: a failed verification costs a re-run, not the data (ADR-0075).
+    let old = DynamicCollection::new(
+        store.clone(),
+        120,
+        CollectionSchema::of::<K, Gen1>(),
+        Vec::new(),
+    );
+    let row = old
+        .fetch(&K { id: 1 }.encode())
+        .expect("fetch")
+        .expect("the old range still holds the row");
+    assert_eq!(row.len(), 1, "one field, still this generation's layout");
+}
+
+#[test]
+fn a_jump_that_does_not_flip_the_parity_is_refused() {
+    let store = seeded();
+    let target = CollectionSchema::of::<K, Gen3>();
+    let err = migrate_table(&store, None, <Gen1 as Document>::NS_PREFIX, &target)
+        .expect_err("generation 3 sits where generation 1 does");
+    assert!(
+        err.contains("moves by one"),
+        "the refusal names the rule: {err}"
+    );
+}
+
+#[test]
+fn a_target_on_another_table_is_refused() {
+    let store = seeded();
+    let mut elsewhere = CollectionSchema::of::<K, Gen2>();
+    // The ns keeps its generation bit; only the table it names changes.
+    elsewhere.ns_prefix[1] = elsewhere.ns_prefix[1].wrapping_add(1);
+    let err = migrate_table(&store, None, <Gen1 as Document>::NS_PREFIX, &elsewhere)
+        .expect_err("another ns is another table");
+    assert!(
+        err.contains("never the table"),
+        "the refusal says what a migration may move: {err}"
+    );
+}

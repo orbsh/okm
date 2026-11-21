@@ -43,6 +43,10 @@ fn run() -> Result<i32, String> {
             args.remove(0);
             status(&args)
         }
+        Some("migrate") => {
+            args.remove(0);
+            migrate(&args)
+        }
         Some("-h" | "--help" | "help") => {
             println!(
                 "okm-log <verb>\n\
@@ -50,13 +54,74 @@ fn run() -> Result<i32, String> {
                  status  --root <log dir> [--table <hex header>] [--after-bytes N] [--after-secs N]\n\
                  compact --root <log dir> --store <data dir> [--keep N] [--table <hex header>] [--force]\n\
                  replay  --root <log dir> --store <dir> [--reconcile <old store dir>] [--table <hex header>]\n\
+                 migrate --store <data dir> --table <hex header> --to <schema.json> [--root <log dir>]\n\
                  \n\
                  The log, not the lake: `okm-lake` writes the exported table."
             );
             Ok(0)
         }
-        _ => Err("okm-log needs a verb: status, compact or replay (try --help)".to_string()),
+        _ => {
+            Err("okm-log needs a verb: status, compact, replay or migrate (try --help)".to_string())
+        }
     }
+}
+
+/// One generation to the next, in place (ADR-0075 §5–§7).
+///
+/// The store's own record says which generation is live; `--to` names the next declaration
+/// (the schema JSON a build exports), and `--root` is where the tail comes from. The copy runs
+/// first, the tail is replayed on top of it, and the flip is the record the new handle writes —
+/// so a run that fails leaves the old range and the old record as the fallback.
+fn migrate(args: &[String]) -> Result<i32, String> {
+    let mut store_dir: Option<PathBuf> = None;
+    let mut root: Option<PathBuf> = None;
+    let mut table: Option<String> = None;
+    let mut to: Option<PathBuf> = None;
+
+    let mut it = args.iter();
+    while let Some(arg) = it.next() {
+        let mut value = || {
+            it.next()
+                .cloned()
+                .ok_or_else(|| format!("{arg} needs a value"))
+        };
+        match arg.as_str() {
+            "--store" | "--data" => store_dir = Some(PathBuf::from(value()?)),
+            "--root" | "--log" => root = Some(PathBuf::from(value()?)),
+            "--table" => table = Some(value()?),
+            "--to" => to = Some(PathBuf::from(value()?)),
+            "-h" | "--help" => {
+                println!(
+                    "okm-log migrate --store <data dir> --table <hex header> \
+                     --to <schema.json> [--root <log dir>]"
+                );
+                return Ok(0);
+            }
+            other => return Err(format!("unknown argument `{other}` (try --help)")),
+        }
+    }
+
+    let store_dir = store_dir.ok_or("--store is required (the data directory)")?;
+    let table = decode_hex(
+        &table.ok_or("--table is required (the header hex a table directory is named by)")?,
+    )?;
+    let to = to.ok_or("--to is required (the next generation's schema JSON)")?;
+    let schema_bytes = std::fs::read(&to).map_err(|e| format!("{}: {e}", to.display()))?;
+    let target = okm_core::schema::CollectionSchema::decode(&schema_bytes);
+
+    let store = open_store(&store_dir)?;
+    let report =
+        okm_core::changelog::migrate::migrate_table(&store, root.as_deref(), &table, &target)?;
+    println!(
+        "layout v{} → v{}: {} rows copied, {} segments replayed\n  from {}\n  to   {}",
+        report.from,
+        report.to,
+        report.copied,
+        report.replayed,
+        hex_of(&report.from_address),
+        hex_of(&report.to_address)
+    );
+    Ok(0)
 }
 
 /// What a log holds and who holds it, in the terms that decide anything: the segments,
