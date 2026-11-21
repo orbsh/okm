@@ -135,7 +135,7 @@ fn ids(hits: Vec<Dict>) -> Vec<u64> {
 
 /// Every stored key under one index slot (`[ns][slot]` prefix).
 fn entry_keys<S: VirtualStorage>(store: &S, slot: u16) -> Vec<Vec<u8>> {
-    let mut prefix: Vec<u8> = 51u16.to_be_bytes().to_vec();
+    let mut prefix: Vec<u8> = <Node as okm_core::Document>::NS_PREFIX.to_vec();
     prefix.extend_from_slice(&slot.to_be_bytes());
     store
         .scan_suffix(&prefix)
@@ -201,7 +201,7 @@ fn exact_scan_ignores_a_probe_completed_by_the_key_tail() {
     }
 
     // The trap is real: the entry's bytes start with the probe's prefix.
-    let mut probe: Vec<u8> = 51u16.to_be_bytes().to_vec();
+    let mut probe: Vec<u8> = <Node as okm_core::Document>::NS_PREFIX.to_vec();
     probe.extend_from_slice(&SLOT_AUTHOR.to_be_bytes());
     probe.extend_from_slice(b"ad1");
     let keys = entry_keys(t.store(), SLOT_AUTHOR);
@@ -270,7 +270,7 @@ fn entry_layout_is_ns_slot_value_pkey() {
     )
     .unwrap();
 
-    let mut expected: Vec<u8> = 51u16.to_be_bytes().to_vec();
+    let mut expected: Vec<u8> = <Node as okm_core::Document>::NS_PREFIX.to_vec();
     expected.extend_from_slice(&SLOT_RANK.to_be_bytes());
     expected.extend_from_slice(&4u32.to_be_bytes());
     expected.extend_from_slice(&key(3));
@@ -336,7 +336,7 @@ fn entry_bytes_depend_on_the_stored_number_not_the_writer_s_variant() {
     assert_eq!(keys.len(), 2);
     let segments: Vec<Vec<u8>> = keys.iter().map(|k| k[..k.len() - 8].to_vec()).collect();
     assert_eq!(segments[0], segments[1]);
-    let mut expected: Vec<u8> = 51u16.to_be_bytes().to_vec();
+    let mut expected: Vec<u8> = <Node as okm_core::Document>::NS_PREFIX.to_vec();
     expected.extend_from_slice(&SLOT_RANK.to_be_bytes());
     expected.extend_from_slice(&4u32.to_be_bytes());
     assert_eq!(segments[0], expected);

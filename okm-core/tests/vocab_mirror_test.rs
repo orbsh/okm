@@ -55,7 +55,7 @@ fn map(pairs: &[(&str, Value)]) -> Dict {
 /// Every label the ID face holds, in id order — one entry per allocated label,
 /// so a duplicate allocation for one name shows up as a longer list.
 fn labels(store: &TestStore) -> Vec<String> {
-    let mut prefix = NS.to_be_bytes().to_vec();
+    let mut prefix = <Doc as okm_core::Document>::NS_PREFIX.to_vec();
     write_slot(&mut prefix, 0x02);
     okm_core::engine::storage::scan_suffix_kv(store, &prefix)
         .unwrap()

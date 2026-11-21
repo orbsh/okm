@@ -232,13 +232,13 @@ impl<S: VirtualStorage, K: KeyEncode, R: Document<Key = K>> Collection<S, K, R> 
         // (ADR-0075 §3): the larger version is current. This is what keeps a stale build from
         // seeding an empty table beside another generation's rows.
         let mut meta = match crate::model::meta::current(&self.store, header, R::LAYOUT_VERSION)? {
-            Some((version, _)) if version != R::LAYOUT_VERSION => {
+            Some((version, _, _)) if version != R::LAYOUT_VERSION => {
                 return Err(crate::error::Error::LayoutMismatch {
                     stored: version,
                     current: R::LAYOUT_VERSION,
                 });
             }
-            Some((_, mut meta)) => {
+            Some((_, _, mut meta)) => {
                 // A row exists: the name rule still runs first, so a namespace claimed by two
                 // declarations reports the claim and not a shape that differs because of it.
                 self.check_name(&mut meta)?;

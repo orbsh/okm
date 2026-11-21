@@ -31,6 +31,33 @@ pub struct TablePlan {
     slots: SlotMap,
 }
 
+/// The address for a handle that is being DECLARED: the schema's own ns when it names one,
+/// otherwise the caller's bytes, and in both cases the generation bit when there is a
+/// generation to place (ADR-0075 §2).
+///
+/// The fallback exists because not every dynamic schema comes from a declaration: a caller
+/// assembling one inline names its ns as an argument, and a schema with no ns has no
+/// generation to be the current one.
+pub fn address_for(schema: &CollectionSchema, ns: u16) -> Vec<u8> {
+    if schema.ns_prefix.len() == 2 {
+        address_of(schema)
+    } else {
+        ns.to_be_bytes().to_vec()
+    }
+}
+
+/// Where a schema's table lives: its ns bytes with the layout generation's bit (ADR-0075 §2).
+///
+/// One function, because three places ask — the plan, a dynamic constructor, and a dynamic
+/// reader — and every one of them has to answer the same bytes or they address different tables.
+pub fn address_of(schema: &CollectionSchema) -> Vec<u8> {
+    let mut ns = schema.ns_prefix.clone();
+    if let Some(first) = ns.first_mut() {
+        *first = (*first & 0x7F) | ((schema.layout_version & 1) << 7);
+    }
+    ns
+}
+
 impl TablePlan {
     /// Compile a declaration at compile time — the constructor `Document::PLAN` uses.
     ///
@@ -75,14 +102,7 @@ impl TablePlan {
     /// process. Two bytes per distinct declaration is the whole price of keeping the static
     /// form's shape instead of a lifetime parameter on every table.
     pub fn compile(schema: &CollectionSchema) -> Self {
-        // The generation is one bit of the address (ADR-0075 §2), and a schema carries the
-        // number it was compiled from — so a plan built from stored bytes names the same
-        // address the declaration does, byte for byte.
-        let mut ns = schema.ns_prefix.clone();
-        if let Some(first) = ns.first_mut() {
-            *first = (*first & 0x7F) | ((schema.layout_version & 1) << 7);
-        }
-        let header: &'static [u8] = Box::leak(ns.into_boxed_slice());
+        let header: &'static [u8] = Box::leak(address_of(schema).into_boxed_slice());
         Self::of(header, schema.slots)
     }
 

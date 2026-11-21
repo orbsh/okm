@@ -165,10 +165,13 @@ impl<S: VirtualStorage> DynamicCollection<S> {
             "reduce slots must be unique and 1-based"
         );
         let entry_layout = Self::compile_entries(&schema, &indexes);
+        // The ADDRESS, not the plain ns: the schema carries the generation it was compiled
+        // from, and the high bit of the first byte is that generation (ADR-0075 §2).
+        let address = crate::model::table_plan::address_for(&schema, ns);
         Self {
             store,
             schema,
-            ns: ns.to_be_bytes().to_vec(),
+            ns: address,
             indexes,
             reduces: reduces.into_iter().map(BoundReduce::new).collect(),
             fields_vocab: std::cell::RefCell::new(None),
@@ -198,20 +201,28 @@ impl<S: VirtualStorage> DynamicCollection<S> {
     /// bridges, and the two refusals name what to do — no row (nothing described this table,
     /// attach it first) or a row that describes another ns (the pair disagrees, ADR-0017 §4).
     pub fn open(store: S, ns: u16) -> Result<Self, String> {
-        let header = ns.to_be_bytes().to_vec();
-        let row = crate::meta::read(&store, &header)
+        // Which generation the store is on, from ONE pass over the table's two addresses
+        // (ADR-0075 §3) — a reader with no compiled declaration has no version to assume, so
+        // the store's own records decide, and the newer number is the live one.
+        let (version, header, row) = crate::model::meta::current(&store, &ns.to_be_bytes(), 0)
             .map_err(codec)?
             .ok_or_else(|| {
                 format!(
                     "ns {ns}: the store has no meta row for this table, so there is no \
-                     declaration to open — attach it first (ADR-0074)"
+                         declaration to open — attach it first (ADR-0074)"
                 )
             })?;
+        let _ = version;
         let stored = row.get(crate::model::meta::SCHEMA).ok_or_else(|| {
             format!("ns {ns}: the meta row names no schema, so there is nothing to open")
         })?;
         let schema = CollectionSchema::decode(stored);
-        if schema.ns_prefix != header {
+        // The row sits at an address; the schema names one. Compare the TABLES (ADR-0075 §2):
+        // a row that describes another ns is a disagreement, whichever range it sits in.
+        let agrees = schema.ns_prefix.len() == header.len()
+            && schema.ns_prefix[header.len() - 2] & 0x7F == header[header.len() - 2] & 0x7F
+            && schema.ns_prefix[header.len() - 1] == header[header.len() - 1];
+        if !agrees {
             let found: String = schema
                 .ns_prefix
                 .iter()
@@ -536,6 +547,12 @@ impl<S: VirtualStorage> DynamicCollection<S> {
                 crate::model::access_method::AccessMethodKind::Plain
             )
         });
+        // TODO: with no `Path` face declared, the segment pass below scans a range whose
+        // every hit it ignores — `path_index_entries` answers nothing there and the visit
+        // only moves `RebuildReport::documents`. Skipping the pass would halve that count
+        // for such a table, and the field's contract is "visits", so it waits for a caller
+        // that reads the number. Not urgent: a rebuild is not a hot path, and the extra
+        // pass is one ordered scan of the segment slot with no decode and no `fetch`.
         for slot in [crate::index::PRIMARY_SLOT, crate::index::DYNAMIC_SLOT] {
             let mut prefix = ns.clone();
             crate::write_slot(&mut prefix, slot);

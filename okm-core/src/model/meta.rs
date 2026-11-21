@@ -293,11 +293,12 @@ pub fn current<S: VirtualStorage + ?Sized>(
     store: &S,
     header: &[u8],
     this_build: u8,
-) -> Result<Option<(u8, TableMeta)>> {
+) -> Result<Option<(u8, Vec<u8>, TableMeta)>> {
     let own = read(store, header)?;
     let twin = read(store, &other_parity(header))?;
-    let mut best: Option<(u8, TableMeta)> = None;
-    for row in [own, twin].into_iter().flatten() {
+    let mut best: Option<(u8, Vec<u8>, TableMeta)> = None;
+    for (row, at) in [(own, header.to_vec()), (twin, other_parity(header))].into_iter() {
+        let Some(row) = row else { continue };
         let version = row
             .layout_version()
             .ok_or(crate::error::Error::LayoutUnstamped {
@@ -305,8 +306,12 @@ pub fn current<S: VirtualStorage + ?Sized>(
             })?;
         // Equal numbers cannot happen: the parity is derived from the number, so one table has
         // at most one row per generation and at most two generations at a time.
-        if best.as_ref().map(|(seen, _)| version > *seen).unwrap_or(true) {
-            best = Some((version, row));
+        if best
+            .as_ref()
+            .map(|(seen, _, _)| version > *seen)
+            .unwrap_or(true)
+        {
+            best = Some((version, at, row));
         }
     }
     Ok(best)
