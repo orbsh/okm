@@ -76,14 +76,14 @@ fn allocations<F: FnOnce()>(f: F) -> u64 {
 const TYPED_ROW_CEILING: u64 = 15;
 
 /// A warm map write (`merge`, the read-modify-write path) costs at most this many. Measured:
-/// 44 — the previous row is decoded into a `Dict`, then re-encoded, and the dict round trip
-/// owns every one of its strings. The gap against the typed row's 15 is the next thing to
-/// look at, not something this lock pretends is fine.
-const MAP_MERGE_CEILING: u64 = 44;
+/// 35 — it compares two entry sets (the new row's faces and the old row's), which used to be
+/// two `index_entries` vec-sets and is now two reused buffers. What is left is the `Dict`
+/// round trip: the patch arrives as names, the row leaves as fields.
+const MAP_MERGE_CEILING: u64 = 35;
 
-/// A warm purge costs at most this many. Measured: 19 — it reads the previous row to sweep
-/// its faces, so it pays the typed row's cost plus the decode.
-const DELETE_CEILING: u64 = 19;
+/// A warm purge costs at most this many. Measured: 11 — it reads the previous row to sweep
+/// its faces, so it pays the decode; its own face list no longer allocates.
+const DELETE_CEILING: u64 = 11;
 
 #[derive(KeyEncode, Clone, PartialEq, Debug, Default)]
 pub struct ItemKey {

@@ -38,6 +38,11 @@ pub struct Collection<S, K: KeyEncode, R: Document<Key = K>> {
     /// makes (ADR-0074 §3): the entries are appended into it and handed to the store as
     /// spans, so a collection that has written once writes again without allocating for them.
     entries: std::cell::RefCell<crate::model::entries::Entries>,
+    /// The faces of the row being REPLACED, in the same shape as [`Self::entries`]: a
+    /// read-modify-write compares two entry sets (its own and the old row's) at once, so it
+    /// needs two buffers, not one. A second buffer is still cheaper than the owned pairs it
+    /// replaces: the entries are written, compared and dropped inside one call.
+    entries_prev: std::cell::RefCell<crate::model::entries::Entries>,
     /// The write's op list, one buffer reused by every write this collection makes: the batch
     /// used to be created per write, so its buffer grew from nothing every time.
     batch: std::cell::RefCell<crate::engine::storage::Batch>,
@@ -137,6 +142,7 @@ impl<S: VirtualStorage, K: KeyEncode, R: Document<Key = K>> Collection<S, K, R> 
             store,
             epoch: std::cell::Cell::new(0),
             entries: std::cell::RefCell::new(crate::model::entries::Entries::new()),
+            entries_prev: std::cell::RefCell::new(crate::model::entries::Entries::new()),
             batch: std::cell::RefCell::new(crate::engine::storage::Batch::default()),
             fields_vocab: std::cell::RefCell::new(Vocabulary::new()),
             vocabs: std::cell::RefCell::new(<R::Vocabs as ::core::default::Default>::default()),
@@ -237,6 +243,7 @@ impl<S: VirtualStorage, K: KeyEncode, R: Document<Key = K>> Collection<S, K, R> 
             store,
             epoch: std::cell::Cell::new(0),
             entries: std::cell::RefCell::new(crate::model::entries::Entries::new()),
+            entries_prev: std::cell::RefCell::new(crate::model::entries::Entries::new()),
             batch: std::cell::RefCell::new(crate::engine::storage::Batch::default()),
             fields_vocab: std::cell::RefCell::new(Vocabulary::new()),
             vocabs: std::cell::RefCell::new(<R::Vocabs as ::core::default::Default>::default()),
@@ -257,6 +264,7 @@ impl<S: VirtualStorage, K: KeyEncode, R: Document<Key = K>> Collection<S, K, R> 
             store: self.store.clone(),
             epoch: std::cell::Cell::new(0),
             entries: std::cell::RefCell::new(crate::model::entries::Entries::new()),
+            entries_prev: std::cell::RefCell::new(crate::model::entries::Entries::new()),
             batch: std::cell::RefCell::new(crate::engine::storage::Batch::default()),
             fields_vocab: std::cell::RefCell::new(Vocabulary::new()),
             vocabs: std::cell::RefCell::new(<R::Vocabs as ::core::default::Default>::default()),
@@ -788,18 +796,23 @@ impl<S: VirtualStorage, K: KeyEncode, R: Document<Key = K>> Collection<S, K, R> 
         // Faces: write the new set, drop the old set's leftovers. An entry
         // key present in both sets holds the same (key, value) pair, so it is
         // written once and never deleted.
-        let new_faces = R::index_entries(key, document, header);
+        let mut new_faces = self.entries.borrow_mut();
+        new_faces.clear();
+        R::index_entries_into(key, document, header, &mut new_faces);
         if let Some(old) = prev {
-            let fresh: std::collections::HashSet<&Vec<u8>> =
+            let mut old_faces = self.entries_prev.borrow_mut();
+            old_faces.clear();
+            R::index_entries_into(key, old, header, &mut old_faces);
+            let fresh: std::collections::HashSet<&[u8]> =
                 new_faces.iter().map(|(ek, _)| ek).collect();
-            for (ek, _) in R::index_entries(key, old, header) {
-                if !fresh.contains(&ek) {
-                    adapter.del(&ek)?;
+            for (ek, _) in old_faces.iter() {
+                if !fresh.contains(ek) {
+                    adapter.del(ek)?;
                 }
             }
         }
-        for (ek, ev) in new_faces {
-            adapter.put(ek, ev)?;
+        for (ek, ev) in new_faces.iter() {
+            adapter.put_bytes(ek, ev)?;
         }
 
         // Embedded documents: write children carried with Some(value), and
@@ -1487,8 +1500,11 @@ impl<S: VirtualStorage, K: KeyEncode, R: Document<Key = K>> Collection<S, K, R> 
         let header = self.header();
         let mut store = crate::engine::storage::BatchStore::new(&self.store, batch);
         store.del(&self.primary_key(key))?;
-        for (ek, _) in R::index_entries(key, document, header) {
-            store.del(&ek)?;
+        let mut faces = self.entries.borrow_mut();
+        faces.clear();
+        R::index_entries_into(key, document, header, &mut faces);
+        for (ek, _) in faces.iter() {
+            store.del(ek)?;
         }
         R::__okm_apply_reduces(&mut store, key, document, header, false)
     }

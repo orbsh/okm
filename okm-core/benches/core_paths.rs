@@ -642,6 +642,47 @@ fn bench_write_ephemeral(c: &mut Criterion) {
             black_box(())
         })
     });
+    // The read-modify-write path: a map patch goes through merge, which decodes the row it
+    // replaces, compares the two entry sets and re-encodes. Seeded once so every iteration
+    // merges into an existing row — the case the path exists for.
+    g.bench_function("merge/row_with_index+reduce", |b| {
+        let t: Collection<TestStore, BenchKey, BenchRow> =
+            Collection::open(TestStore::default()).unwrap();
+        const SEED: u64 = 1 << 10;
+        let mut patch = okm_core::okm_value::Dict::new();
+        patch.insert("visits".to_string(), okm_core::okm_value::Variant::I64(7));
+        let patch = okm_core::okm_value::Variant::Map(patch);
+        // A patch carrying no declared name is not a merge of anything, so pick one the
+        // declaration has: `visits` is a payload field on this row.
+        for i in 0..SEED {
+            t.put(&make_key(i), &make_row(i)).unwrap();
+        }
+        let mut i = 0u64;
+        b.iter(|| {
+            t.put(&make_key(i % SEED), &patch).unwrap();
+            i += 1;
+            black_box(())
+        })
+    });
+    // Delete is measured with the write that keeps the row there: a purge of a missing key
+    // is a cheaper path (no previous row to sweep), so measuring it alone would flatter it.
+    // The number is purge + put, and the difference from put above is the purge.
+    g.bench_function("purge+reput/row_with_index+reduce", |b| {
+        let t: Collection<TestStore, BenchKey, BenchRow> =
+            Collection::open(TestStore::default()).unwrap();
+        const SEED: u64 = 1 << 10;
+        for i in 0..SEED {
+            t.put(&make_key(i), &make_row(i)).unwrap();
+        }
+        let mut i = 0u64;
+        b.iter(|| {
+            let k = i % SEED;
+            t.purge(&make_key(k)).unwrap();
+            t.put(&make_key(k), &make_row(k)).unwrap();
+            i += 1;
+            black_box(())
+        })
+    });
     g.finish()
 }
 
