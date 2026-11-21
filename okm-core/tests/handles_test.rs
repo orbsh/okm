@@ -86,7 +86,6 @@ fn ns_bytes() -> [u8; 2] {
     [prefix[0], prefix[1]]
 }
 
-
 fn person(id: u64) -> NodeRef {
     NodeRef::new(Person::NS_PREFIX, &PersonId { id }.encode())
 }

@@ -214,11 +214,15 @@ fn every_generation_keeps_its_own_declaration() {
     let one = dir(log.path());
     let two = dir_two(log.path());
     assert_eq!(
-        declaration_of(&one, 1).expect("generation 1").layout_version,
+        declaration_of(&one, 1)
+            .expect("generation 1")
+            .layout_version,
         1
     );
     assert_eq!(
-        declaration_of(&two, 2).expect("generation 2").layout_version,
+        declaration_of(&two, 2)
+            .expect("generation 2")
+            .layout_version,
         2
     );
     assert!(

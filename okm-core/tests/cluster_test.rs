@@ -70,7 +70,6 @@ fn ns_bytes() -> [u8; 2] {
     [prefix[0], prefix[1]]
 }
 
-
 // The CALLER's vocabulary, defined here because a test is a caller: `Kind` is one
 // byte and okm assigns it no meaning. An application picks its own bytes beside
 // its schema (k10r: 1 = community, 5 = flow); the store never learns the words.
