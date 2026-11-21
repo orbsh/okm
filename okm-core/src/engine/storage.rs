@@ -663,9 +663,10 @@ impl<S: VirtualStorage> VirtualStorage for BatchStore<'_, S> {
     }
 
     fn put_bytes(&self, key: &[u8], value: &[u8]) -> crate::error::Result<()> {
-        // A batch owns its ops (it outlives the write), so this is the one place the span has
-        // to become bytes. The frame wants them anyway — one copy instead of two.
-        self.batch.borrow_mut().put(key.to_vec(), value.to_vec());
+        // A batch owns its ops (it outlives the write), so the span has to become bytes — and
+        // `Batch::put_bytes` is that one copy, straight into the batch's buffer. Going through
+        // `put` first cost two `to_vec` allocations per op for bytes the buffer copied anyway.
+        self.batch.borrow_mut().put_bytes(key, value);
         Ok(())
     }
 
