@@ -138,13 +138,20 @@ fn segment_start<I: KvIndex>(header: &[u8]) -> usize {
     head.len()
 }
 
+/// The bits of an ns that name the TABLE: the rest belong to the layout generation
+/// (ADR-0075 §2).
+///
+/// An identity is what a name, a membership, a `#[ok_nodes]` list and `Collection::ns` speak;
+/// an address is where rows live. Where a value crosses from one to the other, this is the mask.
+pub const IDENTITY_MASK: u16 = 0x7FFF;
+
 /// A handle's ns bytes: the plain ns with this build's generation bit (ADR-0075 §2).
 ///
 /// Used by the two constructors that take an ns at runtime (`with_ns`, `rebased`) — a mapped
 /// table still holds THIS declaration's layout, so its address carries THIS generation.
 pub(crate) fn ns_bytes<R: Document>(ns: u16) -> [u8; 2] {
     assert!(
-        ns < 0x8000,
+        ns & !IDENTITY_MASK == 0,
         "ns {ns} is out of range: the high bit of the first ns byte is the layout generation \
          (ADR-0075)"
     );
@@ -349,7 +356,7 @@ impl<S: VirtualStorage, K: KeyEncode, R: Document<Key = K>> Collection<S, K, R> 
                 // The TABLE, not the address: the high bit of the first byte is the layout
                 // generation (ADR-0075 §2), and an identity that changed with every bump
                 // would be no identity at all.
-                .then(|| u16::from_be_bytes([R::NS_PREFIX[0], R::NS_PREFIX[1]]) & 0x7FFF)
+                .then(|| u16::from_be_bytes([R::NS_PREFIX[0], R::NS_PREFIX[1]]) & IDENTITY_MASK)
         })
     }
 

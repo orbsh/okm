@@ -745,10 +745,14 @@ impl<S: VirtualStorage, E: GraphEncode> EdgeTable for Graph<S, E> {
             let predicate = self
                 .predicate_vocab_name(body.predicate_vocab_id)?
                 .unwrap_or_default();
+            // An endpoint carries an ADDRESS (the node's own header bytes); `name_of` maps
+            // a TABLE to its name, so the generation bit comes off here — the caller never
+            // has to know which range the node sits in (ADR-0075 §2).
+            let identity = |ns: u16| ns & okm_core::model::document::IDENTITY_MASK;
             rows.push((
-                name_of(body.src.ns_id()),
+                name_of(identity(body.src.ns_id())),
                 body.src.pkey.clone(),
-                name_of(body.dst.ns_id()),
+                name_of(identity(body.dst.ns_id())),
                 body.dst.pkey.clone(),
                 predicate,
             ));

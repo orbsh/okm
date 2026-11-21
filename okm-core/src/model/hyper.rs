@@ -2141,13 +2141,13 @@ impl<G: GraphEncode + Default> Fragment<G> {
                 // An endpoint carries the node table's address, whose first byte also names
                 // the layout generation (ADR-0075 §2); the declaration beside it names a
                 // table. Compare tables.
-                endpoints.insert((head.src.ns_id() & 0x7FFF, head.src.pkey.clone()));
-                endpoints.insert((head.dst.ns_id() & 0x7FFF, head.dst.pkey.clone()));
+                endpoints.insert((head.src.ns_id() & crate::model::document::IDENTITY_MASK, head.src.pkey.clone()));
+                endpoints.insert((head.dst.ns_id() & crate::model::document::IDENTITY_MASK, head.dst.pkey.clone()));
             }
         }
         for decl in &self.rows {
             if let Decl::Node(variant, key) = decl {
-                let node_ns = variant.ns() & 0x7FFF;
+                let node_ns = variant.ns() & crate::model::document::IDENTITY_MASK;
                 if !endpoints.contains(&(node_ns, key.clone())) {
                     return Err(Error::BareNode {
                         ns: node_ns,

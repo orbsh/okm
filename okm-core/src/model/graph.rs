@@ -195,10 +195,10 @@ impl Members {
     /// generation (ADR-0075 §2). Masking here rather than at every call site is the same rule
     /// `Collection::ns` follows — an identity never carries the generation.
     pub fn key_len(&self, ns: u16) -> Option<usize> {
-        let table = ns & 0x7FFF;
+        let table = ns & crate::model::document::IDENTITY_MASK;
         self.0
             .iter()
-            .find(|(member, _)| (*member & 0x7FFF) == table)
+            .find(|(member, _)| (*member & crate::model::document::IDENTITY_MASK) == table)
             .map(|(_, width)| *width)
     }
 
