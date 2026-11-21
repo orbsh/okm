@@ -1,13 +1,12 @@
-//! Generation identity in a changelog directory that outlives every build (ADR-0056 §5/§6).
+//! Generation identity in a changelog that outlives every build (ADR-0056 §5/§6, ADR-0075).
 //!
-//! The path never changes: one directory per table, appended to by one build after another.
-//! So a directory holds several generations, each sealed segment says which generation it
-//! was written under, and each generation keeps its own `schema-v<N>.json` beside it. What
-//! a generation identifies is BYTES — never a directory, and never a build.
+//! The generation is one bit of the address, so a bump moves the table to the other range and
+//! every segment of that generation follows it: one directory per ADDRESS, not one per table
+//! identity, and each generation keeps its own `schema-v<N>.json` beside its own segments.
+//! What a generation identifies is BYTES — never a directory, and never a build.
 //!
-//! These tests are the contract in that direction, replacing the earlier assumption that a
-//! directory holds exactly one generation (which made a new build refuse to open the log it
-//! was supposed to continue).
+//! A version that does not flip the parity is refused rather than served: it would put two
+//! generations at one address, and the store's own row would answer for the wrong one.
 
 #![allow(
     clippy::unwrap_used,
@@ -49,12 +48,52 @@ pub struct Gen2 {
     pub level: u32,
 }
 
+/// Generation 3 — a bump that lands on the SAME parity as generation 1. The address cannot
+/// tell them apart, so the store refuses instead of serving one as the other (ADR-0075 §2:
+/// the version has to change the parity, which means it has to move by one).
+#[derive(DocumentEncode, Clone, PartialEq, Debug)]
+#[ok_shared_ns_in_tests]
+#[ok_ref(K)]
+#[ok_ns(97)]
+#[ok_layout(version = 3)]
+#[ok_name("generation_rows")]
+pub struct Gen3 {
+    pub level: u32,
+}
+
 fn store(root: &std::path::Path) -> ChangelogStore<TestStore> {
     ChangelogStore::new(TestStore::default(), ChangelogConfig::new(root))
 }
 
+/// Generation 1's directory — the address, bit included.
 fn dir(root: &std::path::Path) -> std::path::PathBuf {
     table_dir(root, <Gen1 as Document>::NS_PREFIX)
+}
+
+/// Generation 2's directory: one parity apart, so one bit apart in the path.
+fn dir_two(root: &std::path::Path) -> std::path::PathBuf {
+    table_dir(root, <Gen2 as Document>::NS_PREFIX)
+}
+
+/// Every sealed segment's `layout_version` in one directory.
+fn stamped(root: &std::path::Path) -> Vec<u8> {
+    let mut out: Vec<u8> = std::fs::read_dir(root)
+        .expect("dir")
+        .filter_map(|e| e.ok().map(|e| e.path()))
+        .filter(|p| {
+            p.extension()
+                .and_then(|e| e.to_str())
+                .is_some_and(|e| e == "segment")
+        })
+        .map(|p| {
+            okm_core::changelog::segment_info(&p)
+                .expect("info")
+                .meta
+                .layout_version
+        })
+        .collect();
+    out.sort_unstable();
+    out
 }
 
 /// Write one row through `Gen1` and seal it, so the directory carries a real generation 1
@@ -128,40 +167,34 @@ fn a_window_stops_at_a_vocabulary_change() {
     );
 }
 
-/// The same directory, the next build: nothing refuses, and the row lands above the last
-/// generation 1 segment.
+/// The next build: nothing refuses, and its row lands in the OTHER range — the generation is
+/// a bit of the address, so the directory moves with it and generation 1's log is left whole.
 #[test]
-fn a_new_generation_registers_and_appends_to_the_same_directory() {
+fn a_new_generation_appends_in_its_own_directory() {
     let log = tempfile::tempdir().expect("root");
     write_generation_one(log.path());
 
     let c: Collection<_, K, Gen2> = Collection::open(store(log.path()))
-        .expect("a directory written by another generation is exactly what an upgrade opens");
+        .expect("a store written by the generation before this one is what an upgrade opens");
     c.put(&K { id: 2 }, &Gen2 { level: 8 }).expect("append");
     // Sealing is what a clean stop does; nothing else would put the second segment on disk
     // under a number a reader can see.
     drop(c);
 
-    let mut stamped: Vec<u8> = std::fs::read_dir(dir(log.path()))
-        .expect("dir")
-        .filter_map(|e| e.ok().map(|e| e.path()))
-        .filter(|p| {
-            p.extension()
-                .and_then(|e| e.to_str())
-                .is_some_and(|e| e == "segment")
-        })
-        .map(|p| {
-            okm_core::changelog::segment_info(&p)
-                .expect("info")
-                .meta
-                .layout_version
-        })
-        .collect();
-    stamped.sort_unstable();
+    assert_ne!(
+        dir(log.path()),
+        dir_two(log.path()),
+        "one bit of the address, so one directory per generation (ADR-0075 §2)"
+    );
     assert_eq!(
-        stamped,
-        vec![1, 2],
-        "both generations, side by side, one directory"
+        stamped(&dir(log.path())),
+        vec![1],
+        "generation 1's directory still holds only generation 1"
+    );
+    assert_eq!(
+        stamped(&dir_two(log.path())),
+        vec![2],
+        "generation 2 appended beside its own declaration, not beside generation 1's"
     );
 }
 
@@ -176,19 +209,26 @@ fn every_generation_keeps_its_own_declaration() {
         g2.put(&K { id: 2 }, &Gen2 { level: 8 }).expect("append");
     }
 
-    let d = dir(log.path());
+    // Each directory answers for its own generation, and only for it: a number the segments
+    // there do not declare is not a guess to make.
+    let one = dir(log.path());
+    let two = dir_two(log.path());
     assert_eq!(
-        declaration_of(&d, 1).expect("generation 1").layout_version,
+        declaration_of(&one, 1).expect("generation 1").layout_version,
         1
     );
     assert_eq!(
-        declaration_of(&d, 2).expect("generation 2").layout_version,
+        declaration_of(&two, 2).expect("generation 2").layout_version,
         2
     );
-    // "The newest declaration" is a different question from "this segment's declaration",
-    // and it is the one a store being built today is declared with.
+    assert!(
+        declaration_of(&two, 1).is_err(),
+        "generation 2's directory declares no layout 1"
+    );
+    // "The newest declaration in a directory" is still the one a store being built today is
+    // declared with.
     assert_eq!(
-        load_declaration(&d).expect("newest").layout_version,
+        load_declaration(&two).expect("newest").layout_version,
         2,
         "newest, by number — not by file name"
     );
@@ -208,10 +248,11 @@ fn a_generation_no_segment_declares_is_refused_by_number() {
     assert!(text.contains('7'), "the generation is named: {text}");
 }
 
-/// A window is one generation: its declaration is what a sink or a replay decodes with, so
-/// a segment of another generation ends the window instead of joining it.
+/// A window is one generation: its declaration is what a sink or a replay decodes with, and
+/// because a bump moves the directory there is nothing to stop at — the other generation's
+/// segments are simply not in this path.
 #[test]
-fn a_window_stops_at_a_generation_change() {
+fn each_generation_reads_its_own_window() {
     let log = tempfile::tempdir().expect("root");
     write_generation_one(log.path());
     let second: Collection<_, K, Gen2> = Collection::open(store(log.path())).expect("assemble");
@@ -220,24 +261,38 @@ fn a_window_stops_at_a_generation_change() {
         .expect("append");
     drop(second);
 
-    let d = dir(log.path());
-    let first = read_window(&d, &WindowConfig::default())
+    let first = read_window(&dir(log.path()), &WindowConfig::default())
         .expect("read")
         .expect("a window");
     assert_eq!(first.layout_version, 1, "the window's own generation");
-    assert_eq!(first.segments.len(), 1, "generation 2 is not in it");
+    assert_eq!(first.segments.len(), 1, "generation 2 is not in this path");
 
-    let next = read_window(
-        &d,
-        &WindowConfig {
-            max_segments: 8,
-            after: first.segments.last().cloned(),
-        },
-    )
-    .expect("read")
-    .expect("a second window");
-    assert_eq!(next.layout_version, 2);
-    assert_eq!(next.rows.len(), 1, "the row generation 2 appended");
+    let second = read_window(&dir_two(log.path()), &WindowConfig::default())
+        .expect("read")
+        .expect("its own window");
+    assert_eq!(second.layout_version, 2);
+    assert_eq!(second.rows.len(), 1, "the row generation 2 appended");
+}
+
+/// A bump that does not flip the parity puts two generations at one address, and the store's
+/// row at that address answers for the older one — so attach refuses instead of serving one
+/// generation as the other. This is why a version may only move by one (ADR-0075 §2).
+#[test]
+fn a_bump_that_does_not_flip_the_parity_is_refused() {
+    // One ENGINE, two declarations: the row generation 1 wrote is the row generation 3 would
+    // find at its own address, because both versions are odd.
+    let engine = TestStore::default();
+    let _: Collection<_, K, Gen1> = Collection::open(engine.clone()).expect("generation 1");
+
+    let err = match Collection::<_, K, Gen3>::open(engine) {
+        Ok(_) => panic!("generation 3 sits where generation 1 does"),
+        Err(err) => err,
+    };
+    let text = err.to_string();
+    assert!(
+        text.contains("v1") && text.contains("v3"),
+        "the store's generation and this one are both named: {text}"
+    );
 }
 
 /// The byte copy is only honest for bytes this build's declaration produced: another
