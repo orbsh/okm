@@ -19,8 +19,7 @@
 
 use okm_async::TestStore;
 use okm_core::{
-    Collection, DocumentEncode, KeyEncode, NestStorage, ReduceCodec, RemoteStore, VirtualHandle,
-    VirtualStorage,
+    Collection, DocumentEncode, KeyEncode, NestStorage, RemoteStore, VirtualHandle, VirtualStorage,
 };
 
 #[derive(KeyEncode, Clone, PartialEq, Debug, Default)]

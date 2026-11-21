@@ -23,7 +23,7 @@
 use okm_value::{Dict, Variant};
 use std::cell::Cell;
 
-use okm_core::{Batch, Document, DocumentEncode, KeyEncode, ReduceCodec, VirtualStorage};
+use okm_core::{Batch, Document, DocumentEncode, KeyEncode, VirtualStorage};
 
 use okm_async::TestStore;
 

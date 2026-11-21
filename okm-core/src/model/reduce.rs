@@ -163,6 +163,61 @@ pub fn ledger_scan<S: VirtualStorage, A: ReduceCodec>(
         .collect())
 }
 
+/// Where a ledger entry lives, as far as an orchestration can tell (ADR-0076 §2).
+///
+/// An engine writes the entry; a plan records it in an op list instead. Both answer the same
+/// two questions, so the read-modify-write below is written once and the carrier decides what
+/// a write means. The error is the carrier's own: an engine refuses bytes, a plan refuses a
+/// callable — one orchestration, neither side paying for the other's failure mode.
+pub trait AccLedger<A: ReduceCodec> {
+    type Error;
+    fn get_acc(&mut self, entry_key: &[u8]) -> Result<Option<A>, Self::Error>;
+    fn put_acc(&mut self, entry_key: &[u8], acc: &A) -> Result<(), Self::Error>;
+}
+
+/// The engine as a ledger: the typed write path's carrier.
+pub struct StoreLedger<'a, S: VirtualStorage> {
+    pub store: &'a mut S,
+}
+
+impl<A: ReduceCodec, S: VirtualStorage> AccLedger<A> for StoreLedger<'_, S> {
+    type Error = crate::error::Error;
+    fn get_acc(&mut self, entry_key: &[u8]) -> Result<Option<A>, Self::Error> {
+        Ok(self.store.get(entry_key)?.map(|b| A::decode_acc(&b)))
+    }
+    fn put_acc(&mut self, entry_key: &[u8], acc: &A) -> Result<(), Self::Error> {
+        self.store.put_bytes(entry_key, &acc.encode_acc())
+    }
+}
+
+/// One read-modify-write of a group's accumulator: read, decode, step, encode, write.
+///
+/// `create` is the caller's rule for an entry that does not exist — the typed write seeds one
+/// even on an unfold, the dynamic plan only on a fold. That difference predates this function
+/// and is passed in rather than decided here. `Ok(false)` means nothing was written because
+/// there was nothing to step.
+pub fn apply_group<L, A, F>(
+    ledger: &mut L,
+    entry_key: &[u8],
+    seed: impl FnOnce() -> A,
+    create: bool,
+    step: F,
+) -> Result<bool, L::Error>
+where
+    L: AccLedger<A>,
+    A: ReduceCodec,
+    F: FnOnce(&mut A) -> Result<(), L::Error>,
+{
+    let mut acc = match ledger.get_acc(entry_key)? {
+        Some(acc) => acc,
+        None if create => seed(),
+        None => return Ok(false),
+    };
+    step(&mut acc)?;
+    ledger.put_acc(entry_key, &acc)?;
+    Ok(true)
+}
+
 /// Read one group's current accumulator (None = group not yet created).
 pub fn reduce_get<S: VirtualStorage, A: Reduce>(
     store: &S,

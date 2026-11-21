@@ -367,22 +367,30 @@ impl<S: VirtualStorage> DynamicCollection<S> {
         let key = crate::decode_key(self.schema(), pkey).map_err(|e| e.to_string())?;
         for reduce in &self.reduces {
             let ek = reduce.entry_key(self.schema(), &self.ns, &key, document)?;
-            let mut acc = match overlay.get(&ek)? {
-                Some(bytes) => bytes,
-                // Seed only on the fold arm (same rule as embedded):
-                // an unfold hitting a missing entry is a discipline
-                // violation, not a zero group.
-                None if add => reduce.spec.logic.seed(),
-                None => return Ok(()),
+            let mut ledger = PlanLedger {
+                sink: &mut *plan,
+                overlay: &mut *overlay,
             };
-            if add {
-                reduce.spec.logic.fold(&mut acc, &key, document)?;
-            } else {
-                reduce.spec.logic.unfold(&mut acc, &key, document)?;
+            // The same read-modify-write the typed path runs (ADR-0076 §2); only the carrier
+            // differs — here a write becomes the ops the caller records.
+            let wrote = okm_core::model::reduce::apply_group(
+                &mut ledger,
+                &ek,
+                || reduce.spec.logic.seed(),
+                add,
+                |acc: &mut Vec<u8>| {
+                    if add {
+                        reduce.spec.logic.fold(acc, &key, document)
+                    } else {
+                        reduce.spec.logic.unfold(acc, &key, document)
+                    }
+                },
+            )?;
+            if !wrote {
+                // Seed only on the fold arm: an unfold hitting a missing entry is a discipline
+                // violation, not a zero group.
+                return Ok(());
             }
-            plan.push((ek.clone(), Some(acc.clone())));
-            plan.push_acc((ek.clone(), acc.clone()));
-            overlay.put(ek, acc);
         }
         Ok(())
     }
@@ -403,6 +411,27 @@ impl<S: VirtualStorage> DynamicCollection<S> {
 trait PlanSink {
     fn push(&mut self, op: (Vec<u8>, Option<Vec<u8>>));
     fn push_acc(&mut self, entry: (Vec<u8>, Vec<u8>));
+}
+
+/// The plan as a ledger: a write becomes the ops the sink records, and the overlay answers the
+/// reads that follow within the same plan — the second carrier of ADR-0076 §2, next to
+/// `StoreLedger`.
+struct PlanLedger<'a, 'b, P: PlanSink> {
+    sink: &'a mut P,
+    overlay: &'a mut AccOverlay<'b>,
+}
+
+impl<P: PlanSink> okm_core::model::reduce::AccLedger<Vec<u8>> for PlanLedger<'_, '_, P> {
+    type Error = String;
+    fn get_acc(&mut self, entry_key: &[u8]) -> Result<Option<Vec<u8>>, String> {
+        self.overlay.get(entry_key)
+    }
+    fn put_acc(&mut self, entry_key: &[u8], acc: &Vec<u8>) -> Result<(), String> {
+        self.sink.push((entry_key.to_vec(), Some(acc.clone())));
+        self.sink.push_acc((entry_key.to_vec(), acc.clone()));
+        self.overlay.put(entry_key.to_vec(), acc.clone());
+        Ok(())
+    }
 }
 
 impl PlanSink for PlannedPut {

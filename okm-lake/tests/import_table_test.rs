@@ -17,7 +17,7 @@ use okm_lake::snapshot::parquet_io::EdgeRestore;
 
 use okm_core::{
     Batch, Decl, Document, DocumentEncode, EdgeHead, EdgeKey, Fragment, Graph, GraphEncode,
-    KeyEncode, NodeRef, ReduceCodec, VirtualStorage,
+    KeyEncode, NodeRef, VirtualStorage,
 };
 
 /// The one-edge write a test needs, expressed the way the API expresses it: a

@@ -1400,17 +1400,24 @@ fn emit_reduces(schema: &DocumentSchema) -> syn::Result<(TS2, TS2)> {
             }
         });
         calls.extend(quote! {{
+            // One orchestration for both forms (ADR-0076 §2): the entry key and the fold
+            // belong to the declaration, the read-modify-write does not.
             let __okm_ek = <#logic as ::okm_core::Reduce>::entry_key(_ns, _key, _row);
-            let mut __okm_acc = match _store.get(&__okm_ek)? {
-                Some(b) => <#logic as ::okm_core::ReduceLogic>::Acc::decode_acc(&b),
-                None => ::core::default::Default::default(),
-            };
-            if _add {
-                <#logic as ::okm_core::ReduceLogic>::fold(&mut __okm_acc, _key, _row);
-            } else {
-                <#logic as ::okm_core::ReduceLogic>::unfold(&mut __okm_acc, _key, _row);
-            }
-            _store.put(__okm_ek, <#logic as ::okm_core::ReduceLogic>::Acc::encode_acc(&__okm_acc))?;
+            let mut __okm_ledger = ::okm_core::model::reduce::StoreLedger { store: _store };
+            ::okm_core::model::reduce::apply_group(
+                &mut __okm_ledger,
+                &__okm_ek,
+                ::core::default::Default::default,
+                true,
+                |__okm_acc: &mut <#logic as ::okm_core::ReduceLogic>::Acc| {
+                    if _add {
+                        <#logic as ::okm_core::ReduceLogic>::fold(__okm_acc, _key, _row);
+                    } else {
+                        <#logic as ::okm_core::ReduceLogic>::unfold(__okm_acc, _key, _row);
+                    }
+                    ::core::result::Result::Ok(())
+                },
+            )?;
         }});
     }
     if schema.reduces.is_empty() {

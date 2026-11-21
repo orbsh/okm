@@ -18,9 +18,7 @@
 )]
 
 use okm_async::TestStore;
-use okm_core::{
-    Collection, Document, DocumentEncode, KeyEncode, ReduceCodec, Ref, VirtualStorage, Vocab,
-};
+use okm_core::{Collection, Document, DocumentEncode, KeyEncode, Ref, VirtualStorage, Vocab};
 
 #[derive(KeyEncode, Clone, PartialEq, Debug, Default)]
 pub struct PostKey {
