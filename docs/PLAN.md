@@ -102,3 +102,4 @@ Design decisions live in `docs/adr/`; this file is the index — what shipped, w
 - [ ] A bitmap index for set membership (Roaring) — recorded, not designed; reopens on a measured reuse ratio — `docs/ideas/bitmap-index.md`
 - [ ] A native n-ary relation carrier — recorded, not designed; reopens on a query distribution where N≥3 relations are the normal case — `docs/ideas/hypergraph.md`
 - [ ] SurrealKV as an `okm-async` backend — measured, not started: +2.86 MB, 150 transitive crates, and `commit()` panics without a Tokio runtime — ADR-0064
+- [ ] A migrated table is verified before the flip: `migrate` copies, replays and flips without comparing what it wrote against what it read, so "a failed verification costs a re-run" (ADR-0075) is a promise the code does not keep yet — the check is the two ranges' row count and face fingerprint, and it is also what should open the vacuum — ADR-0075
