@@ -2,8 +2,8 @@
 //! DynamicCollection (embedded mode — Python is the only writer) with
 //! binding-time registration of host callables.
 //!
-//! - `ReduceLogic` subclass → `ReduceSpec` (seed/fold/unfold mirror the
-//!   Rust-side `ReduceLogic` + `ReduceCodec: Default` pair).
+//! - `ByteReduce` subclass → `ReduceSpec` (seed/fold/unfold mirror the
+//!   typed `ReduceLogic` + `ReduceCodec: Default` pair).
 //! - `add_func_index(slot, func, includes=[])` / `add_partial_index(slot,
 //!   fields, admits, includes=[])` — callables receive the decoded
 //!   document dict and return encoded bytes / bool.
@@ -28,7 +28,7 @@ pub mod pyo3_impl {
     use okm_dynamic::Graph as DynGraph;
     use okm_dynamic::{
         AccessMethod, AccessMethodKind, Cluster, ClusterRef, Decl, Dict, DynEdge, DynFragment,
-        EdgeStep, Kind, ReduceLogic, RetractReport, Value, WriteReport,
+        EdgeStep, Kind, ByteReduce, RetractReport, Value, WriteReport,
     };
     use okm_dynamic::{EdgeSet, NodeSet};
     use okm_query::HeldSets;
@@ -117,12 +117,12 @@ pub mod pyo3_impl {
         v.str().map(|s| s.to_string()).unwrap_or_default()
     }
 
-    /// The Python `ReduceLogic` subclass held as a Rust-side trait object.
+    /// The Python `ByteReduce` subclass held as a Rust-side trait object.
     struct PyReduce {
         obj: Py<PyAny>,
     }
 
-    impl ReduceLogic for PyReduce {
+    impl ByteReduce for PyReduce {
         fn seed(&self) -> Vec<u8> {
             Python::attach(|py| {
                 self.obj
@@ -467,9 +467,9 @@ pub mod pyo3_impl {
                 .map_err(PyValueError::new_err)
         }
 
-        /// Register a reduce group: a `ReduceLogic` subclass instance whose
+        /// Register a reduce group: a `ByteReduce` subclass instance whose
         /// seed/fold/unfold implement the accumulator semantics (the mirror
-        /// of the Rust-side `ReduceLogic` + `ReduceCodec: Default` pair).
+        /// of the typed `ReduceLogic` + `ReduceCodec: Default` pair).
         fn add_reduce(
             &self,
             slot: u16,
@@ -684,7 +684,7 @@ pub mod pyo3_impl {
 
         /// Read one reduce group's accumulator bytes (None = no group yet).
         /// The layout is the host's contract — decode with the same rule the
-        /// `ReduceLogic` class writes.
+        /// `ByteReduce` class writes.
         fn reduce_get(&self, group: &Bound<'_, PyAny>) -> PyResult<Option<Vec<u8>>> {
             let map = py_values_to_map(&self.schema, group)?;
             let t = self

@@ -8,7 +8,7 @@
 //!   `Collection` with the equivalent declarations landing in the same ns.
 //! - Purity failure mode is documented, not engineered around: the acc
 //!   callable contract (`unfold(fold(a, x)) = a`) is the implementor's
-//!   obligation, same as the Rust-side `ReduceLogic`.
+//!   obligation, same as the typed `ReduceLogic`.
 
 #![allow(
     clippy::unwrap_used,
@@ -133,11 +133,11 @@ fn func_tags(document: &Dict) -> Result<Vec<Vec<u8>>, String> {
 }
 
 /// The reduce logic as ONE object — the mirror of the Rust-side
-/// `ReduceLogic` + `ReduceCodec: Default` pair. `seed` is the
+/// `ByteReduce` + `ReduceCodec: Default` pair. `seed` is the
 /// `Default::default()` counterpart (8B BE zero for a u64 counter).
 struct GroupCount;
 
-impl okm_dynamic::ReduceLogic for GroupCount {
+impl okm_dynamic::ByteReduce for GroupCount {
     fn seed(&self) -> Vec<u8> {
         0u64.to_be_bytes().to_vec()
     }

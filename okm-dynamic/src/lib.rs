@@ -78,10 +78,6 @@ pub use okm_core::model::access_method::{
     path_index_entries, scan_access_method, scan_access_method_covered, scan_access_method_exact,
     scan_access_method_keys,
 };
-/// The name this trait had before the module moved into okm-core. Kept as an alias so an
-/// implementation written against `okm_dynamic::ReduceLogic` keeps compiling; new code says
-/// `ByteReduce`, which is what the trait is.
-pub use okm_core::model::byte_reduce::ByteReduce as ReduceLogic;
 pub use okm_core::model::byte_reduce::{
     BoundReduce, ByteReduce, ByteReduceObj, GroupAccs, PresetKind, PresetLogic, ReduceSpec,
     reduce_get, scan_reduces,

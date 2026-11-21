@@ -14,7 +14,7 @@
 use okm_core::{KeyEncode, DocumentEncode};
 use okm_core::schema::CollectionSchema;
 use okm_dynamic::{
-    AccessMethod, AccessMethodKind, DynamicCollection, ReduceLogic, ReduceSpec, Value, Dict,
+    AccessMethod, AccessMethodKind, ByteReduce, DynamicCollection, ReduceSpec, Value, Dict,
 };
 use okm_async::TestStore;
 use std::collections::BTreeMap;
@@ -36,7 +36,7 @@ pub struct User {
 /// mirror the Python side's GroupCount byte-for-byte.
 struct GroupCount;
 
-impl ReduceLogic for GroupCount {
+impl ByteReduce for GroupCount {
     fn seed(&self) -> Vec<u8> { 0u64.to_be_bytes().to_vec() }
     fn fold(&self, acc: &mut Vec<u8>, _k: &Dict, _d: &Dict) -> Result<(), String> {
         let n = u64::from_be_bytes(acc.as_slice().try_into().map_err(|_| "acc width")?) + 1;

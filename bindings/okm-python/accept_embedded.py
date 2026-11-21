@@ -70,16 +70,16 @@ def schema_json() -> str:
         return out.stdout.strip()
 
 
-class GroupCount(okm.ReduceLogic if hasattr(okm, "ReduceLogic") else object):
-    """Mirror of the Rust-side ReduceLogic + ReduceCodec: Default pair:
+class GroupCount(okm.ByteReduce if hasattr(okm, "ByteReduce") else object):
+    """Mirror of the typed ReduceLogic + ReduceCodec: Default pair:
     seed = Default::default() (8B BE zero), fold += 1, unfold -= 1."""
     pass
 
 
 def make_logic():
-    """The ReduceLogic subclass (defined at module level in real use;
+    """The ByteReduce subclass (defined at module level in real use;
     built here so the script runs against whatever base okm exposes)."""
-    base = getattr(okm, "ReduceLogic", object)
+    base = getattr(okm, "ByteReduce", object)
 
     class GroupCount(base):
         def seed(self) -> bytes:

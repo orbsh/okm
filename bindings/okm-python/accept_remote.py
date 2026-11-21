@@ -66,7 +66,7 @@ def key(org, user) -> bytes:
 
 
 def make_logic():
-    base = getattr(okm, "ReduceLogic", object)
+    base = getattr(okm, "ByteReduce", object)
 
     class GroupCount(base):
         """Mirror of the Rust-side GroupCount: u64 BE, fold += 1."""
