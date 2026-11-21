@@ -5,15 +5,13 @@
 //! value. The log then indexes a table instead of re-deriving the answer from bytes, which is
 //! what keeps the cost of a commit independent of how many tables a store holds.
 //!
-//! It is a CONST, not a cache. Everything a plan holds is known at compile time: the ns prefix
-//! is `Document::NS_PREFIX`, the slot numbers are the declaration's, and the capture rule is
-//! arithmetic over them. So there is nothing to build, nothing to lock, and no second copy to
-//! drift out of step — `Document::PLAN` IS the plan, evaluated by the same compiler that
-//! evaluated the declaration.
-//!
-//! The one case with no type to ask is the dynamic path (a schema read back from a store, a
-//! CLI with no declaration compiled in). [`TablePlan::compile`] builds the same value at run
-//! time from the declaration it read.
+//! It is a VALUE, not a cache: everything a plan holds is known once the declaration is — the
+//! header is the ns with the layout generation's bit, the slot numbers are the declaration's,
+//! and the capture rule is arithmetic over them. So there is no build step of its own and no
+//! second copy to drift out of step. The typed path reaches the value through the `static` the
+//! derive emits per ns (`__OKM_NS_{ns}_ENTRY: OnceLock<TablePlan>`, ADR-0079 §2), filled once
+//! from the declaration; [`TablePlan::compile`] is the same value for a declaration that
+//! arrived as bytes — the dynamic path, a reader with no type to ask.
 
 use crate::model::index::Slot;
 use crate::model::schema::{CollectionSchema, SlotMap};

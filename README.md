@@ -428,4 +428,5 @@ Decision records live in [docs/adr/](docs/adr/); implementation status is [docs/
 - [Modeling Guide](docs/MODELING.md) — the normative modeling method (four layers, three read paths, covering-index restraint)
 - [Architecture](docs/ARCHITECTURE.md) — the two-layer declaration machine (derive expansion + constant tables)
 - [Key Layout](docs/internals/key-layout.md) — key-space layout and fixed face allocation
+- [Plan and Generation](docs/internals/plan-and-generation.md) — what a declaration compiles to: the routing plan, the entry layout, the capture filter, and the generation bit of the address
 - [Query Recipes](docs/query-recipes.md) — how merge / intersect / difference / union compose into SQL shapes
