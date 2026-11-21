@@ -156,7 +156,7 @@ pub(crate) fn ns_bytes<R: Document>(ns: u16) -> [u8; 2] {
          (ADR-0075)"
     );
     let mut bytes = ns.to_be_bytes();
-    bytes[0] |= ((R::LAYOUT_VERSION & 1) << 7) as u8;
+    bytes[0] |= (R::LAYOUT_VERSION & 1) << 7;
     bytes
 }
 

@@ -67,10 +67,11 @@ fn a_dynamic_handle_reads_what_the_typed_path_declared() {
     let plan = dynamic.plan().expect("open compiles the plan");
     // `carries_key` takes the key the store sees: the header the plan was compiled from, then
     // the caller-encoded key.
-    let mut own = vec![0x00, 0x4c];
+    // The header keys are carried with, generation bit and all (ADR-0075 §2).
+    let mut own = vec![0x80, 0x4c];
     own.extend(K { id: 1 }.encode());
     assert!(plan.carries_key(&own), "this table's key");
-    let mut foreign = vec![0x00, 0x4d];
+    let mut foreign = vec![0x80, 0x4d];
     foreign.extend(K { id: 1 }.encode());
     assert!(!plan.carries_key(&foreign), "another ns is another table");
 }
@@ -93,12 +94,27 @@ fn a_store_with_no_row_is_refused() {
 #[test]
 fn a_row_that_describes_another_ns_is_refused() {
     let store = TestStore::default();
-    let mut lying = CollectionSchema::of::<K, R>();
-    lying.ns_prefix = vec![0x00, 0x4d];
-    let declared = DynamicCollection::new(store.clone(), 76, lying, Vec::new());
+    let declared = DynamicCollection::new(
+        store.clone(),
+        76,
+        CollectionSchema::of::<K, R>(),
+        Vec::new(),
+    );
     declared
         .ensure_layout()
         .expect("the row is written at ns 76");
+
+    // The pair is not something a caller can now mismatch — `new` takes the address from the
+    // schema — so the disagreement this refusal guards is a row on disk whose schema names a
+    // different table than the address it sits at.
+    let address = <R as okm_core::Document>::NS_PREFIX;
+    let mut row = okm_core::model::meta::read(&store, address)
+        .expect("read")
+        .expect("the row");
+    let mut lying = CollectionSchema::of::<K, R>();
+    lying.ns_prefix = vec![0x80, 0x4d];
+    row.set(okm_core::model::meta::SCHEMA, lying.encode());
+    okm_core::model::meta::write(&store, address, &row).expect("rewrite");
 
     let refused = match DynamicCollection::<TestStore>::open(store, 76) {
         Ok(_) => panic!("a row that describes another ns must not open"),

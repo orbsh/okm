@@ -84,7 +84,7 @@ impl<S: VirtualStorage> DynGraph<S> {
              layout generation (ADR-0075)"
         );
         let mut ns_bytes = ns.to_be_bytes();
-        ns_bytes[0] |= ((schema.layout_version & 1) << 7) as u8;
+        ns_bytes[0] |= (schema.layout_version & 1) << 7;
         let declared = &schema.ns_prefix;
         let agrees = declared.is_empty()
             || (declared.len() == 2

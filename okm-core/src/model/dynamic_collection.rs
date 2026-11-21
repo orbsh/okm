@@ -223,10 +223,19 @@ impl<S: VirtualStorage> DynamicCollection<S> {
             && schema.ns_prefix[header.len() - 2] & 0x7F == header[header.len() - 2] & 0x7F
             && schema.ns_prefix[header.len() - 1] == header[header.len() - 1];
         if !agrees {
+            // Name the TABLE it describes: the first byte's high bit is the generation
+            // (ADR-0075 §2), and "which table is this row about" is an identity question.
             let found: String = schema
                 .ns_prefix
                 .iter()
-                .map(|b| format!("{b:02x}"))
+                .enumerate()
+                .map(|(i, b)| {
+                    if i == 0 {
+                        format!("{:02x}", b & 0x7F)
+                    } else {
+                        format!("{b:02x}")
+                    }
+                })
                 .collect();
             return Err(format!(
                 "ns {ns}: the row describes ns {found}, so the pair disagrees — the ns was \
@@ -327,8 +336,12 @@ impl<S: VirtualStorage> DynamicCollection<S> {
                 Some(existing) if existing != self.schema.name => {
                     // Decimal, because that is what the declaration writes
                     // (`#[ok_ns(92)]`); the typed side's error says the same number.
+                    // The identity: a message about a name names a table, and the address's
+                    // high bit is the layout generation (ADR-0075 §2).
                     let ns = match self.ns.as_slice() {
-                        [hi, lo] => u16::from_be_bytes([*hi, *lo]) as u64,
+                        [hi, lo] => {
+                            u16::from_be_bytes([*hi, *lo]) & crate::model::document::IDENTITY_MASK
+                        }
                         _ => 0,
                     };
                     return Err(format!(

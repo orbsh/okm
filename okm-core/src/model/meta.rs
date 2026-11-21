@@ -274,10 +274,8 @@ pub fn meta_key(header: &[u8]) -> Vec<u8> {
 /// first of them, so the twin address is one flipped bit away.
 pub fn other_parity(header: &[u8]) -> Vec<u8> {
     let mut other = header.to_vec();
-    if let Some(index) = other.len().checked_sub(2) {
-        if let Some(byte) = other.get_mut(index) {
-            *byte ^= 0x80;
-        }
+    if let Some(byte) = other.len().checked_sub(2).and_then(|i| other.get_mut(i)) {
+        *byte ^= 0x80;
     }
     other
 }

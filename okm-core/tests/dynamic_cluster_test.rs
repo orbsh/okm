@@ -50,6 +50,15 @@ use okm_value::{Dict, Variant};
 
 const NS: u16 = 0x0190; // 400 — the same ns the byte-equality suite uses
 
+/// The graph's ADDRESS: its ns bytes with the layout generation's parity in the high bit
+/// (ADR-0075 §2). Every raw-byte check here asks for the header this way, so a generation bump
+/// moves the address and the check moves with it.
+
+fn ns_bytes() -> [u8; 2] {
+    let prefix = <WorksAt as okm_core::Document>::NS_PREFIX;
+    [prefix[0], prefix[1]]
+}
+
 // The CALLER's vocabulary, defined here because a test is a caller: a kind is a
 // WORD the store interns, and okm assigns it no meaning. The words are the only
 // input; the ids are what the vocabulary answers.
@@ -60,7 +69,7 @@ const SCOPE: &str = "scope";
 /// A word -> the id the vocabulary holds for it (interning is idempotent, so this
 /// is the same id a write will land on).
 fn kid(store: &TestStore, label: &str) -> Kind {
-    intern_kind(store, &NS.to_be_bytes(), label).expect("kind")
+    intern_kind(store, &ns_bytes(), label).expect("kind")
 }
 
 fn node(ns: u16, key: u64) -> NodeRef {
@@ -144,7 +153,7 @@ fn graph(store: &TestStore) -> DynGraph<TestStore> {
 /// `[ns 2B][slot][kind][hyper_id][tail…]` — the face address the ADR states.
 fn row_key(kind: Kind, slot: u8, hyper_id: u64, tail: &[u8]) -> Vec<u8> {
     let mut k = Vec::with_capacity(3 + 1 + 8 + tail.len());
-    k.extend_from_slice(&NS.to_be_bytes());
+    k.extend_from_slice(&ns_bytes());
     k.push(slot);
     k.extend_from_slice(&kind.0.to_be_bytes());
     k.extend_from_slice(&hyper_id.to_be_bytes());
@@ -163,7 +172,7 @@ fn cluster_face(kind: Kind, hyper_id: u64, tail: &[u8]) -> Vec<u8> {
 /// test spells it out so a drift in the graph's row layout fails here instead of
 /// agreeing with itself.
 fn row_of(store: &TestStore, edge: &EdgeKey) -> HandleKey {
-    let registry = okm_core::Handles::new(store, NS.to_be_bytes());
+    let registry = okm_core::Handles::new(store, ns_bytes());
     let src = registry
         .handle_of(&edge.src)
         .expect("registry")
@@ -180,7 +189,7 @@ fn row_of(store: &TestStore, edge: &EdgeKey) -> HandleKey {
 /// the node tables' keys are).
 fn edge_cluster_face(row: &HandleKey, kind: Kind, hyper_id: u64) -> Vec<u8> {
     let mut k = Vec::with_capacity(3 + HandleKey::WIDTH + 1 + 8);
-    k.extend_from_slice(&NS.to_be_bytes());
+    k.extend_from_slice(&ns_bytes());
     k.push(0x0F);
     row.write(&mut k);
     k.extend_from_slice(&kind.id().to_be_bytes());
@@ -190,7 +199,7 @@ fn edge_cluster_face(row: &HandleKey, kind: Kind, hyper_id: u64) -> Vec<u8> {
 
 /// Every `(key, value)` under one fixed face of the graph's ns.
 fn face(store: &TestStore, slot: u8) -> Vec<(Vec<u8>, Vec<u8>)> {
-    let mut prefix = NS.to_be_bytes().to_vec();
+    let mut prefix = ns_bytes().to_vec();
     prefix.push(slot);
     let end = okm_core::engine::storage::prefix_end(&prefix);
     store
@@ -907,7 +916,7 @@ impl Seekable for KeySet {
 /// stored handle row, eighteen bytes whatever width the node tables' keys are
 /// (ADR-0067), so the tuple's references go through the registry first.
 fn out_face_key<S: VirtualStorage>(store: &S, edge: &EdgeKey) -> Vec<u8> {
-    let registry = okm_core::Handles::new(store, NS.to_be_bytes());
+    let registry = okm_core::Handles::new(store, ns_bytes());
     let src = registry
         .handle_of(&edge.src)
         .expect("registry")
@@ -916,7 +925,7 @@ fn out_face_key<S: VirtualStorage>(store: &S, edge: &EdgeKey) -> Vec<u8> {
         .handle_of(&edge.dst)
         .expect("registry")
         .expect("a written edge's destination was issued a handle");
-    let mut key = NS.to_be_bytes().to_vec();
+    let mut key = ns_bytes().to_vec();
     write_slot(&mut key, 0x06);
     HandleKey::new(src, edge.predicate, dst).write(&mut key);
     key

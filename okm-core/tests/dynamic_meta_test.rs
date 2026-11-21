@@ -42,8 +42,10 @@ pub struct MetaRow {
     pub label: String,
 }
 
+/// The table's ADDRESS (ns with the layout generation's bit, ADR-0075 §2), which is where
+/// both modes write the stamp.
 fn header() -> Vec<u8> {
-    92u16.to_be_bytes().to_vec()
+    <MetaRow as okm_core::Document>::NS_PREFIX.to_vec()
 }
 
 fn dynamic<S: VirtualStorage>(store: S) -> DynamicCollection<S> {
@@ -77,7 +79,8 @@ fn the_dynamic_stamp_is_the_row_the_typed_path_writes() {
 
     assert_eq!(dynamic_meta, typed_meta, "one format, two modes");
     let key = meta::meta_key(&header());
-    assert_eq!(key, vec![0x00, 0x5C, 0x1F], "`[ns 2B][0x1F]`, no suffix");
+    // `[ns 2B][0x1F]`, no suffix — the ns's high byte carries the generation's parity.
+    assert_eq!(key, vec![0x80, 0x5C, 0x1F], "`[ns 2B][0x1F]`, no suffix");
     assert_eq!(
         dynamic_store.get(&key).unwrap().unwrap(),
         typed_store.get(&key).unwrap().unwrap(),
