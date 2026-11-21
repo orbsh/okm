@@ -41,6 +41,14 @@ pub struct DynamicCollection<S: VirtualStorage> {
     pub(crate) ns: Vec<u8>,
     pub(crate) indexes: Vec<AccessMethod>,
     pub(crate) reduces: Vec<BoundReduce>,
+    /// The compiled route, for a handle that READ its declaration (ADR-0074 §5).
+    ///
+    /// `None` when the caller declared the table ([`new`]): its declaration also names access
+    /// methods and reduce groups, which the store never records (ADR-0076), so the shape is
+    /// the caller's. `Some` after [`open`], where the stored bytes are the only declaration
+    /// there is — and the plan is compiled from them once, at a constant address a key can be
+    /// tested against.
+    plan: Option<crate::model::table_plan::TablePlan>,
     /// The table's field-name vocabulary, loaded once per handle and kept
     /// current by PROBES rather than reloads.
     ///
@@ -146,8 +154,73 @@ impl<S: VirtualStorage> DynamicCollection<S> {
             indexes,
             reduces: reduces.into_iter().map(BoundReduce::new).collect(),
             fields_vocab: std::cell::RefCell::new(None),
+            plan: None,
             _owned: std::marker::PhantomData,
         }
+    }
+
+    /// Open a table the store already describes (ADR-0074 §5).
+    ///
+    /// The declaration comes from the table's meta row — the same bytes `Collection::open`
+    /// verifies — so a reader that knows only the ns sees the view a writer assembled: the
+    /// ordered field lists ARE the position plan (a field is found by index, not by name per
+    /// record), and the route is compiled once here from those bytes.
+    ///
+    /// What the row does not carry, and therefore what a handle from `open` does not have, is
+    /// the caller's access methods and reduce groups: the store never records them (ADR-0076).
+    /// Reading and writing rows by key needs neither; a caller that wants probes assembles
+    /// with [`new`] and the [`schema`] it reads here.
+    ///
+    /// The compile leaks the two-byte header by design ([`TablePlan`] is `'static`), so a handle
+    /// is opened once and kept — that is the shape of a declared table, not of a request.
+    ///
+    /// Errors are strings, like every verb on this type: dynamic callers are host-language
+    /// bridges, and the two refusals name what to do — no row (nothing described this table,
+    /// attach it first) or a row that describes another ns (the pair disagrees, ADR-0017 §4).
+    pub fn open(store: S, ns: u16) -> Result<Self, String> {
+        let header = ns.to_be_bytes().to_vec();
+        let row = crate::meta::read(&store, &header)
+            .map_err(codec)?
+            .ok_or_else(|| {
+                format!(
+                    "ns {ns}: the store has no meta row for this table, so there is no \
+                     declaration to open — attach it first (ADR-0074)"
+                )
+            })?;
+        let stored = row.get(crate::model::meta::SCHEMA).ok_or_else(|| {
+            format!("ns {ns}: the meta row names no schema, so there is nothing to open")
+        })?;
+        let schema = CollectionSchema::decode(stored);
+        if schema.ns_prefix != header {
+            let found: String = schema
+                .ns_prefix
+                .iter()
+                .map(|b| format!("{b:02x}"))
+                .collect();
+            return Err(format!(
+                "ns {ns}: the row describes ns {found}, so the pair disagrees — the ns was \
+                 not read from where the declaration says it is (ADR-0017 §4)"
+            ));
+        }
+        let plan = crate::model::table_plan::TablePlan::compile(&schema);
+        Ok(Self {
+            store,
+            schema,
+            ns: header,
+            indexes: Vec::new(),
+            reduces: Vec::new(),
+            fields_vocab: std::cell::RefCell::new(None),
+            plan: Some(plan),
+            _owned: std::marker::PhantomData,
+        })
+    }
+
+    /// The compiled route, when this handle read its declaration ([`open`]).
+    ///
+    /// `None` for a handle assembled with [`new`]: that handle carries the caller's access
+    /// methods, and the caller knows the shape it declared.
+    pub fn plan(&self) -> Option<&crate::model::table_plan::TablePlan> {
+        self.plan.as_ref()
     }
 
     pub fn schema(&self) -> &CollectionSchema {
