@@ -16,7 +16,7 @@
 //! extra round trips, only restart recovery reads accs once).
 
 use crate::decode::decode_payload;
-use crate::model::access_method::index_entries;
+use crate::model::access_method::{callable_entries, index_keys};
 use crate::model::dynamic_collection::DynamicCollection;
 use crate::model::encode::encode_payload;
 use crate::schema::CollectionSchema;
@@ -120,20 +120,37 @@ impl<S: VirtualStorage> DynamicCollection<S> {
         let mut overlay = AccOverlay::new(acc_of);
         // Overwrite: sweep the old document's index entries + unfold it
         // from every group (the embedded put's overwrite arm, verbatim).
+        //
+        // The sweep needs the KEYS only: the includes segment is dropped on the floor, so the
+        // plan asks for keys instead of pairs and a covered face stops paying for bytes nobody
+        // reads. The old row is a map, not bytes — the compiled walk starts from a payload, and
+        // re-encoding one just to delete by it would trade the includes work for a bigger one.
         if let Some(old_row) = old {
-            let old_entries = index_entries(self.schema(), &self.ns, &self.indexes, pkey, old_row)?;
-            for (ek, _) in old_entries {
+            for ek in index_keys(self.schema(), &self.ns, &self.indexes, pkey, old_row)? {
                 plan.ops.del(&ek);
             }
             self.plan_reduces(pkey, old_row, false, &mut plan, &mut overlay)?;
         }
-        // New entries + primary write.
-        let entries = index_entries(self.schema(), &self.ns, &self.indexes, pkey, document)?;
+        // The payload is built ONCE and used three times: the store copies it in, the compiled
+        // walk slices the `Plain` faces out of it, and the ledger's hooks read the document
+        // beside it (ADR-0076 §1).
         let payload = encode_payload(self.schema(), document).map_err(|e| e.to_string())?;
         self.plan_reduces(pkey, document, true, &mut plan, &mut overlay)?;
-        plan.ops.put(self.primary_key(pkey), payload);
-        for (ek, ev) in entries {
-            plan.ops.put(ek, ev);
+        let primary = self.primary_key(pkey);
+        plan.ops.put_bytes(&primary, &payload);
+        let mut entries = self.entries();
+        entries.clear();
+        self.entry_layout()?
+            .produce_encoded(&self.ns, pkey, &payload, &mut entries)
+            .map_err(|m| m.to_string())?;
+        // The faces the walk cannot produce — a callable's result, a predicate's admission —
+        // keep their runtime producer. Appended into the same buffer, so what the plan copies
+        // out is one list either way.
+        for (ek, ev) in callable_entries(self.schema(), &self.ns, &self.indexes, pkey, document)? {
+            entries.extend_pair(&ek, &ev);
+        }
+        for (ek, ev) in entries.iter() {
+            plan.ops.put_bytes(ek, ev);
         }
         Ok(plan)
     }
@@ -153,8 +170,8 @@ impl<S: VirtualStorage> DynamicCollection<S> {
             new_accs: Vec::new(),
         };
         let mut overlay = AccOverlay::new(acc_of);
-        let entries = index_entries(self.schema(), &self.ns, &self.indexes, pkey, old)?;
-        for (ek, _) in entries {
+        let entries = index_keys(self.schema(), &self.ns, &self.indexes, pkey, old)?;
+        for ek in entries {
             plan.ops.del(&ek);
         }
         self.plan_reduces(pkey, old, false, &mut plan, &mut overlay)?;
@@ -365,6 +382,12 @@ impl<S: VirtualStorage> DynamicCollection<S> {
         plan: &mut impl PlanSink,
         overlay: &mut AccOverlay,
     ) -> Result<(), String> {
+        // A table that declares no reduce group has nothing to fold, and the decode below is
+        // the only reason a plan touches the key: spending it per write for an empty loop is
+        // an allocation the declaration never asked for.
+        if self.reduces.is_empty() {
+            return Ok(());
+        }
         // The key decoded ONCE per plan (schema-driven slicing of the
         // caller's pkey — the embedded path's &Key twin).
         let key = crate::decode::decode_key(self.schema(), pkey).map_err(|e| e.to_string())?;

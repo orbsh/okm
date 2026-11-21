@@ -64,6 +64,18 @@ pub struct DynamicCollection<S: VirtualStorage> {
     /// A `RefCell` for the same reason the typed `Collection`'s mirror is one:
     /// the verbs take `&self`, and the mirror is per-collection state.
     fields_vocab: std::cell::RefCell<Option<crate::model::plan_fields::VocabMirror>>,
+    /// The `Plain` faces compiled once (ADR-0076 §1): their entries are a walk over the key and
+    /// the payload bytes the write already built, not a name lookup per field per entry.
+    ///
+    /// `Err` carries the refusal: a `Plain` face naming a field the schema does not declare, or
+    /// ordering a variable-width field before the last. The declaration is validated when it
+    /// arrives ([`declare_index`]), so a handle from [`new`] can only hold this error if the
+    /// caller assembled the access-method list itself — the first write then answers with it,
+    /// which is where the same declaration was refused before.
+    entry_layout: Result<crate::model::entry_layout::EntryLayout, String>,
+    /// One buffer per handle, reused by every write: the walk appends key and value bytes here
+    /// and the plan copies spans out of it, so a warm write's entries allocate nothing.
+    entries: std::cell::RefCell<crate::model::entries::Entries>,
     /// Single-writer by construction, not by convention: `!Sync`, so a
     /// `&DynamicCollection` cannot be handed to a second thread while a
     /// read-modify-write is in flight (the typed `Collection` gets the same
@@ -152,6 +164,7 @@ impl<S: VirtualStorage> DynamicCollection<S> {
             },
             "reduce slots must be unique and 1-based"
         );
+        let entry_layout = Self::compile_entries(&schema, &indexes);
         Self {
             store,
             schema,
@@ -159,6 +172,8 @@ impl<S: VirtualStorage> DynamicCollection<S> {
             indexes,
             reduces: reduces.into_iter().map(BoundReduce::new).collect(),
             fields_vocab: std::cell::RefCell::new(None),
+            entry_layout,
+            entries: std::cell::RefCell::new(crate::model::entries::Entries::new()),
             plan: None,
             _owned: std::marker::PhantomData,
         }
@@ -208,6 +223,11 @@ impl<S: VirtualStorage> DynamicCollection<S> {
             ));
         }
         let plan = crate::model::table_plan::TablePlan::compile(&schema);
+        // A handle from `open` carries no access methods (the store never records them), so its
+        // entry layout has no faces and the walk produces nothing: rows are read and written by
+        // key here, and a caller that wants entries assembles with `new`.
+        let entry_layout = crate::model::entry_layout::EntryLayout::compile(&schema, &[])
+            .map_err(|unsupported| unsupported.to_string());
         Ok(Self {
             store,
             schema,
@@ -215,6 +235,8 @@ impl<S: VirtualStorage> DynamicCollection<S> {
             indexes: Vec::new(),
             reduces: Vec::new(),
             fields_vocab: std::cell::RefCell::new(None),
+            entry_layout,
+            entries: std::cell::RefCell::new(crate::model::entries::Entries::new()),
             plan: Some(plan),
             _owned: std::marker::PhantomData,
         })
@@ -595,8 +617,88 @@ impl<S: VirtualStorage> DynamicCollection<S> {
                 index.slot
             ));
         }
+        // The declaration's own refusals, answered here instead of on the first write: a key
+        // field in `fields`/`includes`, or a variable-width field with fields after it.
+        index.validate(&self.schema)?;
         self.indexes.push(index);
-        Ok(())
+        // A `Plain` face is compiled the moment it is declared, so a name the schema does not
+        // carry — or a variable-width field that is not last — is refused HERE rather than on the
+        // first write. A refused declaration leaves the list as it was.
+        match Self::compile_entries(&self.schema, &self.indexes) {
+            Ok(layout) => {
+                self.entry_layout = Ok(layout);
+                Ok(())
+            }
+            Err(why) => {
+                self.indexes.pop();
+                Err(why)
+            }
+        }
+    }
+
+    /// The `Plain` faces compiled once, as the write path walks them (ADR-0076 §1).
+    ///
+    /// The callable forms are deliberately NOT compiled: a `Func` segment IS its callable's
+    /// result and a `Partial` face's admission is a predicate over the document — neither is in
+    /// the declaration bytes — while a `Path` segment resolves out of the dynamic segment, which
+    /// the payload does not carry. Those keep their runtime producers
+    /// ([`access_method::callable_entries`](crate::model::access_method::callable_entries),
+    /// `path_index_entries`); one producer per face.
+    ///
+    /// `Err` is the compile's refusal verbatim, so the caller sees the same sentence on the
+    /// declaration that a write used to answer with.
+    fn compile_entries(
+        schema: &CollectionSchema,
+        indexes: &[AccessMethod],
+    ) -> Result<crate::model::entry_layout::EntryLayout, String> {
+        use crate::model::access_method::AccessMethodKind;
+        use crate::model::entry_layout::{EntryLayout, FaceDecl};
+
+        let plain: Vec<&AccessMethod> = indexes
+            .iter()
+            .filter(|i| matches!(&i.kind, AccessMethodKind::Plain))
+            .collect();
+        // The compiler reads `&[&str]`, the runtime declaration holds `Vec<String>`: one borrow
+        // level flattened for the call. Nothing outlives it — `compile` copies what it needs.
+        let fields: Vec<Vec<&str>> = plain
+            .iter()
+            .map(|i| i.fields.iter().map(String::as_str).collect())
+            .collect();
+        let includes: Vec<Vec<&str>> = plain
+            .iter()
+            .map(|i| i.includes.iter().map(String::as_str).collect())
+            .collect();
+        let names: Vec<String> = plain
+            .iter()
+            .map(|i| format!("slot {:#06x}", i.slot))
+            .collect();
+        let faces: Vec<FaceDecl<'_>> = plain
+            .iter()
+            .enumerate()
+            .map(|(n, i)| FaceDecl {
+                name: &names[n],
+                slot: i.slot,
+                fields: &fields[n],
+                includes: &includes[n],
+                // A dynamic access method always indexes the FULL key (prefix truncation is the
+                // Rust-side `key(...)` refinement), and it never reads the key for its segment.
+                key_prefix: &[],
+                lead: false,
+                func: false,
+                partial: false,
+            })
+            .collect();
+        EntryLayout::compile(schema, &faces).map_err(|unsupported| unsupported.to_string())
+    }
+
+    /// The compiled faces, or the refusal the declaration earned.
+    pub(crate) fn entry_layout(&self) -> Result<&crate::model::entry_layout::EntryLayout, String> {
+        self.entry_layout.as_ref().map_err(Clone::clone)
+    }
+
+    /// The write's entry buffer: one per handle, empty on arrival (ADR-0076 §1).
+    pub(crate) fn entries(&self) -> std::cell::RefMut<'_, crate::model::entries::Entries> {
+        self.entries.borrow_mut()
     }
 
     /// Declare a reduce group at runtime (binding-time registration).

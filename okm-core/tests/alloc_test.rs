@@ -193,3 +193,108 @@ fn a_warm_purge_is_inside_its_allocation_ceiling() {
          previous row, but it must not build an op list of its own"
     );
 }
+
+// --- the dynamic plan (ADR-0076 §1) ----------------------------------
+//
+// A `Parallel` declaration whose two faces are plain: the same two entries a
+// typed row writes, produced by the compiled walk instead of a per-entry
+// pair list. The ceiling is the lock that keeps the walk wired in — a plan
+// that fell back to `index_entries` allocates per entry and blows it.
+
+#[derive(KeyEncode, Clone, PartialEq, Debug, Default)]
+pub struct PlanKey {
+    pub id: u64,
+}
+
+#[derive(DocumentEncode, Clone, PartialEq, Debug)]
+#[ok_ref(PlanKey)]
+#[ok_index(by_level { fields(level) })]
+#[ok_index(by_level_tag { fields(level), includes(tag) })]
+#[ok_ns(0x52)]
+pub struct PlanRow {
+    pub level: u32,
+    pub tag: u64,
+    pub name: String,
+}
+
+/// A warm `plan_put` costs at most this many allocations. Measured: 8.
+///
+/// The entry buffer is the collection's, so the faces cost nothing per write — the two plain
+/// faces of this declaration append into one `Vec<u8>` that survives between plans. What is
+/// left is the plan's own `Batch` (a buffer and an op list), the payload, the primary key, and
+/// the accumulator overlay. The old producer spent two allocations PER ENTRY before any of
+/// that: a `Vec` for the key and a clone of the includes segment.
+const DYNAMIC_PLAN_CEILING: u64 = 8;
+
+/// A warm overwrite costs this many: the same plan plus the sweep. Measured: 16.
+///
+/// The sweep asks for KEYS (`index_keys`), so the covered face's includes segment is never
+/// encoded — the old form built the whole pair list and dropped the values on the floor. Its
+/// cost is one `Vec` per key plus the deletes the plan records.
+const DYNAMIC_OVERWRITE_CEILING: u64 = 16;
+
+fn plan_table() -> okm_core::model::dynamic_collection::DynamicCollection<TestStore> {
+    use okm_core::model::access_method::AccessMethod;
+    okm_core::model::dynamic_collection::DynamicCollection::new(
+        TestStore::default(),
+        0x52,
+        okm_core::schema::CollectionSchema::of::<PlanKey, PlanRow>(),
+        vec![
+            AccessMethod::plain(0x4001, vec!["level".into()], vec![]),
+            AccessMethod::plain(0x4002, vec!["level".into()], vec!["tag".into()]),
+        ],
+    )
+}
+
+fn plan_row(id: u64) -> okm_value::Dict {
+    let mut map = okm_value::Dict::new();
+    map.insert("level".into(), okm_value::Variant::U32(3));
+    map.insert("tag".into(), okm_value::Variant::U64(id));
+    map.insert("name".into(), okm_value::Variant::Str(format!("row {id}")));
+    map
+}
+
+#[test]
+fn a_warm_dynamic_plan_is_inside_its_allocation_ceiling() {
+    let table = plan_table();
+    let key = 7u64.to_be_bytes();
+    let doc = plan_row(7);
+
+    let plan = table.plan_put(&key, &doc, None, &|_ek| Ok(None)).unwrap();
+    assert_eq!(plan.ops.len(), 3, "the row and its two faces");
+
+    let count = allocations(|| {
+        table.plan_put(&key, &doc, None, &|_ek| Ok(None)).unwrap();
+    });
+
+    assert!(
+        count <= DYNAMIC_PLAN_CEILING,
+        "a warm dynamic plan allocated {count} times, ceiling is {DYNAMIC_PLAN_CEILING}: the \
+         faces are a walk over bytes already built, not a pair list per entry"
+    );
+}
+
+/// The same plan over an EXISTING row: the sweep removes the old faces. It asks for keys only,
+/// so the covered face's includes segment is never encoded — the ceiling is the same as a fresh
+/// write's.
+#[test]
+fn a_warm_dynamic_overwrite_is_inside_its_allocation_ceiling() {
+    let table = plan_table();
+    let key = 3u64.to_be_bytes();
+    let doc = plan_row(3);
+
+    let plan = table.plan_put(&key, &doc, None, &|_ek| Ok(None)).unwrap();
+    assert_eq!(plan.ops.len(), 3);
+
+    let count = allocations(|| {
+        table
+            .plan_put(&key, &doc, Some(&doc), &|_ek| Ok(None))
+            .unwrap();
+    });
+
+    assert!(
+        count <= DYNAMIC_OVERWRITE_CEILING,
+        "a warm overwrite allocated {count} times, ceiling is {DYNAMIC_OVERWRITE_CEILING}: the \
+         sweep removes the old faces by key, and builds no values for them"
+    );
+}

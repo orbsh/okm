@@ -424,6 +424,76 @@ fn bench_dynamic(c: &mut Criterion) {
     g.bench_function("decode_key/derive_reference", |b| {
         b.iter(|| black_box(BenchKey::decode(&rust_key)))
     });
+    // Entry production, the pair ADR-0076 §1 puts against each other: the runtime producer
+    // reads the document by NAME (a map lookup per field per entry, a fresh `Vec` for every
+    // key and every includes segment), while the compiled walk slices the key and the payload
+    // bytes a write already holds. The two faces here carry the same shapes as the typed ones
+    // above — a hot segment, a cold `Str` tail, a covered field — minus the `VarInt` include,
+    // which a dynamic index cannot address (`encode_variable` takes `Str`).
+    {
+        use okm_core::model::access_method::index_entries;
+        use okm_core::model::entries::Entries;
+        use okm_core::model::entry_layout::{EntryLayout, FaceDecl};
+
+        let indexes = vec![
+            okm_core::model::access_method::AccessMethod::plain(
+                0x4001,
+                vec!["level".into()],
+                vec!["score".into()],
+            ),
+            okm_core::model::access_method::AccessMethod::plain(
+                0x4002,
+                vec!["level".into(), "name".into()],
+                vec![],
+            ),
+        ];
+        let faces = [
+            FaceDecl {
+                name: "0x4001",
+                slot: 0x4001,
+                fields: &["level"],
+                includes: &["score"],
+                key_prefix: &[],
+                lead: false,
+                func: false,
+                partial: false,
+            },
+            FaceDecl {
+                name: "0x4002",
+                slot: 0x4002,
+                fields: &["level", "name"],
+                includes: &[],
+                key_prefix: &[],
+                lead: false,
+                func: false,
+                partial: false,
+            },
+        ];
+        let layout = EntryLayout::compile(&schema, &faces).unwrap();
+        let ns = [0u8, 9];
+        let mut sink = Entries::new();
+        g.bench_function("index_entries/plain_from_names", |b| {
+            b.iter(|| {
+                black_box(
+                    index_entries(&schema, black_box(&ns), &indexes, &rust_key, &values).unwrap(),
+                )
+            })
+        });
+        g.bench_function("entry_layout/plain_from_bytes", |b| {
+            b.iter(|| {
+                sink.clear();
+                layout
+                    .produce_encoded(
+                        black_box(&ns),
+                        black_box(&rust_key),
+                        black_box(&rust_payload),
+                        &mut sink,
+                    )
+                    .unwrap();
+                black_box(sink.as_bytes().len())
+            })
+        });
+    }
     let _ = (rust_key, rust_payload);
     g.finish()
 }

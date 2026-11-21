@@ -221,6 +221,17 @@ SELECT data_length, index_length FROM information_schema.tables WHERE table_name
 
 key 上的解释器税真实存在，但绝对尺度极小（40 ns 对 5 ns——都远低于任何一次引擎操作）。payload 的反转（dynamic 比 derive 快）说明 derive 的 String TLV 路径分配得比走一遍 schema更多——值得以后查，不是阻塞项。dynamic 的 decode 基准随 PyO3 绑定工作一起落地。
 
+### 条目生产：按名字读文档 vs 按字节切 payload（2026-11-21）
+
+一行、两个已声明的面——一个 hot 字段、一个 covered 字段、一个 cold `Str` 尾段：
+
+| 路径 | 均值 |
+|---|---|
+| `dynamic-tax/index_entries/plain_from_names` | 187.7 ns |
+| `dynamic-tax/entry_layout/plain_from_bytes` | 27.1 ns |
+
+前者按名字读文档：每条条目的每个字段一次 map 查表，每个键、每个 includes 段各一个新 `Vec`。后者是编译后的 walk，直接切写路径已经编好的键字节与即将落库的 payload 字节（ADR-0076 §1）；两者产出的条目逐字节相同（`okm-core/tests/entry_layout_test.rs`）。动态写路径现在跑的就是这个差，它也是「在声明到来时编译 `Plain` 面」的理由。
+
 ## 变更日志的捕获税
 
 `cargo run --release --example changelog_tax -p okm-core --features fjall`（9 轮配对 × 5,000 次 put，每轮翻转顺序，取各轮比值的中间值——两个 fjall store 各自按自己的节奏做 compaction，所以不成对的中位数会漂）：

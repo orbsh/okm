@@ -26,7 +26,7 @@ use okm_core::model::access_method::AccessMethod;
 use okm_core::model::dynamic_collection::DynamicCollection;
 use okm_core::schema::CollectionSchema;
 use okm_core::testing::TestStore;
-use okm_core::{Batch, Collection, Document, DocumentEncode, KeyEncode, VirtualStorage};
+use okm_core::{Batch, Collection, Document, DocumentEncode, KeyEncode, VirtualStorage, Vocab};
 use okm_value::{Dict, Variant as Value};
 
 #[derive(KeyEncode, Clone, PartialEq, Debug, Default)]
@@ -1265,4 +1265,214 @@ fn a_derive_version_is_how_a_changed_callable_becomes_visible() {
     // And the rebuild is what turns it back into `Match`.
     t1.rebuild_faces(usize::MAX).unwrap();
     assert_eq!(t1.faces_status().unwrap(), okm_core::FaceStatus::Match);
+}
+
+// --- one entry set, two producers (ADR-0076 §1) ----------------------
+//
+// The write path walks the `Plain` faces over the payload bytes it already
+// built, and leaves the callable faces to their runtime producer. These lock
+// the two halves of that split: the sweep's key-only form, the disjointness of
+// the producers, and the declaration refusal that now happens when the face is
+// declared rather than on its first write.
+
+#[test]
+fn the_sweep_asks_for_keys_and_gets_what_the_entries_name() {
+    let k = key_bytes(1, 2);
+    let doc = values(4, 77, "bob");
+    let indexes = vec![
+        AccessMethod::plain(0x4001, vec!["level".into()], vec![]),
+        AccessMethod::plain(0x4002, vec!["score".into()], vec!["level".into()]),
+    ];
+
+    let pairs = okm_core::model::access_method::index_entries(&schema(), &[41], &indexes, &k, &doc)
+        .unwrap();
+    let keys =
+        okm_core::model::access_method::index_keys(&schema(), &[41], &indexes, &k, &doc).unwrap();
+
+    assert_eq!(
+        keys.len(),
+        pairs.len(),
+        "one key per entry, covered face included"
+    );
+    let mut named: Vec<Vec<u8>> = pairs.into_iter().map(|(key, _)| key).collect();
+    let mut swept = keys;
+    named.sort();
+    swept.sort();
+    assert_eq!(
+        swept, named,
+        "a sweep removes exactly the entries the write made"
+    );
+}
+
+#[test]
+fn the_walk_and_the_callables_split_one_entry_set() {
+    use okm_core::model::access_method::{AccessMethodKind, callable_entries};
+    use okm_core::model::encode::encode_payload;
+    use okm_core::model::entries::Entries;
+    use okm_core::model::entry_layout::{EntryLayout, FaceDecl};
+
+    let k = key_bytes(1, 2);
+    let doc = values(4, 77, "bob");
+    let indexes = vec![
+        AccessMethod::plain(0x4001, vec!["level".into()], vec![]),
+        AccessMethod::plain(0x4002, vec!["score".into()], vec!["level".into()]),
+        AccessMethod {
+            slot: 0x4003,
+            fields: Vec::new(),
+            includes: Vec::new(),
+            kind: AccessMethodKind::Func(Box::new(|d| {
+                Ok(vec![
+                    d.get("name")
+                        .map(|v| format!("{v:?}").into_bytes())
+                        .unwrap_or_default(),
+                ])
+            })),
+            version: 0,
+        },
+    ];
+
+    // The walk is compiled from the `Plain` declarations alone — the same filter the collection
+    // applies — and the callable producer is handed the whole list (it skips what it does not
+    // own).
+    let faces = [
+        FaceDecl {
+            name: "0x4001",
+            slot: 0x4001,
+            fields: &["level"],
+            includes: &[],
+            key_prefix: &[],
+            lead: false,
+            func: false,
+            partial: false,
+        },
+        FaceDecl {
+            name: "0x4002",
+            slot: 0x4002,
+            fields: &["score"],
+            includes: &["level"],
+            key_prefix: &[],
+            lead: false,
+            func: false,
+            partial: false,
+        },
+    ];
+    let layout = EntryLayout::compile(&schema(), &faces).unwrap();
+    let payload = encode_payload(&schema(), &doc).unwrap();
+    let mut walked = Entries::new();
+    layout
+        .produce_encoded(&[41], &k, &payload, &mut walked)
+        .unwrap();
+    let mut callable = callable_entries(&schema(), &[41], &indexes, &k, &doc).unwrap();
+    let mut together: Vec<(Vec<u8>, Vec<u8>)> = walked
+        .iter()
+        .map(|(key, value)| (key.to_vec(), value.to_vec()))
+        .collect();
+    together.append(&mut callable);
+
+    // The single producer's answer, over the same three faces.
+    let mut whole =
+        okm_core::model::access_method::index_entries(&schema(), &[41], &indexes, &k, &doc)
+            .unwrap();
+
+    together.sort();
+    whole.sort();
+    assert_eq!(together, whole, "two producers, one entry set");
+    assert_eq!(layout.faces(), 2, "the walk owns the two plain faces");
+}
+
+#[test]
+fn a_declaration_the_schema_cannot_answer_is_refused_where_it_arrives() {
+    let mut table = dynamic_table(TestStore::default());
+
+    let key_field = AccessMethod::plain(0x4009, vec!["user_id".into()], vec![]);
+    let refused = table.declare_index(key_field).unwrap_err();
+    assert!(
+        refused.contains("is a key field"),
+        "a key field in `fields` is refused: {refused}"
+    );
+
+    let wrong_order = AccessMethod::plain(0x4009, vec!["name".into(), "level".into()], vec![]);
+    let refused = table.declare_index(wrong_order).unwrap_err();
+    assert!(
+        refused.contains("must be the LAST field"),
+        "a variable-width field with fields after it is refused: {refused}"
+    );
+
+    // The refused declarations left no trace: the table still writes its two faces.
+    let store = TestStore::default();
+    let col = dynamic_table(store.clone());
+    col.put(&key_bytes(1, 2), &values(4, 77, "bob")).unwrap();
+    let entries: Vec<Vec<u8>> = store
+        .scan_suffix(&[])
+        .unwrap()
+        .into_iter()
+        .filter(|k| k.starts_with(&41u16.to_be_bytes()) && k[2] != 0x00)
+        .collect();
+    assert_eq!(
+        entries.len(),
+        2,
+        "two plain faces, two entries: {entries:?}"
+    );
+}
+
+// --- a `Plain` face may index a `Vocab` field -------------------------
+//
+// A categorical field's payload IS its vocabulary id (ADR-0032), so the walk
+// slices it like any other fixed-width field and the entry orders by the id.
+// This is deliberate and kept: the runtime producer refused the kind outright
+// (`encode_fixed` has no `Vocab` arm), which made a categorical field
+// unindexable through the dynamic form, while the id is exactly what a typed
+// index over the same field orders by.
+
+#[derive(KeyEncode, Clone, PartialEq, Debug, Default)]
+pub struct CatKey {
+    pub id: u64,
+}
+
+#[derive(DocumentEncode, Clone, PartialEq, Debug)]
+#[ok_ref(CatKey)]
+#[ok_ns(43)]
+pub struct CatRow {
+    pub status: Vocab<u8>,
+    pub score: u32,
+}
+
+#[test]
+fn a_plain_face_indexes_a_vocab_field_by_its_id() {
+    let store = TestStore::default();
+    let table = DynamicCollection::new(
+        store.clone(),
+        43,
+        CollectionSchema::of::<CatKey, CatRow>(),
+        vec![AccessMethod::plain(
+            0x4001,
+            vec!["status".into()],
+            vec!["score".into()],
+        )],
+    );
+    let pkey = CatKey { id: 9 }.encode();
+    let mut doc = Dict::new();
+    // The id a writer would have interned for the label; the dynamic form takes
+    // ids as data, never labels.
+    doc.insert("status".into(), Value::U8(7));
+    doc.insert("score".into(), Value::U32(41));
+    table.put(&pkey, &doc).unwrap();
+
+    // ns | slot | the field's OWN byte (the id) | pkey — no label, no dictionary.
+    let mut expected = vec![0u8, 43, 0x40, 0x01, 7];
+    expected.extend_from_slice(&pkey);
+    let keys = table.scan_access_method_keys(0x4001, &[7]).unwrap();
+    assert_eq!(keys, vec![expected.clone()], "the entry is keyed by the id");
+
+    let value = store.get(&expected).unwrap().expect("the face's entry");
+    assert_eq!(value, 41u32.to_be_bytes().to_vec(), "the covered field");
+
+    // A prefix naming another id finds nothing: the segment is the id, not a
+    // value that happens to contain it.
+    assert!(
+        table
+            .scan_access_method_keys(0x4001, &[8])
+            .unwrap()
+            .is_empty()
+    );
 }

@@ -1,6 +1,6 @@
 # 0076 — 机制下沉到声明之下，查询面保持两套
 
-状态：2026-11-21 裁决，同日落地。§1（唯一条目生产者）与 §2（唯一 ledger 编排）已就位；§3 完成——全部机制模块搬入 core（`encode`、`path`、`access_method`、`plan_fields`、`byte_reduce`、`dynamic_collection`、`dynamic_plan`、`dict_write`、`dynamic_graph`、`dynamic_cluster`）。投影那一半去了本来就在做投影的 crate——`okm_lake::columns`；`okm-dynamic` 已删除：它的测试搬到被测代码旁，湖、日志、bindings 直接写 core 的模块路径。
+状态：2026-11-21 裁决，同日落地。§1（唯一条目生产者）与 §2（唯一 ledger 编排）已就位；§1 现在两种形态都在跑——typed 写路径跑它发射的声明，动态 plan 跑调用方声明的 access method——§3 完成：全部机制模块搬入 core（`encode`、`path`、`access_method`、`plan_fields`、`byte_reduce`、`dynamic_collection`、`dynamic_plan`、`dict_write`、`dynamic_graph`、`dynamic_cluster`）。投影那一半去了本来就在做投影的 crate——`okm_lake::columns`；`okm-dynamic` 已删除：它的测试搬到被测代码旁，湖、日志、bindings 直接写 core 的模块路径。
 
 ## 背景
 
@@ -12,7 +12,13 @@
 
 ## 决定
 
-1. **plan 是唯一的条目生产者。** `TablePlan` 长出一个 `EntryLayout`：每个已声明的面编译一次成字段引用——键字段的静态偏移、hot 字段的偏移、cold 字段的 tag——外加它的 includes 与尾部。一次对这份布局的 walk，从键字节与写已经建好的 payload 字节把各个面追加进 collection 的 `Entries` 缓冲；reduce 的 group 段按同样方式编译。生成的 `KvIndex` 实现只保留编译器能查、运行期查不了的那部分：`SLOT`、`FIELDS`、`INCLUDES`、`KEY_PREFIX`、`FUNC`、`admits`，以及 probe builder 里逐字段的 const 断言。`Document::index_entries_into` 退化成把键与 document 交给 walk 的那一次调用；每个索引自己的生成体不再生产。路由在 typed 侧仍是 const（`Document::PLAN`，ADR-0074 §3），在 dynamic 侧于 open 时编译（`TablePlan::compile`）；条目那一半由各形态自己持有的声明编译一次——typed 侧是它发射的声明表，dynamic 侧是调用方声明的 access method——因为 store 的面描述不携带它。一个生产者，两种拿到声明的方式。
+1. **plan 是唯一的条目生产者。** `TablePlan` 长出一个 `EntryLayout`：每个已声明的面编译一次成字段引用——键字段的静态偏移、hot 字段的偏移、cold 字段的 tag——外加它的 includes 与尾部。一次对这份布局的 walk，从键字节与写已经建好的 payload 字节把各个面追加进 collection 的 `Entries` 缓冲；reduce 的 group 段按同样方式编译。生成的 `KvIndex` 实现只保留编译器能查、运行期查不了的那部分：`SLOT`、`FIELDS`、`INCLUDES`、`KEY_PREFIX`、`FUNC`、`admits`，以及 probe builder 里逐字段的 const 断言。`Document::index_entries_into` 退化成把键与 document 交给 walk 的那一次调用；每个索引自己的生成体不再生产。路由在 typed 侧仍是 const（`Document::PLAN`，ADR-0074 §3），在 dynamic 侧于 open 时编译（`TablePlan::compile`）；条目那一半由各形态自己持有的声明编译一次——typed 侧是它发射的声明表，dynamic 侧是调用方声明的 access method——因为 store 的面描述不携带它。
+
+两种形态都在跑这套 walk，而它定下的是「一个面一个生产者」，不是「一张表一个生产者」。动态 plan 先把即将落库的 payload 编出来，再让 `Plain` 面从这些字节上走过；段不在声明字节里的面保留它自己的运行期生产者，产物追加进同一个缓冲——`Func` 的段是它 callable 的结果，`Partial` 面的准入是对 document 的谓词，`Path` 的段从动态段里解析。`DynamicCollection` 在声明到来时编译它的 `Plain` 面，之后每加一条就重编一次（`declare_index`，声明自身的规则——字段只取 payload、变长字段必须在末位——现在也在这里被拒，不再拖到第一次写）。清扫要的是 KEY 而不是键值对（`index_keys`）：删除只点名条目，而带 includes 的面那一段字节此刻没人读。
+
+有一个面是 walk 让它可以被索引、而按名字读的那套生产者拒绝过的：`Plain` 面可以点名 `Vocab` 字段。它的 payload 就是词汇表 id（ADR-0032），所以段就是那几个字节，一个类别按 id 排序——typed 侧对同一份声明本来就是这样。运行期生产者的 `encode_fixed` 没有 `Vocab` 分支，直接报错；所以这是 walk 带来的能力，是有意保留，而不是切字节的副产品。
+
+用 bench 里那两个已声明的面——一个 hot 字段、一个 covered 字段、一个 cold `Str` 尾段——量：动态生产者 187.7 ns，walk 27.1 ns（`cargo bench -p okm-core --bench core_paths -- "dynamic-tax/(index_entries/plain|entry_layout/plain)"`；同一份代码再跑一次是 179.2 / 27.3——walk 稳定在 27 ns，生产者两次之间有几个百分点的摆动）；一次热 plan 分配 8 次，而单是键值对生产者那一段就花 17 次（`okm-core/tests/alloc_test.rs`）。差的就是字典与逐条目的 `Vec`，也就是「写手上已有的 payload 字节」这句话省下的东西。
 
 2. **一份 ledger；错误归载体所有。** core 的 `reduce_get` / `scan_reduces` / `apply_row` 已经拥有对 accumulator 的 read-modify-write，动态侧在 `Vec<u8>` 上又写了一遍。缝本来就有：`ReduceCodec`（`encode_acc`/`decode_acc`，`okm-core/src/model/reduce.rs:26`），字节 accumulator 就是它的又一个实现。dynamic 的 fold 会失败，因为一个 `Dict` 可能对不上声明，也因为 fold 就是用户代码。给 typed 的 fold 挂上它不可能产生的错误，等于在写路径上付一笔调用方自己造不出来的账；而把 dynamic 的 fold 变成全函数，又让一个拒绝的 callable 无处可说。于是编排对载体的错误类型泛化：读侧是 `ledger_get` / `ledger_scan`，对任意 `ReduceCodec` 生效；写侧是 `apply_group`，跑在 `AccLedger` 上——载体只需回答两件事，`get_acc` 与 `put_acc`。引擎是一种载体（`StoreLedger`），dynamic 的 plan 是另一种（`PlanLedger`：一次写变成调用方记录下来的 ops）。step 拒绝时条目原样未动，因为写发生在 step 同意之后，所以形状检查不需要第二个家。`create` 在这里是参数而不是策略：typed 的写在 unfold 时也建条目，dynamic 的 plan 只在 fold 时建——这个差别比本 ADR 更老，留下来但被写明了。
 
@@ -26,7 +32,7 @@
 - `Entries`——写的缓冲，read-modify-write 时还有被替换那一行的——成为两种形态里写面生成的唯一位置。
 - bindings 与 `okm-log replay` 的入口不变；它们失去的是入口背后的第二份实现。
 - PLAN 里量过 walk 的那一条（「把 `TablePlan` 编译到 attach」）并入这一条，数字一并带过去。
-- typed 写路径不会因为 walk 本身变快：`put` 开着 walk 与关掉 walk 量下来持平（1.2975 µs 对 1.3002 µs），因为它刚编码完的 document 本来就在 cache 里。真正把 `put` 推快的是两处：`BatchStore::put_bytes` 改成一次拷进 batch 缓冲，而不是两个 `to_vec` 加一次拷贝（1.2975 → 1.2385 µs），那是 batch 边界的修正，不是这个决定的功劳；然后是这一份 ledger，1.2385 → 1.2149 µs。条目本身那 42%（`entry_layout/compiled` 33.8 ns 对 `index_entries_into/reused` 58.4 ns）落在「字节是唯一通货」的地方：dynamic 形态，以及任何 payload 到手、身边没有 typed document 的生产者。
+- typed 写路径不会因为 walk 本身变快：`put` 开着 walk 与关掉 walk 量下来持平（1.2975 µs 对 1.3002 µs），因为它刚编码完的 document 本来就在 cache 里。真正把 `put` 推快的是两处：`BatchStore::put_bytes` 改成一次拷进 batch 缓冲，而不是两个 `to_vec` 加一次拷贝（1.2975 → 1.2385 µs），那是 batch 边界的修正，不是这个决定的功劳；然后是这一份 ledger，1.2385 → 1.2149 µs。条目本身那 42%（`entry_layout/compiled` 33.8 ns 对 `index_entries_into/reused` 58.4 ns）落在「字节是唯一通货」的地方，而那个地方现在接上了：动态 plan 让 `Plain` 面从刚编出来的 payload 上走过（bench 那两个面 187.7 → 27.1 ns，再跑一次 179.2 → 27.3），`index_keys` 给清扫一个只取键的形态。留在运行期生产者上的是 callable 面与 path 索引——那正是「段不再是声明字节的函数」的位置。
 - 被替换那一行的面按 store 里的字节切，不按为 reduce 钩子解出来的那行切：那行经过 `__okm_deref_vocab` 后拿的是标签，而 store 里存的是 id，从它推出来的面未必指向写路径记下的那条 entry——在 vocab 字段上，merge 删不掉 put 写下的东西。
 - plan 编译所用的声明不是 store 的 schema，目前也还不可能是：`IndexSchema` 带的是 `name/slot/fields/includes/func/deprecated`，所以 `key(...)` 的尾部截断与 `where(...)` 谓词在存储字节里不可见，而 reduce 声明整个不在 `CollectionSchema` 里（`faces` 只对已声明的面取指纹）。因此两个只在截断或谓词上不同的声明会描述出同一份 schema，attach 分辨不出来。补上这个洞要加宽存储的声明与它的指纹——那是一次布局代数变更（ADR-0042），是另一个决定。
 

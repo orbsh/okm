@@ -247,3 +247,57 @@ fn a_label_is_probed_once_per_handle_not_once_per_document() {
         .unwrap();
     assert!(store.count() > 0, "a fresh handle probes again");
 }
+
+// --- a declared index over a categorical field ------------------------
+//
+// The wire form of a `Vocab` field is its id, so an entry that orders by that
+// field orders by the id. That is the typed side's answer, and it is what the
+// dynamic form's compiled walk answers too (`dynamic_table_test.rs`,
+// `a_plain_face_indexes_a_vocab_field_by_its_id`) — the capability the walk
+// brought, since the name-reading producer had no `Vocab` arm.
+
+#[derive(KeyEncode, Clone, PartialEq, Debug, Default)]
+pub struct CKey {
+    pub id: u64,
+}
+
+#[derive(DocumentEncode, Clone, PartialEq, Debug)]
+#[ok_ref(CKey)]
+#[ok_ns(81)]
+#[ok_index(by_status { fields(status), includes(score) })]
+pub struct CRow {
+    pub status: Vocab<u8>,
+    pub score: u32,
+}
+
+#[test]
+fn a_declared_index_over_a_categorical_field_orders_by_the_id() {
+    let store = TestStore::default();
+    let col = Collection::<_, CKey, CRow>::open(store.clone()).unwrap();
+    col.put(
+        &CKey { id: 1 },
+        &CRow {
+            status: Vocab::of("warn"),
+            score: 5,
+        },
+    )
+    .unwrap();
+
+    let id = col
+        .get_row(&CKey { id: 1 })
+        .unwrap()
+        .unwrap()
+        .status
+        .id()
+        .unwrap();
+    // ns | slot 0x4001 | the field's own byte (the id) | pkey
+    let mut prefix = 81u16.to_be_bytes().to_vec();
+    prefix.extend_from_slice(&0x4001u16.to_be_bytes());
+    prefix.push(id);
+    let hits = store.scan_suffix(&prefix).unwrap();
+    assert_eq!(
+        hits,
+        vec![CKey { id: 1 }.encode()],
+        "the entry is keyed by the interned id"
+    );
+}

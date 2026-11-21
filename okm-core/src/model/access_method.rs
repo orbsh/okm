@@ -109,6 +109,25 @@ impl std::fmt::Debug for AccessMethod {
     }
 }
 
+/// The payload-only rule, one sentence for all four call sites that ask it: the key IS the
+/// lookup target, so neither an index segment nor an includes segment may name a key field —
+/// and a key/payload name collision never silently resolves to the key side.
+fn payload_only(
+    schema: &CollectionSchema,
+    names: &[String],
+    label: &str,
+    plural: &str,
+) -> Result<(), String> {
+    for name in names {
+        if schema.key_fields.iter().any(|f| &f.name == name) {
+            return Err(format!(
+                "{label} field `{name}` is a key field; {plural} take payload fields only"
+            ));
+        }
+    }
+    Ok(())
+}
+
 impl AccessMethod {
     /// The face's canonical TEXT, for the runtime fingerprint (ADR-0048): a
     /// dynamic declaration has no `#[ok_index(name)]`, so the name is the kind
@@ -259,6 +278,29 @@ impl AccessMethod {
         Ok(())
     }
 
+    /// The declaration's own refusals, hoisted out of the per-write producer.
+    ///
+    /// Every rule here is a fact about the schema and the names the caller gave, not about a
+    /// document: the order rule, and the payload-only rule for `fields` and `includes` alike.
+    /// The write path re-runs them (it is the last gate before bytes land), but a declaration
+    /// can be answered once, where it arrives — and a caller assembling a table by hand gets the
+    /// same sentence there instead of on its first write.
+    ///
+    /// A `Path` face is exempt: its `fields` list is empty by contract and its segment resolves
+    /// out of the dynamic segment at decode time (`path_index_entries` owns its own rules).
+    pub(crate) fn validate(&self, schema: &CollectionSchema) -> Result<(), String> {
+        if matches!(self.kind, AccessMethodKind::Path { .. }) {
+            return Ok(());
+        }
+        // `Func` carries an empty `fields` list — the callable's result is the segment — so the
+        // order check is a no-op there, and its includes are checked exactly as a plain face's.
+        Self::check_field_order(schema, &self.fields)?;
+        payload_only(schema, &self.fields, "access method", "indexes")?;
+        Self::check_field_order(schema, &self.includes)?;
+        payload_only(schema, &self.includes, "includes", "includes")?;
+        Ok(())
+    }
+
     /// The indexed-field segment bytes, in declaration (sort) order.
     /// Payload-only (hot fields): the key IS the lookup target — indexing
     /// a key field would mean "use part of the pkey to find the pkey",
@@ -275,12 +317,8 @@ impl AccessMethod {
         let _ = pkey; // payload-only; the pkey tail is appended by the caller
         Self::check_field_order(schema, &self.fields)?;
         let mut buf = Vec::new();
+        payload_only(schema, &self.fields, "access method", "indexes")?;
         for name in &self.fields {
-            if schema.key_fields.iter().any(|f| &f.name == name) {
-                return Err(format!(
-                    "access method field `{name}` is a key field; indexes take payload fields only"
-                ));
-            }
             let v = document
                 .get(name)
                 .ok_or_else(|| format!("index field `{name}` missing from document"))?;
@@ -364,8 +402,88 @@ pub fn index_entries(
     pkey: &[u8],
     document: &Dict,
 ) -> Result<IndexEntries, String> {
+    collect(
+        schema,
+        ns,
+        indexes,
+        pkey,
+        document,
+        Emit {
+            values: true,
+            plain: true,
+        },
+    )
+}
+
+/// The keys a SWEEP removes — the same entries [`index_entries`] answers, without the values.
+///
+/// A delete plans the op list from the keys alone: it drops the includes segment on the floor.
+/// Building it first is bytes nobody reads, and on a table with a covered face it is the bulk
+/// of the work.
+pub fn index_keys(
+    schema: &CollectionSchema,
+    ns: &[u8],
+    indexes: &[AccessMethod],
+    pkey: &[u8],
+    document: &Dict,
+) -> Result<Vec<Vec<u8>>, String> {
+    let pairs = collect(
+        schema,
+        ns,
+        indexes,
+        pkey,
+        document,
+        Emit {
+            values: false,
+            plain: true,
+        },
+    )?;
+    Ok(pairs.into_iter().map(|(key, _)| key).collect())
+}
+
+/// The faces a compiled walk cannot produce: `Func` (its segment IS the callable's result) and
+/// `Partial` (its admission is a predicate over the document). `Plain` is left to the walk that
+/// owns it — one producer per face, never two writing the same entry (ADR-0076 §1).
+pub fn callable_entries(
+    schema: &CollectionSchema,
+    ns: &[u8],
+    indexes: &[AccessMethod],
+    pkey: &[u8],
+    document: &Dict,
+) -> Result<IndexEntries, String> {
+    collect(
+        schema,
+        ns,
+        indexes,
+        pkey,
+        document,
+        Emit {
+            values: true,
+            plain: false,
+        },
+    )
+}
+
+/// What one pass emits: the values, and whether the `Plain` faces are its business.
+#[derive(Clone, Copy)]
+struct Emit {
+    values: bool,
+    plain: bool,
+}
+
+fn collect(
+    schema: &CollectionSchema,
+    ns: &[u8],
+    indexes: &[AccessMethod],
+    pkey: &[u8],
+    document: &Dict,
+    emit: Emit,
+) -> Result<IndexEntries, String> {
     let mut out = Vec::new();
     for idx in indexes {
+        if !emit.plain && matches!(&idx.kind, AccessMethodKind::Plain) {
+            continue;
+        }
         // Partial gate (purity contract documented on `Admits`): consulted
         // before any entry is built, the single entry-production site, so
         // the filter is complete by construction.
@@ -394,23 +512,25 @@ pub fn index_entries(
         // the index segment: includes carry payload, not key bytes. The
         // order rule is shared with the index segment (at most one
         // variable-width field, last only).
+        //
+        // A sweep (`emit.values == false`) builds none of it: it removes the
+        // entries this face wrote, and the keys do not depend on what the
+        // document carried in the covered segment.
         AccessMethod::check_field_order(schema, &idx.includes)?;
         let mut ev = Vec::new();
-        for inc in &idx.includes {
-            if schema.key_fields.iter().any(|f| &f.name == inc) {
-                return Err(format!(
-                    "includes field `{inc}` is a key field; includes take payload fields only"
-                ));
-            }
-            let v = document
-                .get(inc)
-                .ok_or_else(|| format!("includes field `{inc}` missing from document"))?;
-            let f = find_field(schema, inc)
-                .ok_or_else(|| format!("includes field `{inc}` not in schema"))?;
-            if f.width == 0 {
-                encode_variable(f.ty, v, &mut ev)?;
-            } else {
-                encode_fixed(f.ty, v, &mut ev)?;
+        if emit.values {
+            payload_only(schema, &idx.includes, "includes", "includes")?;
+            for inc in &idx.includes {
+                let v = document
+                    .get(inc)
+                    .ok_or_else(|| format!("includes field `{inc}` missing from document"))?;
+                let f = find_field(schema, inc)
+                    .ok_or_else(|| format!("includes field `{inc}` not in schema"))?;
+                if f.width == 0 {
+                    encode_variable(f.ty, v, &mut ev)?;
+                } else {
+                    encode_fixed(f.ty, v, &mut ev)?;
+                }
             }
         }
         for fb in &segments {

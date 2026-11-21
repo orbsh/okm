@@ -221,6 +221,17 @@ The lake side of the same rows is **36.3 B/row**: `snapshot::parquet_io` writes 
 
 The interpreter tax on keys is real but absolute-scale tiny (40 ns vs 5 ns — both far below any engine op). The payload reversal (dynamic faster than derive) indicates the derive's String TLV path allocates more than the schema walk — worth an investigate later, not a blocker. Dynamic decode benchmarks land with the PyO3 binding work.
 
+### Entry production: the document by name vs the payload by bytes (2026-11-21)
+
+Two declared faces over one row — a hot field, a covered field, a cold `Str` tail:
+
+| path | mean |
+|---|---|
+| `dynamic-tax/index_entries/plain_from_names` | 187.7 ns |
+| `dynamic-tax/entry_layout/plain_from_bytes` | 27.1 ns |
+
+The first reads the document by NAME: one map lookup per field per entry, a fresh `Vec` for every key and every includes segment. The second is the compiled walk, which slices the key bytes the write encoded and the payload bytes it is about to store (ADR-0076 §1); the two answer byte-identical entries (`okm-core/tests/entry_layout_test.rs`). This is the gap the dynamic write path now runs on, and the reason it compiles its `Plain` faces at declaration time.
+
 ## The change log's capture tax
 
 `cargo run --release --example changelog_tax -p okm-core --features fjall` (9 paired rounds × 5,000 puts, order flipped each round, median of the per-round ratios — two fjall stores compact on their own schedule, so an unpaired median drifts):

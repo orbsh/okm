@@ -383,10 +383,13 @@ fn key_ref(schema: &CollectionSchema, name: &str) -> Result<FieldRef, Unsupporte
 /// reduce GROUP walk, not to a face: `KvIndex::encode_named` is the payload
 /// walk, and a face's `fields(...)` names payload fields. `key(...)` is how a
 /// face reaches key bytes, and it only ever names the tail.
+///
+/// The refusal names the rule, not the caller's arm: the same function answers for
+/// a face's segment and for its includes.
 fn payload_ref(schema: &CollectionSchema, name: &str) -> Result<FieldRef, Unsupported> {
     payload_ref_opt(schema, name).ok_or_else(|| Unsupported {
         face: name.to_string(),
-        why: "includes take payload fields, and no payload field has this name",
+        why: "no payload field has this name — a face's segment and its includes both take payload fields",
     })
 }
 
