@@ -18,9 +18,9 @@
 
 use okm_core::storage::VirtualStorage;
 
-use crate::index::{AccessMethod, scan_access_method};
 use crate::reduce::{BoundReduce, ReduceSpec};
 use crate::{CollectionSchema, Dict, decode_payload};
+use okm_core::model::access_method::{AccessMethod, scan_access_method};
 
 /// Codec errors surfaced as strings (dynamic callers are host-language
 /// bridges — error values, not typed hierarchies).
@@ -53,7 +53,7 @@ pub struct DynamicCollection<S: VirtualStorage> {
     ///
     /// A `RefCell` for the same reason the typed `Collection`'s mirror is one:
     /// the verbs take `&self`, and the mirror is per-collection state.
-    fields_vocab: std::cell::RefCell<Option<crate::plan_fields::VocabMirror>>,
+    fields_vocab: std::cell::RefCell<Option<okm_core::model::plan_fields::VocabMirror>>,
     /// Single-writer by construction, not by convention: `!Sync`, so a
     /// `&DynamicCollection` cannot be handed to a second thread while a
     /// read-modify-write is in flight (the typed `Collection` gets the same
@@ -432,11 +432,17 @@ impl<S: VirtualStorage> DynamicCollection<S> {
                 // derived on both slots (same bytes for a row-bearing document, which
                 // is why the double derivation is harmless).
                 let mut entries = if slot == okm_core::index::PRIMARY_SLOT {
-                    crate::index::index_entries(&self.schema, &ns, &self.indexes, pkey, &document)?
+                    okm_core::model::access_method::index_entries(
+                        &self.schema,
+                        &ns,
+                        &self.indexes,
+                        pkey,
+                        &document,
+                    )?
                 } else {
                     Vec::new()
                 };
-                entries.extend(crate::index::path_index_entries(
+                entries.extend(okm_core::model::access_method::path_index_entries(
                     &self.schema,
                     &ns,
                     &self.indexes,
@@ -636,7 +642,7 @@ impl<S: VirtualStorage> DynamicCollection<S> {
             .iter()
             .find(|i| i.slot == index_slot)
             .ok_or_else(|| format!("no access method with slot {index_slot}"))?;
-        crate::index::scan_access_method_keys(
+        okm_core::model::access_method::scan_access_method_keys(
             &self.store,
             &self.schema,
             &self.ns,
@@ -692,7 +698,7 @@ impl<S: VirtualStorage> DynamicCollection<S> {
             .iter()
             .find(|i| i.slot == index_slot)
             .ok_or_else(|| format!("no access method with slot {index_slot}"))?;
-        crate::index::scan_access_method_exact(
+        okm_core::model::access_method::scan_access_method_exact(
             &self.store,
             &self.schema,
             &self.ns,
@@ -719,7 +725,7 @@ impl<S: VirtualStorage> DynamicCollection<S> {
             .iter()
             .find(|i| i.slot == index_slot)
             .ok_or_else(|| format!("no access method with slot {index_slot}"))?;
-        crate::index::scan_access_method_covered(
+        okm_core::model::access_method::scan_access_method_covered(
             &self.store,
             &self.schema,
             &self.ns,
@@ -747,7 +753,7 @@ impl<S: VirtualStorage> DynamicCollection<S> {
     /// Dynamic-segment entry key: `[ns 2B][DYNAMIC_SLOT 2B][pkey]` —
     /// identical byte layout to the typed path's `fields_key`.
     fn fields_key(&self, pkey: &[u8]) -> Vec<u8> {
-        crate::plan_fields::fields_key(&self.ns, pkey)
+        okm_core::model::plan_fields::fields_key(&self.ns, pkey)
     }
 
     /// The stored dynamic segment as a name-keyed map (`None` = no entry; a
@@ -768,22 +774,26 @@ impl<S: VirtualStorage> DynamicCollection<S> {
         // another handle wrote is dropped only when the engine has no entry for
         // it either.
         let mut vocab = self.vocab()?;
-        Ok(Some(crate::plan_fields::fields_from_frames_probing(
-            &raw,
-            &mut vocab,
-            &self.store,
-            &self.ns,
-        )?))
+        Ok(Some(
+            okm_core::model::plan_fields::fields_from_frames_probing(
+                &raw,
+                &mut vocab,
+                &self.store,
+                &self.ns,
+            )?,
+        ))
     }
 
     /// The table's vocabulary mirror, loaded on first use. The field's doc
     /// carries why a cached mirror is safe; the short version is that both doors
     /// probe the store on a miss, so freshness is a performance question here,
     /// not a correctness one.
-    fn vocab(&self) -> Result<std::cell::RefMut<'_, crate::plan_fields::VocabMirror>, String> {
+    fn vocab(
+        &self,
+    ) -> Result<std::cell::RefMut<'_, okm_core::model::plan_fields::VocabMirror>, String> {
         let mut slot = self.fields_vocab.borrow_mut();
         if slot.is_none() {
-            *slot = Some(crate::plan_fields::VocabMirror::load(
+            *slot = Some(okm_core::model::plan_fields::VocabMirror::load(
                 &self.store,
                 &self.ns,
             )?);
@@ -877,7 +887,7 @@ impl<S: VirtualStorage> DynamicCollection<S> {
                 m.resolve_names(store, &self.ns, &dynamic)?;
                 Some(m)
             };
-            let mut fresh = crate::plan_fields::VocabMirror::default();
+            let mut fresh = okm_core::model::plan_fields::VocabMirror::default();
             let vocab = match cached.as_mut() {
                 Some(m) => &mut **m,
                 None => &mut fresh,
@@ -933,7 +943,7 @@ impl<S: VirtualStorage> DynamicCollection<S> {
                 m.resolve_names(store, &self.ns, &dynamic)?;
                 Some(m)
             };
-            let mut fresh = crate::plan_fields::VocabMirror::default();
+            let mut fresh = okm_core::model::plan_fields::VocabMirror::default();
             let vocab = match cached.as_mut() {
                 Some(m) => &mut **m,
                 None => &mut fresh,
@@ -994,8 +1004,13 @@ impl<S: VirtualStorage> DynamicCollection<S> {
         if !self.has_path_index() {
             return Ok(out);
         }
-        let entries =
-            crate::index::path_index_entries(&self.schema, &self.ns, &self.indexes, pkey, fields)?;
+        let entries = okm_core::model::access_method::path_index_entries(
+            &self.schema,
+            &self.ns,
+            &self.indexes,
+            pkey,
+            fields,
+        )?;
         for (k, v) in entries {
             if write {
                 out.put(k, v);

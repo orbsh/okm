@@ -19,6 +19,7 @@
     clippy::panic_in_result_fn
 )]
 
+pub mod access_method;
 pub mod document;
 pub mod encode;
 pub mod entries;
@@ -35,6 +36,7 @@ pub mod meta;
 pub mod obj_vocab;
 pub mod parts;
 pub mod path;
+pub mod plan_fields;
 pub mod prefix;
 pub mod presets;
 pub mod reduce;

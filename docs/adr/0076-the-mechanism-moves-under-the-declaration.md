@@ -1,6 +1,6 @@
 # 0076 — The mechanism moves under the declaration; the query surface stays two
 
-Status: decided 2026-11-21. §1 and §2 implemented; §3 in progress — `encode` and `path` moved into core.
+Status: decided 2026-11-21. §1 and §2 implemented; §3 in progress — `encode`, `path`, `plan_fields` and the declared-index machinery (`index` → `model::access_method`, beside the typed half core already had) moved into core.
 
 ## Context
 

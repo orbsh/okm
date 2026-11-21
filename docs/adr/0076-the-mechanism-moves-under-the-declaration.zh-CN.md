@@ -1,6 +1,6 @@
 # 0076 — 机制下沉到声明之下，查询面保持两套
 
-状态：2026-11-21 裁决。§1、§2 已落地；§3 进行中——`encode` 与 `path` 已搬入 core。
+状态：2026-11-21 裁决。§1、§2 已落地；§3 进行中——`encode`、`path`、`plan_fields` 与声明式索引那一套（`index` → `model::access_method`，与 core 已有的 typed 半边并排）已搬入 core。
 
 ## 背景
 

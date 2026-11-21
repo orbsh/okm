@@ -11,10 +11,10 @@
 //! function) runs in the host language at registration time and returns
 //! ENCODED bytes; this module only manages the entry lifecycle.
 
-use crate::{Dict, Value};
-use okm_core::model::path::Path;
-use okm_core::schema::CollectionSchema;
-use okm_core::storage::VirtualStorage;
+use crate::model::path::Path;
+use crate::schema::CollectionSchema;
+use crate::storage::VirtualStorage;
+use okm_value::{Dict, Variant as Value};
 
 /// Host-language callables for the semantic access methods (ADR-0022).
 /// Every callable receives the decoded document and returns encoded bytes
@@ -55,7 +55,7 @@ pub enum AccessMethodKind {
     /// the path's identity.
     Path {
         path: Path,
-        value_ty: okm_core::field::FieldType,
+        value_ty: crate::field::FieldType,
     },
 }
 
@@ -140,15 +140,15 @@ impl AccessMethod {
                 for c in path.components() {
                     text.push('/');
                     match c {
-                        okm_core::model::path::Component::Field(n) => {
+                        crate::model::path::Component::Field(n) => {
                             text.push_str("f:");
                             text.push_str(n);
                         }
-                        okm_core::model::path::Component::Index(i) => {
+                        crate::model::path::Component::Index(i) => {
                             text.push_str("i:");
                             text.push_str(&i.to_string());
                         }
-                        okm_core::model::path::Component::Key(b) => {
+                        crate::model::path::Component::Key(b) => {
                             text.push_str("k:");
                             for byte in b {
                                 text.push_str(&format!("{byte:02x}"));
@@ -184,12 +184,8 @@ impl AccessMethod {
     /// width encoders cover are accepted — a wrapper-like type
     /// (`VarInt`/`Quant`/`Offset`/`Enum`/`Vector`) is rejected here
     /// rather than failing at every write.
-    pub fn path(
-        slot: u16,
-        path: Path,
-        value_ty: okm_core::field::FieldType,
-    ) -> Result<Self, String> {
-        use okm_core::field::FieldType as FT;
+    pub fn path(slot: u16, path: Path, value_ty: crate::field::FieldType) -> Result<Self, String> {
+        use crate::field::FieldType as FT;
         if path.is_empty() {
             return Err("path index requires a non-empty path".to_string());
         }
@@ -308,7 +304,7 @@ impl AccessMethod {
 fn find_field<'s>(
     schema: &'s CollectionSchema,
     name: &str,
-) -> Option<&'s okm_core::schema::FieldSchema> {
+) -> Option<&'s crate::schema::FieldSchema> {
     schema
         .key_fields
         .iter()
@@ -319,12 +315,8 @@ fn find_field<'s>(
 
 /// BE encoding for a fixed-width dynamic value (the derive's index
 /// segment: plain big-endian bytes of the storage form).
-fn encode_fixed(
-    ty: okm_core::field::FieldType,
-    v: &Value,
-    buf: &mut Vec<u8>,
-) -> Result<(), String> {
-    use okm_core::field::FieldType as FT;
+fn encode_fixed(ty: crate::field::FieldType, v: &Value, buf: &mut Vec<u8>) -> Result<(), String> {
+    use crate::field::FieldType as FT;
     let unexpected = |want: &str| format!("field type {want:?} does not take {v:?}");
     match (ty, v) {
         (FT::U8, Value::U8(n)) => buf.push(*n),
@@ -342,11 +334,11 @@ fn encode_fixed(
 /// is byte-wise lexicographic and the pkey tail cuts the segment. Only
 /// the trailing position ever calls this (`check_field_order` enforces).
 fn encode_variable(
-    ty: okm_core::field::FieldType,
+    ty: crate::field::FieldType,
     v: &Value,
     buf: &mut Vec<u8>,
 ) -> Result<(), String> {
-    use okm_core::field::FieldType as FT;
+    use crate::field::FieldType as FT;
     let unexpected = |want: &str| format!("field type {want:?} does not take {v:?}");
     match (ty, v) {
         (FT::Str, Value::Str(s)) => buf.extend_from_slice(s.as_bytes()),
@@ -424,7 +416,7 @@ pub fn index_entries(
         for fb in &segments {
             let mut ek = Vec::with_capacity(ns.len() + 2 + fb.len() + pkey.len());
             ek.extend_from_slice(ns);
-            okm_core::write_slot(&mut ek, idx.slot);
+            crate::write_slot(&mut ek, idx.slot);
             ek.extend_from_slice(fb);
             ek.extend_from_slice(pkey);
             out.push((ek, ev.clone()));
@@ -473,7 +465,7 @@ pub fn path_index_entries(
         for fb in segments {
             let mut ek = Vec::with_capacity(ns.len() + 2 + fb.len() + pkey.len());
             ek.extend_from_slice(ns);
-            okm_core::write_slot(&mut ek, idx.slot);
+            crate::write_slot(&mut ek, idx.slot);
             ek.extend_from_slice(&fb);
             ek.extend_from_slice(pkey);
             out.push((ek, Vec::new()));
@@ -494,11 +486,11 @@ pub fn path_index_entries(
 /// leave the old entry behind. Out-of-range values produce no entry (the
 /// same empty-result rule as a missing path).
 fn encode_index_value(
-    ty: okm_core::field::FieldType,
+    ty: crate::field::FieldType,
     v: &Value,
     buf: &mut Vec<u8>,
 ) -> Result<(), String> {
-    use okm_core::field::FieldType as FT;
+    use crate::field::FieldType as FT;
     match ty {
         FT::U8 | FT::U16 | FT::U32 | FT::U64 => {
             let n = match v {
@@ -523,7 +515,7 @@ fn encode_index_value(
 }
 
 /// Leftmost-prefix scan over one access method: returns the primary keys
-/// of matching documents (dynamic counterpart of `okm_core::scan_index`).
+/// of matching documents (dynamic counterpart of `crate::scan_index`).
 /// The pkey is the tail of the entry key (`schema.key_len` bytes — a
 /// dynamic index always indexes the FULL key; prefix keys are a
 /// Rust-side refinement).
@@ -543,7 +535,7 @@ pub fn scan_access_method<S: VirtualStorage>(
 
 /// Equality scan over one access method: only documents whose field
 /// segment is EXACTLY the probe (dynamic counterpart of
-/// `okm_core::scan_index_exact`). A stored value longer than the probe
+/// `crate::scan_index_exact`). A stored value longer than the probe
 /// matches a prefix scan but not this one, and the tail-spill case is
 /// excluded by the same length test — exact matching without reading the
 /// document.
@@ -589,8 +581,8 @@ fn scan_access_method_filtered<S: VirtualStorage>(
     scan_access_method_entry_keys(store, schema, ns, index, encoded_prefix, exact)?
         .into_iter()
         .map(|ekey| {
-            crate::decode_key(schema, &ekey[ekey.len() - kl..])
-                .map_err(|e: crate::CodecError| e.to_string())
+            crate::decode::decode_key(schema, &ekey[ekey.len() - kl..])
+                .map_err(|e: okm_value::CodecError| e.to_string())
         })
         .collect()
 }
@@ -671,7 +663,7 @@ fn entry_scan_prefix(
     }
     let mut p = Vec::with_capacity(ns.len() + 2 + encoded_prefix.len());
     p.extend_from_slice(ns);
-    okm_core::write_slot(&mut p, index.slot);
+    crate::write_slot(&mut p, index.slot);
     p.extend_from_slice(encoded_prefix);
     Ok(p)
 }
@@ -697,7 +689,7 @@ pub fn scan_access_method_covered<S: VirtualStorage>(
     let p = entry_scan_prefix(schema, ns, index, encoded_prefix)?;
     let kl = schema.key_len;
     let mut out = Vec::new();
-    for (suffix, value) in okm_core::scan_suffix_kv(store, &p).map_err(|e| e.to_string())? {
+    for (suffix, value) in crate::scan_suffix_kv(store, &p).map_err(|e| e.to_string())? {
         // Same false-hit test as the key-only scan: below the tail width the
         // probe was satisfied by tail bytes, so the stored value is SHORTER
         // than the probe and cannot start with it.
@@ -705,8 +697,8 @@ pub fn scan_access_method_covered<S: VirtualStorage>(
             continue;
         }
         let start = suffix.len() - kl;
-        let key = crate::decode_key(schema, &suffix[start..])
-            .map_err(|e: crate::CodecError| e.to_string())?;
+        let key = crate::decode::decode_key(schema, &suffix[start..])
+            .map_err(|e: okm_value::CodecError| e.to_string())?;
         out.push((key, decode_includes(schema, index, &value)?));
     }
     Ok(out)
@@ -742,7 +734,7 @@ pub fn decode_includes(
             })?;
             off = raw.len();
             match f.ty {
-                okm_core::field::FieldType::Str => Value::Str(
+                crate::field::FieldType::Str => Value::Str(
                     String::from_utf8(rest.to_vec())
                         .map_err(|e| format!("includes field `{name}` is not valid UTF-8: {e}"))?,
                 ),
@@ -760,7 +752,7 @@ pub fn decode_includes(
                     raw.len()
                 ));
             }
-            let v = okm_core::decode::decode_fixed(name.clone(), f.ty, f.width, &raw[off..end])
+            let v = crate::decode::decode_fixed(name.clone(), f.ty, f.width, &raw[off..end])
                 .map_err(|e| format!("includes field `{name}`: {e:?}"))?;
             off = end;
             v

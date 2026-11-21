@@ -15,8 +15,8 @@
 //! single-writer-per-group ownership rule; steady state costs zero
 //! extra round trips, only restart recovery reads accs once).
 
-use crate::index::index_entries;
 use crate::{Dict, DynamicCollection, decode_payload, encode_payload};
+use okm_core::model::access_method::index_entries;
 use okm_core::schema::CollectionSchema;
 use okm_core::storage::VirtualStorage;
 
@@ -180,7 +180,7 @@ impl<S: VirtualStorage> DynamicCollection<S> {
         dynamic: &Dict,
         stored: Stored<'_>,
         acc_of: &AccOf,
-        vocab: &mut crate::plan_fields::VocabMirror,
+        vocab: &mut okm_core::model::plan_fields::VocabMirror,
     ) -> Result<PlannedWrite, String> {
         self.check_key(pkey)?;
         let mut plan = PlannedWrite::default();
@@ -215,7 +215,7 @@ impl<S: VirtualStorage> DynamicCollection<S> {
         dynamic: &Dict,
         stored: Stored<'_>,
         acc_of: &AccOf,
-        vocab: &mut crate::plan_fields::VocabMirror,
+        vocab: &mut okm_core::model::plan_fields::VocabMirror,
     ) -> Result<PlannedWrite, String> {
         self.check_key(pkey)?;
         let mut plan = PlannedWrite::default();
@@ -255,7 +255,7 @@ impl<S: VirtualStorage> DynamicCollection<S> {
         if let Some(old) = old_dynamic {
             plan.ops.append(&self.path_entry_ops(pkey, old, false)?);
             plan.ops
-                .del(&crate::plan_fields::fields_key(&self.ns, pkey));
+                .del(&okm_core::model::plan_fields::fields_key(&self.ns, pkey));
         }
         Ok(plan)
     }
@@ -270,10 +270,10 @@ impl<S: VirtualStorage> DynamicCollection<S> {
         pkey: &[u8],
         old: Option<&Dict>,
         new: &Dict,
-        vocab: &mut crate::plan_fields::VocabMirror,
+        vocab: &mut okm_core::model::plan_fields::VocabMirror,
         plan: &mut PlannedWrite,
     ) -> Result<(), String> {
-        let fields = crate::plan_fields::plan_put_fields(&self.ns, pkey, new, vocab)?;
+        let fields = okm_core::model::plan_fields::plan_put_fields(&self.ns, pkey, new, vocab)?;
         for (key, value) in fields.ops {
             plan.ops.put_opt(key, value);
         }

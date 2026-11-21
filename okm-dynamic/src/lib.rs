@@ -45,9 +45,7 @@ pub mod arrow;
 mod cluster;
 mod collection;
 mod graph;
-mod index;
 mod plan;
-mod plan_fields;
 mod reduce;
 mod write;
 
@@ -75,20 +73,20 @@ pub use cluster::{
 };
 pub use collection::DynamicCollection;
 pub use graph::{DynEdge, DynEdgeStream, Graph, edge_face_prefix, edge_step, predicate_id_in};
-pub use index::{
+pub use okm_core::decode::{decode_key, decode_payload, resolve_vocab_labels};
+pub use okm_core::model::access_method::{
     AccessMethod, AccessMethodKind, Admits, FuncDerive, decode_includes, index_entries,
     path_index_entries, scan_access_method, scan_access_method_covered, scan_access_method_exact,
     scan_access_method_keys,
 };
-pub use okm_core::decode::{decode_key, decode_payload, resolve_vocab_labels};
 pub use okm_core::model::encode::{encode_fields, encode_key, encode_payload};
 pub use okm_core::model::graph::{Direction, EdgeStep, HopHead};
 pub use okm_core::model::path::{Component, Path};
-pub use plan::{PlannedDelete, PlannedPut, PlannedWrite, Stored, decode_stored};
-pub use plan_fields::{
+pub use okm_core::model::plan_fields::{
     PlannedFields, VocabMirror, fields_from_frames, fields_from_frames_probing, fields_key,
     plan_delete_fields, plan_put_fields,
 };
+pub use plan::{PlannedDelete, PlannedPut, PlannedWrite, Stored, decode_stored};
 pub use reduce::{
     BoundReduce, PresetKind, PresetLogic, ReduceLogic, ReduceLogicObj, ReduceSpec, reduce_get,
     scan_reduces,

@@ -13,12 +13,12 @@
 //! callback + one read callback). The vocabulary, the nTLV frames, the
 //! slot constants — every byte rule stays here, one source.
 
-use okm_core::model::index::{DYNAMIC_SLOT, FIELD_VOCAB_ID_SLOT, FIELD_VOCAB_NAME_SLOT};
-use okm_core::model::obj_vocab::FIELD_VOCAB;
-use okm_core::storage::{VirtualStorage, scan_suffix_kv};
+use crate::model::index::{DYNAMIC_SLOT, FIELD_VOCAB_ID_SLOT, FIELD_VOCAB_NAME_SLOT};
+use crate::model::obj_vocab::FIELD_VOCAB;
+use crate::storage::{VirtualStorage, scan_suffix_kv};
 use okm_value::decode_named;
 
-use crate::{Dict, Value};
+use okm_value::{Dict, Variant as Value};
 
 /// The field-name vocabulary as a pure mirror (no engine): the plan
 /// surface's vocabulary carrier. `next_id` is the allocation watermark;
@@ -41,10 +41,10 @@ pub struct VocabMirror {
 /// A brand-new field name arriving at runtime is exactly the input this crate
 /// handles, so running out of ids is an answer for the caller (which can model
 /// the value as a `String` field instead), not a process-level stop.
-fn claim_id(next_id: &mut u16) -> okm_core::error::Result<u16> {
+fn claim_id(next_id: &mut u16) -> crate::error::Result<u16> {
     let id = *next_id;
     *next_id = id.checked_add(1).ok_or_else(|| {
-        okm_core::Error::Engine(
+        crate::Error::Engine(
             "vocabulary exhausted: field names fill a 2-byte id (ADR-0032); this name does not \
              fit — model the value as a String field instead"
                 .into(),
@@ -72,7 +72,7 @@ impl VocabMirror {
     pub fn load<S: VirtualStorage>(store: &S, ns: &[u8]) -> Result<Self, String> {
         let mut d = Self::default();
         let mut p2 = ns.to_vec();
-        okm_core::write_slot(&mut p2, FIELD_VOCAB_ID_SLOT);
+        crate::write_slot(&mut p2, FIELD_VOCAB_ID_SLOT);
         for (suffix, name) in scan_suffix_kv(store, &p2).map_err(|e| e.to_string())? {
             // The cursor is this prefix with NO suffix (`[ns][0x02]`); it is in
             // range and drops out here by length, exactly as an id entry cannot
@@ -114,7 +114,7 @@ impl VocabMirror {
         ns: &[u8],
     ) -> Result<(), String> {
         if let Some(raw) = store
-            .get(&okm_core::obj_vocab::cursor_key(ns, FIELD_VOCAB))
+            .get(&crate::obj_vocab::cursor_key(ns, FIELD_VOCAB))
             .map_err(|e| e.to_string())?
             && raw.len() == 2
         {
@@ -141,7 +141,7 @@ impl VocabMirror {
         for (name, value) in map {
             if !self.by_name.contains_key(name) {
                 let mut k = ns.to_vec();
-                okm_core::write_slot(&mut k, FIELD_VOCAB_NAME_SLOT);
+                crate::write_slot(&mut k, FIELD_VOCAB_NAME_SLOT);
                 k.extend_from_slice(name.as_bytes());
                 if let Some(raw) = store.get(&k).map_err(|e| e.to_string())?
                     && raw.len() == 2
@@ -227,7 +227,7 @@ pub struct PlannedFields {
 /// path (the typed model's fields_key is byte-identical).
 pub fn fields_key(ns: &[u8], pkey: &[u8]) -> Vec<u8> {
     let mut buf = ns.to_vec();
-    okm_core::write_slot(&mut buf, DYNAMIC_SLOT);
+    crate::write_slot(&mut buf, DYNAMIC_SLOT);
     buf.extend_from_slice(pkey);
     buf
 }
@@ -261,7 +261,7 @@ pub fn plan_put_fields(
         let by_id = &mut vocab.by_id;
         let next_id = &mut vocab.next_id;
         let written = &mut vocab.written;
-        let mut resolver = |name: &str| -> okm_core::error::Result<u16> {
+        let mut resolver = |name: &str| -> crate::error::Result<u16> {
             if let Some(id) = by_name.get(name) {
                 return Ok(*id);
             }
@@ -270,11 +270,11 @@ pub fn plan_put_fields(
             by_id.insert(id, name.to_string());
             written.push((name.to_string(), id));
             let mut id_key = ns.to_vec();
-            okm_core::write_slot(&mut id_key, FIELD_VOCAB_ID_SLOT);
+            crate::write_slot(&mut id_key, FIELD_VOCAB_ID_SLOT);
             id_key.extend_from_slice(&id.to_be_bytes());
             vocab_ops.push((id_key, Some(name.as_bytes().to_vec())));
             let mut name_key = ns.to_vec();
-            okm_core::write_slot(&mut name_key, FIELD_VOCAB_NAME_SLOT);
+            crate::write_slot(&mut name_key, FIELD_VOCAB_NAME_SLOT);
             name_key.extend_from_slice(name.as_bytes());
             vocab_ops.push((name_key, Some(id.to_be_bytes().to_vec())));
             Ok(id)
@@ -287,7 +287,7 @@ pub fn plan_put_fields(
     // key comes from `obj_vocab::cursor_key` — the host replays these ops, so
     // the derivation has exactly one definition.
     if !vocab.written.is_empty() {
-        let key = okm_core::obj_vocab::cursor_key(ns, FIELD_VOCAB);
+        let key = crate::obj_vocab::cursor_key(ns, FIELD_VOCAB);
         vocab_ops.push((key, Some(vocab.next_id.to_be_bytes().to_vec())));
     }
     let k = fields_key(ns, pkey);
@@ -338,7 +338,7 @@ pub fn fields_from_frames_probing<S: VirtualStorage>(
             return Ok(Some(name.to_string()));
         }
         let mut k = ns.to_vec();
-        okm_core::write_slot(&mut k, FIELD_VOCAB_ID_SLOT);
+        crate::write_slot(&mut k, FIELD_VOCAB_ID_SLOT);
         k.extend_from_slice(&id.to_be_bytes());
         let Some(raw) = store.get(&k).map_err(|e| e.to_string())? else {
             return Ok(None);
@@ -501,21 +501,46 @@ mod tests {
         assert_eq!(back, two_fields());
     }
 
-    /// ONE scan: the id face is the complete mapping (every writer emits both
-    /// directions in the same batch), so `by_name` is built by inversion. The
-    /// name face is left EMPTY here on purpose — the load must not need it.
+    /// A `BTreeMap` engine: the one scan this test needs, without pulling `okm-async` into
+    /// the crate's own unit tests — that would link a second `okm-core` and its
+    /// `VirtualStorage` would not be this one.
+    struct MapStore(std::cell::RefCell<std::collections::BTreeMap<Vec<u8>, Vec<u8>>>);
+
+    impl crate::engine::storage::VirtualStorage for MapStore {
+        fn put(&self, key: Vec<u8>, value: Vec<u8>) -> crate::error::Result<()> {
+            self.0.borrow_mut().insert(key, value);
+            Ok(())
+        }
+        fn get(&self, key: &[u8]) -> crate::error::Result<Option<Vec<u8>>> {
+            Ok(self.0.borrow().get(key).cloned())
+        }
+        fn del(&self, key: &[u8]) -> crate::error::Result<()> {
+            self.0.borrow_mut().remove(key);
+            Ok(())
+        }
+        fn scan_range(&self, begin: &[u8], end: Option<&[u8]>) -> crate::engine::storage::ScanIter {
+            let map = self.0.borrow();
+            let items: Vec<crate::error::Result<(Vec<u8>, Vec<u8>)>> = map
+                .range(begin.to_vec()..)
+                .take_while(|(k, _)| end.is_none_or(|e| k.as_slice() < e))
+                .map(|(k, v)| Ok((k.clone(), v.clone())))
+                .collect();
+            crate::engine::storage::ScanIter::Buffered(items.into_iter())
+        }
+    }
+
+    /// ONE scan: the id face is the complete mapping (every writer emits both directions in
+    /// the same batch), so `by_name` is built by inversion. The name face is left EMPTY here
+    /// on purpose — the load must not need it.
     #[test]
     fn load_inverts_the_id_face_and_needs_no_name_scan() {
-        use okm_async::TestStore;
-        let store = TestStore::slatedb_mem();
-        let mut batch = okm_core::storage::Batch::default();
+        let store = MapStore(Default::default());
         for (id, name) in [(0u16, "note"), (1u16, "weight")] {
             let mut k = ns();
-            okm_core::write_slot(&mut k, FIELD_VOCAB_ID_SLOT);
+            crate::write_slot(&mut k, FIELD_VOCAB_ID_SLOT);
             k.extend_from_slice(&id.to_be_bytes());
-            batch.put(k, name.as_bytes().to_vec());
+            store.put(k, name.as_bytes().to_vec()).unwrap();
         }
-        store.commit_batch(&batch).unwrap();
 
         let m = VocabMirror::load(&store, &ns()).unwrap();
         assert_eq!(m.by_id.get(&0), Some(&"note".to_string()));
