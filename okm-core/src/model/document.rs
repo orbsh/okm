@@ -634,6 +634,7 @@ impl<S: VirtualStorage, K: KeyEncode, R: Document<Key = K>> Collection<S, K, R> 
             R::__okm_apply_reduces(&mut store, key, document, &header, true)?;
         }
         self.commit(&batch)?;
+        drop(batch);
         R::__okm_emit_event(
             crate::subscribe::Op::Put,
             self.epoch.get(),
@@ -1012,7 +1013,8 @@ impl<S: VirtualStorage, K: KeyEncode, R: Document<Key = K>> Collection<S, K, R> 
     /// number of entries removed. Idempotent — a second call finds
     /// nothing. Does NOT touch live slots or the primary table.
     pub fn prune_deprecated_slots(&self) -> crate::error::Result<usize> {
-        let mut batch = crate::engine::storage::Batch::default();
+        let mut batch = self.batch.borrow_mut();
+        batch.clear();
         let mut removed = 0;
         for slot in R::DEPRECATED_SLOTS {
             let mut p = self.header();
@@ -1028,6 +1030,7 @@ impl<S: VirtualStorage, K: KeyEncode, R: Document<Key = K>> Collection<S, K, R> 
         // engine's refusal comes back instead of dying inside a per-entry `del`.
         if removed > 0 {
             self.commit(&batch)?;
+            drop(batch);
         }
         Ok(removed)
     }
@@ -1203,7 +1206,8 @@ impl<S: VirtualStorage, K: KeyEncode, R: Document<Key = K>> Collection<S, K, R> 
     /// the store exactly as it was — the dynamic half included.
     pub(crate) fn merge_map(&self, key: &K, object: &Dict) -> crate::error::Result<()> {
         let (typed, dynamic) = self.split_names(object);
-        let mut batch = crate::engine::storage::Batch::default();
+        let mut batch = self.batch.borrow_mut();
+        batch.clear();
         // The event a point verb owes its subscribers (ADR-0047): the row this
         // write leaves behind, taken before the commit and announced after it
         // returned `Ok`, exactly as `put` does. A merge that only touches the
@@ -1224,6 +1228,7 @@ impl<S: VirtualStorage, K: KeyEncode, R: Document<Key = K>> Collection<S, K, R> 
             self.slot1_into(&mut batch, key, &stored)?;
         }
         self.commit(&batch)?;
+        drop(batch);
         if let Some(document) = &announced {
             R::__okm_emit_event(crate::subscribe::Op::Put, self.epoch.get(), key, document);
         }
@@ -1246,7 +1251,8 @@ impl<S: VirtualStorage, K: KeyEncode, R: Document<Key = K>> Collection<S, K, R> 
     /// anything is written.
     pub(crate) fn replace_map(&self, key: &K, object: &Dict) -> crate::error::Result<()> {
         let (typed, dynamic) = self.split_names(object);
-        let mut batch = crate::engine::storage::Batch::default();
+        let mut batch = self.batch.borrow_mut();
+        batch.clear();
         // `replace` carries the same event rule as `merge`: whatever row it
         // leaves behind (`Put`) or removes (`Delete`). A map with no declared
         // name is `purge`'s write, so it announces what `purge` announces.
@@ -1267,6 +1273,7 @@ impl<S: VirtualStorage, K: KeyEncode, R: Document<Key = K>> Collection<S, K, R> 
         }
         self.slot1_into(&mut batch, key, &dynamic)?;
         self.commit(&batch)?;
+        drop(batch);
         if let Some((op, document)) = &announced {
             R::__okm_emit_event(*op, self.epoch.get(), key, document);
         }
@@ -1301,7 +1308,8 @@ impl<S: VirtualStorage, K: KeyEncode, R: Document<Key = K>> Collection<S, K, R> 
         if prev.is_none() && !has_segment {
             return Ok(false);
         }
-        let mut batch = crate::engine::storage::Batch::default();
+        let mut batch = self.batch.borrow_mut();
+        batch.clear();
         if let Some(document) = &prev {
             self.delete_into(&mut batch, key, document)?;
         }
@@ -1309,6 +1317,7 @@ impl<S: VirtualStorage, K: KeyEncode, R: Document<Key = K>> Collection<S, K, R> 
             batch.del(&self.fields_key(key));
         }
         self.commit(&batch)?;
+        drop(batch);
         // Subscribe: deletion event (same best-effort contract as put),
         // stamped with the table's post-write epoch. A segment-only document
         // has no row to hand the event, so it emits nothing.
