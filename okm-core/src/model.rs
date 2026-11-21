@@ -21,7 +21,10 @@
 
 pub mod access_method;
 pub mod byte_reduce;
+pub mod dict_write;
 pub mod document;
+pub mod dynamic_collection;
+pub mod dynamic_plan;
 pub mod encode;
 pub mod entries;
 pub mod entry_layout;

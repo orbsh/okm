@@ -15,17 +15,20 @@
 //! single-writer-per-group ownership rule; steady state costs zero
 //! extra round trips, only restart recovery reads accs once).
 
-use crate::{Dict, DynamicCollection, decode_payload, encode_payload};
-use okm_core::model::access_method::index_entries;
-use okm_core::schema::CollectionSchema;
-use okm_core::storage::VirtualStorage;
+use crate::decode::decode_payload;
+use crate::model::access_method::index_entries;
+use crate::model::dynamic_collection::DynamicCollection;
+use crate::model::encode::encode_payload;
+use crate::schema::CollectionSchema;
+use crate::storage::VirtualStorage;
+use okm_value::Dict;
 
 /// One planned write: the engine-shaped op list (Batch's
 /// `(key, Option<value>)` — None = delete) plus the new accumulator
 /// values the caller must adopt into its local cache.
 #[derive(Debug, Clone, PartialEq)]
 pub struct PlannedPut {
-    pub ops: okm_core::Batch,
+    pub ops: crate::Batch,
     /// Group entry key → the accumulator bytes that entry now holds.
     /// The actor updates its local acc cache from this receipt; the
     /// next plan reads the same keys through its `acc_of` closure.
@@ -37,7 +40,7 @@ pub struct PlannedPut {
 /// embedded path's delete of a missing key is a no-op, mirrored here).
 #[derive(Debug, Clone, PartialEq)]
 pub struct PlannedDelete {
-    pub ops: okm_core::Batch,
+    pub ops: crate::Batch,
     pub new_accs: Vec<(Vec<u8>, Vec<u8>)>,
 }
 
@@ -48,7 +51,7 @@ pub struct PlannedDelete {
 /// allocated — the caller adopts it into its mirror before the next plan.
 #[derive(Debug, Clone, PartialEq, Default)]
 pub struct PlannedWrite {
-    pub ops: okm_core::Batch,
+    pub ops: crate::Batch,
     pub new_accs: Vec<(Vec<u8>, Vec<u8>)>,
     pub new_vocab_entries: Vec<(String, u16)>,
 }
@@ -111,7 +114,7 @@ impl<S: VirtualStorage> DynamicCollection<S> {
         self.check_key(pkey)?;
         self.check_declared(document)?;
         let mut plan = PlannedPut {
-            ops: okm_core::Batch::default(),
+            ops: crate::Batch::default(),
             new_accs: Vec::new(),
         };
         let mut overlay = AccOverlay::new(acc_of);
@@ -146,7 +149,7 @@ impl<S: VirtualStorage> DynamicCollection<S> {
     ) -> Result<PlannedDelete, String> {
         self.check_key(pkey)?;
         let mut plan = PlannedDelete {
-            ops: okm_core::Batch::default(),
+            ops: crate::Batch::default(),
             new_accs: Vec::new(),
         };
         let mut overlay = AccOverlay::new(acc_of);
@@ -180,7 +183,7 @@ impl<S: VirtualStorage> DynamicCollection<S> {
         dynamic: &Dict,
         stored: Stored<'_>,
         acc_of: &AccOf,
-        vocab: &mut okm_core::model::plan_fields::VocabMirror,
+        vocab: &mut crate::model::plan_fields::VocabMirror,
     ) -> Result<PlannedWrite, String> {
         self.check_key(pkey)?;
         let mut plan = PlannedWrite::default();
@@ -215,7 +218,7 @@ impl<S: VirtualStorage> DynamicCollection<S> {
         dynamic: &Dict,
         stored: Stored<'_>,
         acc_of: &AccOf,
-        vocab: &mut okm_core::model::plan_fields::VocabMirror,
+        vocab: &mut crate::model::plan_fields::VocabMirror,
     ) -> Result<PlannedWrite, String> {
         self.check_key(pkey)?;
         let mut plan = PlannedWrite::default();
@@ -255,7 +258,7 @@ impl<S: VirtualStorage> DynamicCollection<S> {
         if let Some(old) = old_dynamic {
             plan.ops.append(&self.path_entry_ops(pkey, old, false)?);
             plan.ops
-                .del(&okm_core::model::plan_fields::fields_key(&self.ns, pkey));
+                .del(&crate::model::plan_fields::fields_key(&self.ns, pkey));
         }
         Ok(plan)
     }
@@ -270,10 +273,10 @@ impl<S: VirtualStorage> DynamicCollection<S> {
         pkey: &[u8],
         old: Option<&Dict>,
         new: &Dict,
-        vocab: &mut okm_core::model::plan_fields::VocabMirror,
+        vocab: &mut crate::model::plan_fields::VocabMirror,
         plan: &mut PlannedWrite,
     ) -> Result<(), String> {
-        let fields = okm_core::model::plan_fields::plan_put_fields(&self.ns, pkey, new, vocab)?;
+        let fields = crate::model::plan_fields::plan_put_fields(&self.ns, pkey, new, vocab)?;
         for (key, value) in fields.ops {
             plan.ops.put_opt(key, value);
         }
@@ -340,14 +343,14 @@ impl<S: VirtualStorage> DynamicCollection<S> {
     /// field is writing a DYNAMIC field of that name (see `split_names`), not the
     /// identity — the pkey stays authoritative. `encode_payload` requires every declared
     /// field, and "absent" means the default on the decode side too
-    /// ([`okm_core::decode::fill_schema_defaults`], one definition).
+    /// ([`crate::decode::fill_schema_defaults`], one definition).
     fn row_base(&self, pkey: &[u8], carried: &[&Dict]) -> Result<Dict, String> {
         let mut out = Dict::new();
         for map in carried {
             out.extend((*map).clone());
         }
-        out.extend(crate::decode_key(self.schema(), pkey).map_err(|e| e.to_string())?);
-        okm_core::decode::fill_schema_defaults(self.schema(), &mut out);
+        out.extend(crate::decode::decode_key(self.schema(), pkey).map_err(|e| e.to_string())?);
+        crate::decode::fill_schema_defaults(self.schema(), &mut out);
         Ok(out)
     }
 
@@ -364,7 +367,7 @@ impl<S: VirtualStorage> DynamicCollection<S> {
     ) -> Result<(), String> {
         // The key decoded ONCE per plan (schema-driven slicing of the
         // caller's pkey — the embedded path's &Key twin).
-        let key = crate::decode_key(self.schema(), pkey).map_err(|e| e.to_string())?;
+        let key = crate::decode::decode_key(self.schema(), pkey).map_err(|e| e.to_string())?;
         for reduce in &self.reduces {
             let ek = reduce.entry_key(self.schema(), &self.ns, &key, document)?;
             let mut ledger = PlanLedger {
@@ -373,7 +376,7 @@ impl<S: VirtualStorage> DynamicCollection<S> {
             };
             // The same read-modify-write the typed path runs (ADR-0076 §2); only the carrier
             // differs — here a write becomes the ops the caller records.
-            let wrote = okm_core::model::reduce::apply_group(
+            let wrote = crate::model::reduce::apply_group(
                 &mut ledger,
                 &ek,
                 || reduce.spec.logic.seed(),
@@ -421,7 +424,7 @@ struct PlanLedger<'a, 'b, P: PlanSink> {
     overlay: &'a mut AccOverlay<'b>,
 }
 
-impl<P: PlanSink> okm_core::model::reduce::AccLedger<Vec<u8>> for PlanLedger<'_, '_, P> {
+impl<P: PlanSink> crate::model::reduce::AccLedger<Vec<u8>> for PlanLedger<'_, '_, P> {
     type Error = String;
     fn get_acc(&mut self, entry_key: &[u8]) -> Result<Option<Vec<u8>>, String> {
         self.overlay.get(entry_key)

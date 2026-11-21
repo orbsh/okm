@@ -1,6 +1,6 @@
 # 0076 — 机制下沉到声明之下，查询面保持两套
 
-状态：2026-11-21 裁决。§1、§2 已落地；§3 进行中——`encode`、`path`、`plan_fields` 与声明式索引那一套（`index` → `model::access_method`，与 core 已有的 typed 半边并排）与 `reduce` 已搬入 core——字节 fold 是 `model::byte_reduce::ByteReduce`，`okm_dynamic::ReduceLogic` 作为别名保留，按旧名写的实现继续能编。
+状态：2026-11-21 裁决。§1、§2 已落地；§3 进行中——`encode`、`path`、`plan_fields` 与声明式索引那一套（`index` → `model::access_method`，与 core 已有的 typed 半边并排）`reduce`（字节 fold 是 `model::byte_reduce::ByteReduce`）以及 dynamic 门面本身——`collection`、`plan`、`write`——已搬入 core；留在外面的是 `arrow` 与各个投影。
 
 ## 背景
 

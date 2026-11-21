@@ -1,8 +1,8 @@
 //! One write verb, the payload type chooses the path (ADR-0035 as amended) —
-//! the runtime-typed mirror of `okm_core::WritePayload`.
+//! the runtime-typed mirror of [`crate::model::write::WritePayload`].
 //!
 //! The typed assembly point binds a document type at compile time, so its
-//! payloads are `&R`, a `Variant::Map` and the one-element tuple that
+//! payloads are `&R`, a `Value::Map` and the one-element tuple that
 //! marks "the whole thing". This facade has no `R` — a document IS a name-keyed
 //! map — so its payloads are the map itself for the partial document and the
 //! same one-tuple rule for the whole one. `&Value` is accepted too, so a caller
@@ -14,21 +14,19 @@
 //! op list with a different rule for absent names, which is a statement about
 //! the payload, not about the verb.
 
-use okm_core::storage::VirtualStorage;
-
-use crate::Dict;
-use crate::collection::DynamicCollection;
-use okm_value::Variant;
+use crate::engine::storage::VirtualStorage;
+use crate::model::dynamic_collection::DynamicCollection;
+use okm_value::{Dict, Variant as Value};
 
 /// What a `put` writes, and therefore which path it takes.
-pub trait WritePayload<S: VirtualStorage> {
+pub trait DictWrite<S: VirtualStorage> {
     /// Write this payload at `pkey` through `col`'s write path.
     fn write(self, col: &DynamicCollection<S>, pkey: &[u8]) -> Result<(), String>;
 }
 
 /// Partial document: a map, i.e. the names this write carries. Every other name
 /// in the stored document is left as it was.
-impl<S: VirtualStorage> WritePayload<S> for &Dict {
+impl<S: VirtualStorage> DictWrite<S> for &Dict {
     fn write(self, col: &DynamicCollection<S>, pkey: &[u8]) -> Result<(), String> {
         col.merge_map(pkey, self)
     }
@@ -36,33 +34,33 @@ impl<S: VirtualStorage> WritePayload<S> for &Dict {
 
 /// Partial document, spelled as the typed side spells it. Only an object is a
 /// document.
-impl<S: VirtualStorage> WritePayload<S> for &Variant {
+impl<S: VirtualStorage> DictWrite<S> for &Value {
     fn write(self, col: &DynamicCollection<S>, pkey: &[u8]) -> Result<(), String> {
         match self {
-            Variant::Map(object) => col.merge_map(pkey, object),
+            Value::Map(object) => col.merge_map(pkey, object),
             other => Err(not_a_document(other)),
         }
     }
 }
 
 /// Whole document: the map IS the document, so a name it omits is gone.
-impl<S: VirtualStorage> WritePayload<S> for (&Dict,) {
+impl<S: VirtualStorage> DictWrite<S> for (&Dict,) {
     fn write(self, col: &DynamicCollection<S>, pkey: &[u8]) -> Result<(), String> {
         col.replace_map(pkey, self.0)
     }
 }
 
 /// Whole document, spelled as the typed side spells it.
-impl<S: VirtualStorage> WritePayload<S> for (&Variant,) {
+impl<S: VirtualStorage> DictWrite<S> for (&Value,) {
     fn write(self, col: &DynamicCollection<S>, pkey: &[u8]) -> Result<(), String> {
         match self.0 {
-            Variant::Map(object) => col.replace_map(pkey, object),
+            Value::Map(object) => col.replace_map(pkey, object),
             other => Err(not_a_document(other)),
         }
     }
 }
 
-fn not_a_document(value: &Variant) -> String {
+fn not_a_document(value: &Value) -> String {
     format!(
         "a whole-document write takes an object; the payload is {}",
         okm_value::dyn_kind(value)

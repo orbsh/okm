@@ -16,11 +16,13 @@
 //! calling discipline; remote: operation payloads carry semantic
 //! results, single-writer-per-group).
 
-use okm_core::storage::VirtualStorage;
+use crate::storage::VirtualStorage;
 
-use crate::{CollectionSchema, Dict, decode_payload};
-use okm_core::model::access_method::{AccessMethod, scan_access_method};
-use okm_core::model::byte_reduce::{BoundReduce, ReduceSpec};
+use crate::decode::decode_payload;
+use crate::model::access_method::{AccessMethod, scan_access_method};
+use crate::model::byte_reduce::{BoundReduce, ReduceSpec};
+use crate::model::schema::CollectionSchema;
+use okm_value::Dict;
 
 /// Codec errors surfaced as strings (dynamic callers are host-language
 /// bridges — error values, not typed hierarchies).
@@ -53,7 +55,7 @@ pub struct DynamicCollection<S: VirtualStorage> {
     ///
     /// A `RefCell` for the same reason the typed `Collection`'s mirror is one:
     /// the verbs take `&self`, and the mirror is per-collection state.
-    fields_vocab: std::cell::RefCell<Option<okm_core::model::plan_fields::VocabMirror>>,
+    fields_vocab: std::cell::RefCell<Option<crate::model::plan_fields::VocabMirror>>,
     /// Single-writer by construction, not by convention: `!Sync`, so a
     /// `&DynamicCollection` cannot be handed to a second thread while a
     /// read-modify-write is in flight (the typed `Collection` gets the same
@@ -64,8 +66,7 @@ pub struct DynamicCollection<S: VirtualStorage> {
 /// The replay seam (ADR-0056 §5): core owns the mechanism, this type is the target it
 /// cannot name. Every method is a delegation — the trait exists for the dependency
 /// direction, not for behaviour.
-#[cfg(feature = "replay")]
-impl<S: VirtualStorage> okm_core::changelog::replay::ReplayTarget for DynamicCollection<S> {
+impl<S: VirtualStorage> crate::changelog::replay::ReplayTarget for DynamicCollection<S> {
     type Store = S;
 
     fn store(&self) -> &S {
@@ -161,8 +162,8 @@ impl<S: VirtualStorage> DynamicCollection<S> {
     /// typed `Collection` stamps, addressed by this table's ns. `None` = the
     /// store was never stamped; an engine failure surfaces as its message (this
     /// crate answers dynamic callers, which carry no typed error hierarchy).
-    pub fn meta(&self) -> Result<Option<okm_core::TableMeta>, String> {
-        okm_core::meta::read(&self.store, &self.ns).map_err(codec)
+    pub fn meta(&self) -> Result<Option<crate::TableMeta>, String> {
+        crate::meta::read(&self.store, &self.ns).map_err(codec)
     }
 
     /// First-touch verb (ADR-0043) on the dynamic side: record this declaration's
@@ -179,7 +180,7 @@ impl<S: VirtualStorage> DynamicCollection<S> {
     ///
     /// One point read when stamped, one point write when not: call it where the host
     /// attaches to a store, never on the write path.
-    pub fn ensure_layout(&self) -> Result<okm_core::TableMeta, String> {
+    pub fn ensure_layout(&self) -> Result<crate::TableMeta, String> {
         // An exported schema carries the compile-time fingerprint, and that value is
         // authoritative — it is the number a Rust build will compare against.
         //
@@ -190,7 +191,7 @@ impl<S: VirtualStorage> DynamicCollection<S> {
         // they are what gets hashed (ADR-0048).
         let faces = self.computed_faces();
         let mut meta =
-            okm_core::meta::ensure_layout(&self.store, &self.ns, self.schema.layout_version, faces)
+            crate::meta::ensure_layout(&self.store, &self.ns, self.schema.layout_version, faces)
                 .map_err(codec)?;
 
         // ADR-0029: a path index's SLOT is its identity — the entry key carries no
@@ -222,18 +223,21 @@ impl<S: VirtualStorage> DynamicCollection<S> {
                 }
                 Some(_) => {}
                 None => {
-                    meta.set(okm_core::meta::TABLE, self.schema.name.as_bytes().to_vec());
+                    meta.set(crate::meta::TABLE, self.schema.name.as_bytes().to_vec());
                     // The declaration itself, in the same bytes the typed path writes
                     // (ADR-0074 §2): one format, two modes — a dynamic table's store is as
                     // self-describing as a derived one's.
-                    meta.set(okm_core::meta::SCHEMA, self.schema.encode());
+                    meta.set(crate::meta::SCHEMA, self.schema.encode());
                     changed = true;
                 }
             }
         }
 
         for method in &self.indexes {
-            if !matches!(method.kind, crate::AccessMethodKind::Path { .. }) {
+            if !matches!(
+                method.kind,
+                crate::model::access_method::AccessMethodKind::Path { .. }
+            ) {
                 continue;
             }
             let (_, text) = method.face_spec();
@@ -244,7 +248,7 @@ impl<S: VirtualStorage> DynamicCollection<S> {
             }
         }
         if changed {
-            okm_core::meta::write(&self.store, &self.ns, &meta).map_err(codec)?;
+            crate::meta::write(&self.store, &self.ns, &meta).map_err(codec)?;
         }
         Ok(meta)
     }
@@ -259,7 +263,7 @@ impl<S: VirtualStorage> DynamicCollection<S> {
     /// that the table has none: a table declared before this record existed answers
     /// the same way, which is why `faces_status` is the drift check and this is not.
     pub fn path_registry(&self) -> Result<std::collections::BTreeMap<u16, String>, String> {
-        let Some(meta) = okm_core::meta::read(&self.store, &self.ns).map_err(codec)? else {
+        let Some(meta) = crate::meta::read(&self.store, &self.ns).map_err(codec)? else {
             return Ok(std::collections::BTreeMap::new());
         };
         let mut out = std::collections::BTreeMap::new();
@@ -293,7 +297,7 @@ impl<S: VirtualStorage> DynamicCollection<S> {
     /// What it cannot see: a `Func` / `Partial` CALLABLE is a boxed closure, so two
     /// different derives at one slot produce the same number. No fingerprint can
     /// hash a function body.
-    fn computed_faces(&self) -> [u8; okm_core::FINGERPRINT_LEN] {
+    fn computed_faces(&self) -> [u8; crate::FINGERPRINT_LEN] {
         let mut methods: Vec<&AccessMethod> = self.indexes.iter().collect();
         methods.sort_by_key(|m| m.slot);
 
@@ -317,13 +321,13 @@ impl<S: VirtualStorage> DynamicCollection<S> {
                 },
             )
             .collect();
-        let exported: Vec<Option<&okm_core::schema::IndexSchema>> = methods
+        let exported: Vec<Option<&crate::schema::IndexSchema>> = methods
             .iter()
             .map(|m| self.schema.indexes.iter().find(|i| i.slot == m.slot))
             .collect();
 
-        let specs: Vec<okm_core::FaceSpec<'_>> = (0..methods.len())
-            .map(|i| okm_core::FaceSpec {
+        let specs: Vec<crate::FaceSpec<'_>> = (0..methods.len())
+            .map(|i| crate::FaceSpec {
                 name: match exported[i] {
                     Some(e) => e.name.as_str(),
                     None => synthesized[i].0,
@@ -338,25 +342,25 @@ impl<S: VirtualStorage> DynamicCollection<S> {
                 deprecated: exported[i].is_some_and(|e| e.deprecated),
             })
             .collect();
-        okm_core::fingerprint_specs(&specs)
+        crate::fingerprint_specs(&specs)
     }
 
     /// Whether the store's faces were built for THIS declaration (ADR-0048), the
     /// dynamic twin of the typed status verb: `Match`, `Stale { stored, current }`
     /// (the table was declared with another set of access methods) or `Unknown`
     /// (no stamp was ever recorded).
-    pub fn faces_status(&self) -> Result<okm_core::FaceStatus, String> {
+    pub fn faces_status(&self) -> Result<crate::FaceStatus, String> {
         let current = self.computed_faces();
         Ok(
-            match okm_core::meta::read(&self.store, &self.ns).map_err(codec)? {
+            match crate::meta::read(&self.store, &self.ns).map_err(codec)? {
                 Some(meta) => meta.face_status(current),
-                None => okm_core::FaceStatus::Unknown { current },
+                None => crate::FaceStatus::Unknown { current },
             },
         )
     }
 
     /// Rebuild every face this table declares, then stamp the fingerprint — the
-    /// dynamic twin of [`okm_core::Collection::rebuild_faces`] (ADR-0048).
+    /// dynamic twin of [`crate::Collection::rebuild_faces`] (ADR-0048).
     ///
     /// Same two phases for the same reason: an entry's key encodes the value it
     /// indexes, so the faces are swept first (a changed value left its entry at a
@@ -377,18 +381,18 @@ impl<S: VirtualStorage> DynamicCollection<S> {
     /// document with a dynamic segment is walked on both slots (the row pass derives
     /// the access methods, the segment pass derives the path entries), so it is
     /// counted twice. The typed verb, which has only one slot to walk, counts rows.
-    pub fn rebuild_faces(&self, chunk: usize) -> Result<okm_core::RebuildReport, String> {
-        use okm_core::engine::storage::{Batch, prefix_end};
+    pub fn rebuild_faces(&self, chunk: usize) -> Result<crate::RebuildReport, String> {
+        use crate::engine::storage::{Batch, prefix_end};
 
         let chunk = chunk.max(1);
         let ns = self.ns.clone();
-        let mut report = okm_core::RebuildReport::default();
+        let mut report = crate::RebuildReport::default();
 
         // Phase 1 — sweep every declared method's slot.
         let mut batch = Batch::default();
         for method in &self.indexes {
             let mut prefix = ns.clone();
-            okm_core::write_slot(&mut prefix, method.slot);
+            crate::write_slot(&mut prefix, method.slot);
             let end = prefix_end(&prefix);
             for item in self.store.scan_range(&prefix, end.as_deref()) {
                 let (key, _) = item.map_err(codec)?;
@@ -414,9 +418,9 @@ impl<S: VirtualStorage> DynamicCollection<S> {
         // document is the PAIR of slots (ADR-0035), so both are walked; a document
         // that has both is visited twice and writes the same entries twice, which
         // is cheaper than a merge by key.
-        for slot in [okm_core::index::PRIMARY_SLOT, okm_core::index::DYNAMIC_SLOT] {
+        for slot in [crate::index::PRIMARY_SLOT, crate::index::DYNAMIC_SLOT] {
             let mut prefix = ns.clone();
-            okm_core::write_slot(&mut prefix, slot);
+            crate::write_slot(&mut prefix, slot);
             let end = prefix_end(&prefix);
             for item in self.store.scan_range(&prefix, end.as_deref()) {
                 let (key, _) = item.map_err(codec)?;
@@ -431,8 +435,8 @@ impl<S: VirtualStorage> DynamicCollection<S> {
                 // that case either. A path index addresses the SEGMENT, so it is
                 // derived on both slots (same bytes for a row-bearing document, which
                 // is why the double derivation is harmless).
-                let mut entries = if slot == okm_core::index::PRIMARY_SLOT {
-                    okm_core::model::access_method::index_entries(
+                let mut entries = if slot == crate::index::PRIMARY_SLOT {
+                    crate::model::access_method::index_entries(
                         &self.schema,
                         &ns,
                         &self.indexes,
@@ -442,7 +446,7 @@ impl<S: VirtualStorage> DynamicCollection<S> {
                 } else {
                     Vec::new()
                 };
-                entries.extend(okm_core::model::access_method::path_index_entries(
+                entries.extend(crate::model::access_method::path_index_entries(
                     &self.schema,
                     &ns,
                     &self.indexes,
@@ -471,7 +475,7 @@ impl<S: VirtualStorage> DynamicCollection<S> {
 
         // Phase 3 — the stamp, the last write, exactly as the typed verb does it.
         let faces = self.computed_faces();
-        okm_core::meta::stamp_layout(&self.store, &ns, self.schema.layout_version, faces)
+        crate::meta::stamp_layout(&self.store, &ns, self.schema.layout_version, faces)
             .map_err(codec)?;
         Ok(report)
     }
@@ -483,17 +487,17 @@ impl<S: VirtualStorage> DynamicCollection<S> {
     /// this schema does not speak — a row with no `version` at all is refused the
     /// same way (`LayoutUnstamped`), since it is not an older store but one this
     /// build did not stamp. `faces` belongs to the stamp verbs.
-    pub fn set_meta(&self, name: &str, value: Vec<u8>) -> Result<okm_core::TableMeta, String> {
+    pub fn set_meta(&self, name: &str, value: Vec<u8>) -> Result<crate::TableMeta, String> {
         let mut meta = match self.meta()? {
             Some(meta) => {
-                okm_core::meta::check_layout(&meta, self.schema.layout_version).map_err(codec)?;
+                crate::meta::check_layout(&meta, self.schema.layout_version).map_err(codec)?;
                 meta
             }
-            None => okm_core::TableMeta::new(),
+            None => crate::TableMeta::new(),
         };
         meta.set(name, value);
-        meta.set(okm_core::meta::VERSION, vec![self.schema.layout_version]);
-        okm_core::meta::write(&self.store, &self.ns, &meta).map_err(codec)?;
+        meta.set(crate::meta::VERSION, vec![self.schema.layout_version]);
+        crate::meta::write(&self.store, &self.ns, &meta).map_err(codec)?;
         Ok(meta)
     }
 
@@ -514,14 +518,18 @@ impl<S: VirtualStorage> DynamicCollection<S> {
 
     /// Declare a reduce group at runtime (binding-time registration).
     /// Slot rule mirrors `declare_index`.
-    pub fn declare_reduce(&mut self, spec: crate::ReduceSpec) -> Result<(), String> {
+    pub fn declare_reduce(
+        &mut self,
+        spec: crate::model::byte_reduce::ReduceSpec,
+    ) -> Result<(), String> {
         if spec.slot == 0 || self.reduces.iter().any(|r| r.spec.slot == spec.slot) {
             return Err(format!(
                 "reduce slot {} must be unique and non-zero",
                 spec.slot
             ));
         }
-        self.reduces.push(crate::BoundReduce::new(spec));
+        self.reduces
+            .push(crate::model::byte_reduce::BoundReduce::new(spec));
         Ok(())
     }
 
@@ -544,7 +552,7 @@ impl<S: VirtualStorage> DynamicCollection<S> {
     pub(crate) fn primary_key(&self, pkey: &[u8]) -> Vec<u8> {
         let mut buf = Vec::with_capacity(3 + self.schema.key_len);
         buf.extend_from_slice(&self.ns);
-        okm_core::write_slot(&mut buf, okm_core::index::PRIMARY_SLOT);
+        crate::write_slot(&mut buf, crate::index::PRIMARY_SLOT);
         buf.extend_from_slice(pkey);
         buf
     }
@@ -585,7 +593,7 @@ impl<S: VirtualStorage> DynamicCollection<S> {
             return Ok(None);
         };
         let mut values = decode_payload(&self.schema, &payload).map_err(codec)?;
-        okm_core::decode::resolve_vocab_labels(&self.schema, &self.store, &self.ns, &mut values)?;
+        crate::decode::resolve_vocab_labels(&self.schema, &self.store, &self.ns, &mut values)?;
         Ok(Some(values))
     }
 
@@ -595,7 +603,7 @@ impl<S: VirtualStorage> DynamicCollection<S> {
     /// ops in order inside one call. Either way the document write, its faces,
     /// the reduce ledger and the dynamic-segment entry land together — the same
     /// one-commit rule the typed `Collection` keeps (ADR-0035 rule 6).
-    fn replay(&self, batch: &okm_core::Batch) -> Result<(), String> {
+    fn replay(&self, batch: &crate::Batch) -> Result<(), String> {
         if batch.is_empty() {
             return Ok(());
         }
@@ -642,7 +650,7 @@ impl<S: VirtualStorage> DynamicCollection<S> {
             .iter()
             .find(|i| i.slot == index_slot)
             .ok_or_else(|| format!("no access method with slot {index_slot}"))?;
-        okm_core::model::access_method::scan_access_method_keys(
+        crate::model::access_method::scan_access_method_keys(
             &self.store,
             &self.schema,
             &self.ns,
@@ -653,7 +661,7 @@ impl<S: VirtualStorage> DynamicCollection<S> {
 
     /// Every document's KEY (the pkey bytes), in key order: the rows (slot 0)
     /// merged with the segments that have NO row (slot 1) — the dynamic face's
-    /// twin of `okm_core::Collection::scan_document_keys`.
+    /// twin of `crate::Collection::scan_document_keys`.
     ///
     /// A document is the pair of slots (ADR-0035), so a `merge` / `replace` that
     /// carried no declared name left a document a primary scan cannot see. Two
@@ -661,9 +669,9 @@ impl<S: VirtualStorage> DynamicCollection<S> {
     /// [`fetch`](Self::fetch)'s job.
     pub fn scan_document_keys(&self) -> Result<Vec<Vec<u8>>, String> {
         let mut rows = self.ns.clone();
-        okm_core::write_slot(&mut rows, okm_core::index::PRIMARY_SLOT);
+        crate::write_slot(&mut rows, crate::index::PRIMARY_SLOT);
         let mut segs = self.ns.clone();
-        okm_core::write_slot(&mut segs, okm_core::index::DYNAMIC_SLOT);
+        crate::write_slot(&mut segs, crate::index::DYNAMIC_SLOT);
         let rows = self.store.scan_suffix(&rows).map_err(|e| e.to_string())?;
         let segs = self.store.scan_suffix(&segs).map_err(|e| e.to_string())?;
         let mut out = Vec::with_capacity(rows.len() + segs.len());
@@ -698,7 +706,7 @@ impl<S: VirtualStorage> DynamicCollection<S> {
             .iter()
             .find(|i| i.slot == index_slot)
             .ok_or_else(|| format!("no access method with slot {index_slot}"))?;
-        okm_core::model::access_method::scan_access_method_exact(
+        crate::model::access_method::scan_access_method_exact(
             &self.store,
             &self.schema,
             &self.ns,
@@ -725,7 +733,7 @@ impl<S: VirtualStorage> DynamicCollection<S> {
             .iter()
             .find(|i| i.slot == index_slot)
             .ok_or_else(|| format!("no access method with slot {index_slot}"))?;
-        okm_core::model::access_method::scan_access_method_covered(
+        crate::model::access_method::scan_access_method_covered(
             &self.store,
             &self.schema,
             &self.ns,
@@ -753,7 +761,7 @@ impl<S: VirtualStorage> DynamicCollection<S> {
     /// Dynamic-segment entry key: `[ns 2B][DYNAMIC_SLOT 2B][pkey]` —
     /// identical byte layout to the typed path's `fields_key`.
     fn fields_key(&self, pkey: &[u8]) -> Vec<u8> {
-        okm_core::model::plan_fields::fields_key(&self.ns, pkey)
+        crate::model::plan_fields::fields_key(&self.ns, pkey)
     }
 
     /// The stored dynamic segment as a name-keyed map (`None` = no entry; a
@@ -774,14 +782,12 @@ impl<S: VirtualStorage> DynamicCollection<S> {
         // another handle wrote is dropped only when the engine has no entry for
         // it either.
         let mut vocab = self.vocab()?;
-        Ok(Some(
-            okm_core::model::plan_fields::fields_from_frames_probing(
-                &raw,
-                &mut vocab,
-                &self.store,
-                &self.ns,
-            )?,
-        ))
+        Ok(Some(crate::model::plan_fields::fields_from_frames_probing(
+            &raw,
+            &mut vocab,
+            &self.store,
+            &self.ns,
+        )?))
     }
 
     /// The table's vocabulary mirror, loaded on first use. The field's doc
@@ -790,10 +796,10 @@ impl<S: VirtualStorage> DynamicCollection<S> {
     /// not a correctness one.
     fn vocab(
         &self,
-    ) -> Result<std::cell::RefMut<'_, okm_core::model::plan_fields::VocabMirror>, String> {
+    ) -> Result<std::cell::RefMut<'_, crate::model::plan_fields::VocabMirror>, String> {
         let mut slot = self.fields_vocab.borrow_mut();
         if slot.is_none() {
-            *slot = Some(okm_core::model::plan_fields::VocabMirror::load(
+            *slot = Some(crate::model::plan_fields::VocabMirror::load(
                 &self.store,
                 &self.ns,
             )?);
@@ -835,8 +841,8 @@ impl<S: VirtualStorage> DynamicCollection<S> {
     /// `&okm_value::Variant` is accepted as the payload too — an object,
     /// refused otherwise — so a caller holding a decoded value writes without
     /// re-wrapping it. The two paths keep the contracts their verbs had; see
-    /// [`WritePayload`](crate::write::WritePayload).
-    pub fn put<W: crate::write::WritePayload<S>>(
+    /// [`DictWrite`](crate::model::dict_write::DictWrite).
+    pub fn put<W: crate::model::dict_write::DictWrite<S>>(
         &self,
         pkey: &[u8],
         payload: W,
@@ -887,7 +893,7 @@ impl<S: VirtualStorage> DynamicCollection<S> {
                 m.resolve_names(store, &self.ns, &dynamic)?;
                 Some(m)
             };
-            let mut fresh = okm_core::model::plan_fields::VocabMirror::default();
+            let mut fresh = crate::model::plan_fields::VocabMirror::default();
             let vocab = match cached.as_mut() {
                 Some(m) => &mut **m,
                 None => &mut fresh,
@@ -896,7 +902,7 @@ impl<S: VirtualStorage> DynamicCollection<S> {
                 pkey,
                 &declared,
                 &dynamic,
-                crate::plan::Stored {
+                crate::model::dynamic_plan::Stored {
                     row: old_row.as_ref(),
                     dynamic: old_dynamic.as_ref(),
                 },
@@ -943,7 +949,7 @@ impl<S: VirtualStorage> DynamicCollection<S> {
                 m.resolve_names(store, &self.ns, &dynamic)?;
                 Some(m)
             };
-            let mut fresh = okm_core::model::plan_fields::VocabMirror::default();
+            let mut fresh = crate::model::plan_fields::VocabMirror::default();
             let vocab = match cached.as_mut() {
                 Some(m) => &mut **m,
                 None => &mut fresh,
@@ -952,7 +958,7 @@ impl<S: VirtualStorage> DynamicCollection<S> {
                 pkey,
                 &declared,
                 &dynamic,
-                crate::plan::Stored {
+                crate::model::dynamic_plan::Stored {
                     row: old_row.as_ref(),
                     dynamic: old_dynamic.as_ref(),
                 },
@@ -985,9 +991,12 @@ impl<S: VirtualStorage> DynamicCollection<S> {
     /// Is any path index declared on this table? The gate that keeps the
     /// old-map read off the common (no path index) write path.
     fn has_path_index(&self) -> bool {
-        self.indexes
-            .iter()
-            .any(|i| matches!(i.kind, crate::AccessMethodKind::Path { .. }))
+        self.indexes.iter().any(|i| {
+            matches!(
+                i.kind,
+                crate::model::access_method::AccessMethodKind::Path { .. }
+            )
+        })
     }
 
     /// Path-index ops for one dynamic map: entries when `write`, the same
@@ -999,12 +1008,12 @@ impl<S: VirtualStorage> DynamicCollection<S> {
         pkey: &[u8],
         fields: &Dict,
         write: bool,
-    ) -> Result<okm_core::Batch, String> {
-        let mut out = okm_core::Batch::default();
+    ) -> Result<crate::Batch, String> {
+        let mut out = crate::Batch::default();
         if !self.has_path_index() {
             return Ok(out);
         }
-        let entries = okm_core::model::access_method::path_index_entries(
+        let entries = crate::model::access_method::path_index_entries(
             &self.schema,
             &self.ns,
             &self.indexes,

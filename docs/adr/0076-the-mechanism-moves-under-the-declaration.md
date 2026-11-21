@@ -1,6 +1,6 @@
 # 0076 — The mechanism moves under the declaration; the query surface stays two
 
-Status: decided 2026-11-21. §1 and §2 implemented; §3 in progress — `encode`, `path`, `plan_fields` and the declared-index machinery (`index` → `model::access_method`, beside the typed half core already had) and `reduce` moved into core — the byte fold is `model::byte_reduce::ByteReduce`, `okm_dynamic::ReduceLogic` kept as an alias so implementations written against the old name still compile.
+Status: decided 2026-11-21. §1 and §2 implemented; §3 in progress — `encode`, `path`, `plan_fields` and the declared-index machinery (`index` → `model::access_method`, beside the typed half core already had) `reduce` (the byte fold is `model::byte_reduce::ByteReduce`), and the dynamic face itself — `collection`, `plan`, `write` — moved into core; what remains outside is `arrow` and the projections.
 
 ## Context
 

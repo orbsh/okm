@@ -43,10 +43,7 @@
 #[cfg(feature = "arrow")]
 pub mod arrow;
 mod cluster;
-mod collection;
 mod graph;
-mod plan;
-mod write;
 
 pub use okm_core::TableMeta;
 // The two cluster spellings travel with the crate: a caller of the dynamic surface
@@ -70,7 +67,6 @@ pub use cluster::{
     EdgeConflict, HalfEdge, Kind, MEMBER_COUNT, NODE_COUNT, ReplaceReport, RetractReport,
     Selection, WriteReport, intern_kind, interned_kinds, interned_label,
 };
-pub use collection::DynamicCollection;
 pub use graph::{DynEdge, DynEdgeStream, Graph, edge_face_prefix, edge_step, predicate_id_in};
 pub use okm_core::decode::{decode_key, decode_payload, resolve_vocab_labels};
 pub use okm_core::model::access_method::{
@@ -82,6 +78,11 @@ pub use okm_core::model::byte_reduce::{
     BoundReduce, ByteReduce, ByteReduceObj, GroupAccs, PresetKind, PresetLogic, ReduceSpec,
     reduce_get, scan_reduces,
 };
+pub use okm_core::model::dict_write::DictWrite;
+pub use okm_core::model::dynamic_collection::DynamicCollection;
+pub use okm_core::model::dynamic_plan::{
+    PlannedDelete, PlannedPut, PlannedWrite, Stored, decode_stored,
+};
 pub use okm_core::model::encode::{encode_fields, encode_key, encode_payload};
 pub use okm_core::model::graph::{Direction, EdgeStep, HopHead};
 pub use okm_core::model::path::{Component, Path};
@@ -89,5 +90,3 @@ pub use okm_core::model::plan_fields::{
     PlannedFields, VocabMirror, fields_from_frames, fields_from_frames_probing, fields_key,
     plan_delete_fields, plan_put_fields,
 };
-pub use plan::{PlannedDelete, PlannedPut, PlannedWrite, Stored, decode_stored};
-pub use write::WritePayload;
