@@ -189,6 +189,26 @@ pub struct EntryLayout {
 }
 
 impl EntryLayout {
+    /// Compile a declaration TABLE into field references, once.
+    ///
+    /// The table is the one a form owns: the typed side's emitted `INDEX_DECLS`,
+    /// the dynamic side's own access methods. `CollectionSchema` supplies the
+    /// field placement (offsets, widths, cold tags) either way.
+    pub fn from_decls(
+        schema: &CollectionSchema,
+        decls: &'static [IndexDecl],
+    ) -> Result<Self, Unsupported> {
+        let faces: Vec<FaceDecl<'static>> = decls
+            .iter()
+            // A deprecated face keeps its slot reserved and produces nothing: the generated
+            // body filters it out, and the walk has to answer the same (ADR-0002's no-reuse
+            // discipline one level down).
+            .filter(|d| !d.deprecated)
+            .map(FaceDecl::from_index_decl)
+            .collect();
+        Self::compile(schema, &faces)
+    }
+
     /// Compile a declaration into field references, once.
     ///
     /// Fails on the two declarations whose segment is not in the declaration
@@ -255,6 +275,32 @@ impl EntryLayout {
         payload: &[u8],
         out: &mut Entries,
     ) -> Result<(), Malformed> {
+        self.produce_inner(ns, key, payload, out, true)
+    }
+
+    /// The same walk for a payload this declaration itself encoded.
+    ///
+    /// `Document::encode_payload` writes every declared cold field, so the tag scan that
+    /// guards [`Self::produce`] has nothing to find on the write path — skipping it is the
+    /// difference between two walks of the cold frames per write and one.
+    pub fn produce_encoded(
+        &self,
+        ns: &[u8],
+        key: &[u8],
+        payload: &[u8],
+        out: &mut Entries,
+    ) -> Result<(), Malformed> {
+        self.produce_inner(ns, key, payload, out, false)
+    }
+
+    fn produce_inner(
+        &self,
+        ns: &[u8],
+        key: &[u8],
+        payload: &[u8],
+        out: &mut Entries,
+        validate: bool,
+    ) -> Result<(), Malformed> {
         if payload.len() < self.hot_width {
             return Err(Malformed::ShortPayload {
                 hot_width: self.hot_width,
@@ -269,13 +315,17 @@ impl EntryLayout {
         }
         // Every cold tag the walk reads is checked before the first entry is
         // appended, so a bad payload cannot leave half a face's entries in the
-        // caller's buffer.
-        for face in &self.faces {
-            for f in face.segment.iter().chain(face.includes.iter()) {
-                if let FieldRef::Cold { tag } = f
-                    && cold_frame(payload, self.hot_width, *tag).is_none()
-                {
-                    return Err(Malformed::MissingCold { tag: *tag });
+        // caller's buffer. Per reference rather than through a collected tag
+        // list: this runs on the write path, and a `Vec` here would be an
+        // allocation per write for an answer one scan already gives.
+        if validate {
+            for face in &self.faces {
+                for f in face.segment.iter().chain(face.includes.iter()) {
+                    if let FieldRef::Cold { tag } = f
+                        && cold_frame(payload, self.hot_width, *tag).is_none()
+                    {
+                        return Err(Malformed::MissingCold { tag: *tag });
+                    }
                 }
             }
         }

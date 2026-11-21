@@ -26,6 +26,7 @@ The next step was already measured and named. A hardcoded plan costs 3.0 ns key 
 - `Entries` — the write's buffer, and the previous row's for a read-modify-write — becomes the single place a write's faces are built, in both forms.
 - The bindings and `okm-log replay` keep their entry points; what they lose is a second implementation behind them.
 - The PLAN item that measured the walk ("compile `TablePlan` at attach") folds into this one, numbers included.
+- The typed write path does not get faster by this. `put` measures the same with the walk as with the walk disabled (1.2975 µs against 1.3002 µs), because the document it just encoded is already hot; the 42% the entry set gains on its own (`entry_layout/compiled` 33.8 ns against `index_entries_into/reused` 58.4 ns) lands where bytes are the only currency — the dynamic form, and any producer whose payload arrives without a typed document beside it.
 - The declaration a plan compiles from is not the store's schema, and cannot be yet: `IndexSchema` carries `name/slot/fields/includes/func/deprecated`, so a `key(...)` tail truncation and a `where(...)` predicate are invisible in the stored bytes, and reduce declarations are absent from `CollectionSchema` altogether (`faces` fingerprints declared faces only). Two declarations differing only in a truncation or a predicate therefore describe the same schema, and attach cannot tell them apart. Closing that gap means widening the stored declaration and its fingerprint — a layout generation change (ADR-0042), and a separate decision.
 
 ## Rejected

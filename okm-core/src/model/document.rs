@@ -43,6 +43,13 @@ pub struct Collection<S, K: KeyEncode, R: Document<Key = K>> {
     /// needs two buffers, not one. A second buffer is still cheaper than the owned pairs it
     /// replaces: the entries are written, compared and dropped inside one call.
     entries_prev: std::cell::RefCell<crate::model::entries::Entries>,
+    /// The declared faces compiled once for the write path (ADR-0076 §1).
+    ///
+    /// `Some` when every face's bytes are derivable from the key and the payload — the walk
+    /// then produces them. `None` when the declaration carries a `func` face or a `where(...)`
+    /// predicate: both read the DOCUMENT, so that table keeps the generated producer for all
+    /// of its faces. One producer per table, never two writing the same face.
+    entry_layout: Option<crate::model::entry_layout::EntryLayout>,
     /// The write's op list, one buffer reused by every write this collection makes: the batch
     /// used to be created per write, so its buffer grew from nothing every time.
     batch: std::cell::RefCell<crate::engine::storage::Batch>,
@@ -132,6 +139,18 @@ fn segment_start<I: KvIndex>(header: &[u8]) -> usize {
 }
 
 impl<S: VirtualStorage, K: KeyEncode, R: Document<Key = K>> Collection<S, K, R> {
+    /// Compile this declaration's faces for the write path, once at assembly (ADR-0076 §1).
+    ///
+    /// `None` is a declaration the byte walk cannot produce — a `func` face or a
+    /// `where(...)` predicate, both of which read the document rather than its bytes. Such a
+    /// table keeps the generated producer for all of its faces: one producer per table, never
+    /// two writing the same face.
+    fn compiled_entries() -> Option<crate::model::entry_layout::EntryLayout> {
+        let schema = crate::model::schema::CollectionSchema::of::<K, R>();
+        crate::model::entry_layout::EntryLayout::from_decls(&schema, <R as Document>::INDEX_DECLS)
+            .ok()
+    }
+
     /// The ns prefix is NOT a constructor argument: it is declared once
     /// on the key struct (`#[ok_ns]`) and read at compile time via
     /// `R::NS_PREFIX` (ADR-0002: the ns vocabulary is code; ADR-0010:
@@ -143,6 +162,7 @@ impl<S: VirtualStorage, K: KeyEncode, R: Document<Key = K>> Collection<S, K, R> 
             epoch: std::cell::Cell::new(0),
             entries: std::cell::RefCell::new(crate::model::entries::Entries::new()),
             entries_prev: std::cell::RefCell::new(crate::model::entries::Entries::new()),
+            entry_layout: Self::compiled_entries(),
             batch: std::cell::RefCell::new(crate::engine::storage::Batch::default()),
             fields_vocab: std::cell::RefCell::new(Vocabulary::new()),
             vocabs: std::cell::RefCell::new(<R::Vocabs as ::core::default::Default>::default()),
@@ -244,6 +264,7 @@ impl<S: VirtualStorage, K: KeyEncode, R: Document<Key = K>> Collection<S, K, R> 
             epoch: std::cell::Cell::new(0),
             entries: std::cell::RefCell::new(crate::model::entries::Entries::new()),
             entries_prev: std::cell::RefCell::new(crate::model::entries::Entries::new()),
+            entry_layout: Self::compiled_entries(),
             batch: std::cell::RefCell::new(crate::engine::storage::Batch::default()),
             fields_vocab: std::cell::RefCell::new(Vocabulary::new()),
             vocabs: std::cell::RefCell::new(<R::Vocabs as ::core::default::Default>::default()),
@@ -265,6 +286,7 @@ impl<S: VirtualStorage, K: KeyEncode, R: Document<Key = K>> Collection<S, K, R> 
             epoch: std::cell::Cell::new(0),
             entries: std::cell::RefCell::new(crate::model::entries::Entries::new()),
             entries_prev: std::cell::RefCell::new(crate::model::entries::Entries::new()),
+            entry_layout: Self::compiled_entries(),
             batch: std::cell::RefCell::new(crate::engine::storage::Batch::default()),
             fields_vocab: std::cell::RefCell::new(Vocabulary::new()),
             vocabs: std::cell::RefCell::new(<R::Vocabs as ::core::default::Default>::default()),
@@ -651,10 +673,26 @@ impl<S: VirtualStorage, K: KeyEncode, R: Document<Key = K>> Collection<S, K, R> 
             if let Some(old) = &prev {
                 R::__okm_apply_reduces(&mut store, key, old, header, false)?;
             }
-            store.put_bytes(&pkey, &document.encode_payload())?;
+            // The payload is built once and used twice: the store copies it into the batch, and
+            // the walk slices the faces out of it (ADR-0076 §1). A declaration the walk cannot
+            // produce keeps the generated body — one producer per table.
+            let payload = document.encode_payload();
+            store.put_bytes(&pkey, &payload)?;
             let mut entries = self.entries.borrow_mut();
             entries.clear();
-            R::index_entries_into(key, document, header, &mut entries);
+            match self.entry_layout.as_ref() {
+                Some(layout) => {
+                    // The key bytes are already inside the primary key: `[header][slot][key]`.
+                    let key_bytes = &pkey[header.len()
+                        + crate::model::index::slot_len(crate::model::index::PRIMARY_SLOT)..];
+                    layout
+                        .produce_encoded(header, key_bytes, &payload, &mut entries)
+                        .map_err(|m| crate::error::Error::Corrupt {
+                            what: m.to_string(),
+                        })?;
+                }
+                None => R::index_entries_into(key, document, header, &mut entries),
+            }
             for (ek, ev) in entries.iter() {
                 store.put_bytes(ek, ev)?;
             }
