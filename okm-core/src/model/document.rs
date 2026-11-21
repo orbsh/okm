@@ -923,10 +923,11 @@ impl<S: VirtualStorage, K: KeyEncode, R: Document<Key = K>> Collection<S, K, R> 
         self.row_opt(key)?.ok_or(crate::error::Error::RowAbsent)
     }
 
-    /// The row, or nothing. Internal, because "absent" is a decision the caller should state:
-    /// a verb that merges or deletes reads this, and a caller asking for the row reads
-    /// [`get_row`](Self::get_row).
-    pub(crate) fn row_opt(&self, key: &K) -> crate::error::Result<Option<R>> {
+    /// The row, or nothing. The second door on the same read: [`get_row`](Self::get_row)
+    /// answers `RowAbsent` because a verb that merges or deletes treats a missing row as a
+    /// fault, and a caller asking a question with a legitimate "no" reads this instead of
+    /// re-deriving the conversion. Both are one engine point read and one payload decode.
+    pub fn row_opt(&self, key: &K) -> crate::error::Result<Option<R>> {
         let k = self.primary_key(key);
         let v = match self.store.get(&k)? {
             Some(v) => v,
