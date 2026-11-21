@@ -1544,10 +1544,10 @@ pub(crate) fn emit_row_impl(schema: &DocumentSchema) -> syn::Result<TS2> {
     };
     let ns = schema.ns;
     let (ns_hi, ns_lo) = ((ns >> 8) as u8, (ns & 0xff) as u8);
-    // `#[ok_shared_ns]` declares no marker (two declarations may share the ns), so the static
+    // `#[ok_shared_ns_in_tests]` declares no marker (two test declarations may share the ns), so the static
     // has no module-level name to take — it gets one of its own inside the const, which is
     // still one per type and still not a generic scope.
-    let plan_const = if schema.shared_ns {
+    let plan_const = if schema.shared_ns_in_tests {
         quote! {
             const PLAN: &'static ::std::sync::OnceLock<::okm_core::model::table_plan::TablePlan> = {
                 static PLAN: ::std::sync::OnceLock<::okm_core::model::table_plan::TablePlan> =
@@ -1570,8 +1570,9 @@ pub(crate) fn emit_row_impl(schema: &DocumentSchema) -> syn::Result<TS2> {
     // Two documents claiming one ns in one module define it twice, and a name
     // cannot be defined twice -- so an accidental reuse is a build error with the
     // ns in the message, not a silent second table in someone else's keyspace.
-    // `#[ok_shared_ns]` is the opt-out, for a generation pair (one table, two
-    // declarations) where the second one is the point.
+    // `#[ok_shared_ns_in_tests]` is the opt-out, and it is named for its only
+    // audience: a test that needs two declarations at one ns (a twin to refuse, a
+    // generation pair). Production code does not share a namespace.
     //
     // A `const` rather than a struct: the name is all that carries meaning, the
     // value namespace needs only the `dead_code` allow (ALL_CAPS is the natural
@@ -1584,7 +1585,7 @@ pub(crate) fn emit_row_impl(schema: &DocumentSchema) -> syn::Result<TS2> {
     // presence is the compile-time half of "one ns is one table" — a second declaration in
     // the same module reuses the name and the compiler refuses it. The name says what the
     // item is, not what breaks when it collides; the refusal is the compiler's to word.
-    let ns_entry = if schema.shared_ns {
+    let ns_entry = if schema.shared_ns_in_tests {
         quote! {}
     } else {
         let entry = quote::format_ident!("__OKM_NS_{}_ENTRY", ns);

@@ -1304,10 +1304,13 @@ pub(crate) struct DocumentSchema {
     /// declaration rather than writing keys that land wherever the next segment
     /// puts them. It is written once here and read back as `Document::NS`.
     pub ns: u16,
-    /// `#[ok_shared_ns]` — this ns is deliberately declared by a second document
-    /// (a generation pair: the same table before and after a layout change).
-    /// Suppresses the ns-claim type that makes a plain duplicate a build error.
-    pub shared_ns: bool,
+    /// `#[ok_shared_ns_in_tests]` — TEST-ONLY: let a second document in this
+    /// module declare the same ns. Suppresses the ns-claim type that makes a
+    /// plain duplicate a build error. Production code gives every table its own
+    /// ns — a layout change is a migration (ADR-0075), not a second declaration
+    /// of the same address — so the only callers are tests exercising a refusal
+    /// or a generation pair a real store would reach one side of.
+    pub shared_ns_in_tests: bool,
     /// `#[ok_uncaptured]` — this table is never written to the changelog, even when
     /// capture is on. For tables outside the state a restore needs: an application's
     /// own audit trail, an activity log, a cache. Declared on the type rather than
@@ -1392,14 +1395,14 @@ pub(crate) fn parse_schema_with_key(
         }
     };
 
-    // #[ok_shared_ns] — a path-only marker: this ns is deliberately declared by
+    // #[ok_shared_ns_in_tests] — a path-only marker: this ns is deliberately declared by
     // more than one document (a generation pair, an old and a new declaration of
     // one table). Without it, the generated ns-claim type clashes with the other
     // declaration in the same module and the build fails.
-    let shared_ns = input
+    let shared_ns_in_tests = input
         .attrs
         .iter()
-        .any(|a| a.path().is_ident("ok_shared_ns"));
+        .any(|a| a.path().is_ident("ok_shared_ns_in_tests"));
 
     // #[ok_uncaptured] — a path-only marker: the table stays out of the changelog.
     let uncaptured = input
@@ -1637,7 +1640,7 @@ pub(crate) fn parse_schema_with_key(
     Ok(DocumentSchema {
         row_name,
         key_ty,
-        shared_ns,
+        shared_ns_in_tests,
         ns,
         uncaptured,
         name,

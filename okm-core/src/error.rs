@@ -179,8 +179,9 @@ pub enum Error {
     /// different crates actually meet.
     #[error(
         "ns {ns} is already claimed by table `{existing}`; this declaration is `{declared}`. \
-         One namespace is one table: give the second table its own ns, or mark the \
-         second declaration #[ok_shared_ns] if the two are generations of one table"
+         One namespace is one table: give the second table its own ns. \
+         #[ok_shared_ns_in_tests] exists for tests that must hold two declarations \
+         at one ns; a real layout change is a migration, not a second declaration"
     )]
     TableNameTaken {
         ns: u16,

@@ -250,7 +250,7 @@ fn the_meta_payload_survives_a_hand_written_row() {
 }
 
 /// ns 92: two tables that share a namespace. The compile-time claim stops at one
-/// module and `#[ok_shared_ns]` silences it on purpose, so this is exactly the
+/// module and `#[ok_shared_ns_in_tests]` silences it on purpose, so this is exactly the
 /// case only the STORE can refuse — the two declarations would otherwise share
 /// every face, cursor and this meta row.
 #[derive(DocumentEncode, Clone, PartialEq, Debug)]
@@ -264,7 +264,7 @@ pub struct Alpha {
 #[derive(DocumentEncode, Clone, PartialEq, Debug)]
 #[ok_ref(MetaKey)]
 #[ok_ns(92)]
-#[ok_shared_ns]
+#[ok_shared_ns_in_tests]
 #[ok_name("beta")]
 pub struct Beta {
     pub label: String,

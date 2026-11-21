@@ -216,7 +216,7 @@ fn payload_wire_hex_snapshot() {
 // ================= Layout identity and its two surviving tolerances =================
 
 #[derive(DocumentEncode, Clone, PartialEq, Debug)]
-#[ok_shared_ns]
+#[ok_shared_ns_in_tests]
 #[ok_ref(SKey)]
 #[ok_layout(version = 2)]
 #[ok_ns(3)]
@@ -284,7 +284,7 @@ fn explicit_layout_version_constant() {
 }
 
 #[derive(DocumentEncode, Clone, PartialEq, Debug)]
-#[ok_shared_ns]
+#[ok_shared_ns_in_tests]
 #[ok_ref(SKey)]
 #[ok_layout(version = 3)]
 #[ok_ns(3)]

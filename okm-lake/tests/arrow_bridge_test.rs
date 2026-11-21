@@ -206,7 +206,7 @@ fn fixed_bytes_maps_to_binary() {
     #[derive(DocumentEncode, Clone, PartialEq, Debug)]
     #[ok_ref(BinKey)]
     #[ok_ns(12)]
-    #[ok_shared_ns]
+    #[ok_shared_ns_in_tests]
     pub struct BinRow {
         pub n: u32,
     }

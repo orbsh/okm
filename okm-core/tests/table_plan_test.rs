@@ -80,7 +80,7 @@ struct SharedAKey {
 #[derive(DocumentEncode, Clone)]
 #[ok_ref(SharedAKey)]
 #[ok_ns(11)]
-#[ok_shared_ns]
+#[ok_shared_ns_in_tests]
 struct SharedARow {
     level: u32,
 }
@@ -93,7 +93,7 @@ struct SharedBKey {
 #[derive(DocumentEncode, Clone)]
 #[ok_ref(SharedBKey)]
 #[ok_ns(11)]
-#[ok_shared_ns]
+#[ok_shared_ns_in_tests]
 struct SharedBRow {
     level: u64,
 }
@@ -105,7 +105,7 @@ where
     R::PLAN.get_or_init(|| TablePlan::compile(&CollectionSchema::of::<R::Key, R>()))
 }
 
-/// `#[ok_shared_ns]` declares no module-level marker, so its `PLAN` is the address of a
+/// `#[ok_shared_ns_in_tests]` declares no module-level marker, so its `PLAN` is the address of a
 /// `static` declared inside the const's own block. A block item is one item, not a copy per
 /// evaluation — if it were a copy, two reads would land on different addresses and the plan
 /// would be recompiled forever.

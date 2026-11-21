@@ -30,7 +30,7 @@ pub struct Partitioned {
 
 /// 无 partition 对照表：键布局 = [ns 2B][slot][key payload]。
 #[derive(DocumentEncode, Clone, PartialEq, Debug)]
-#[ok_shared_ns]
+#[ok_shared_ns_in_tests]
 #[ok_ref(PlainKey)]
 #[ok_ns(7)]
 pub struct Plain {

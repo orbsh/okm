@@ -47,7 +47,7 @@ pub struct Floor {
 }
 
 #[derive(DocumentEncode, Clone, PartialEq, Debug)]
-#[ok_shared_ns]
+#[ok_shared_ns_in_tests]
 #[ok_ref(DeptKey)]
 #[ok_ns(52)]
 pub struct DeptV2 {

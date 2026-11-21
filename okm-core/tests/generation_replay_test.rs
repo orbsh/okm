@@ -42,7 +42,7 @@ pub struct Gen1 {
 /// Generation 2: the same two fields, swapped. A payload read under this declaration when
 /// it was written under generation 1 gives back `level = 70`.
 #[derive(DocumentEncode, Clone, PartialEq, Debug)]
-#[ok_shared_ns]
+#[ok_shared_ns_in_tests]
 #[ok_ref(K)]
 #[ok_ns(98)]
 #[ok_layout(version = 2)]
