@@ -842,9 +842,9 @@ fn plan_merge_equals_embedded_merge() {
             &mut vocab,
         )
         .unwrap();
-    for (key, v) in &p1.ops {
+    for (key, v) in p1.ops.iter() {
         match v {
-            Some(b) => store.put(key.clone(), b.clone()).unwrap(),
+            Some(b) => store.put(key.to_vec(), b.to_vec()).unwrap(),
             None => store.del(key).unwrap(),
         }
     }

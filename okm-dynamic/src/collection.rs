@@ -28,10 +28,6 @@ fn codec<E: std::fmt::Display>(e: E) -> String {
     e.to_string()
 }
 
-/// One planned write op: `(key, Some(value))` = put, `(key, None)` =
-/// delete — the op shape the whole plan surface uses.
-pub(crate) type EngineOp = (Vec<u8>, Option<Vec<u8>>);
-
 /// A runtime-declared table: schema + access methods + a namespaced
 /// slot of storage. `ns` MUST be unique within the store instance —
 /// one keyspace, one ns vocabulary. Keeping allocations apart is the
@@ -593,22 +589,15 @@ impl<S: VirtualStorage> DynamicCollection<S> {
     /// ops in order inside one call. Either way the document write, its faces,
     /// the reduce ledger and the dynamic-segment entry land together — the same
     /// one-commit rule the typed `Collection` keeps (ADR-0035 rule 6).
-    fn replay(&self, ops: &[(Vec<u8>, Option<Vec<u8>>)]) -> Result<(), String> {
-        if ops.is_empty() {
+    fn replay(&self, batch: &okm_core::Batch) -> Result<(), String> {
+        if batch.is_empty() {
             return Ok(());
-        }
-        let mut batch = okm_core::Batch::default();
-        for (key, value) in ops {
-            match value {
-                Some(v) => batch.put(key.clone(), v.clone()),
-                None => batch.del(key),
-            }
         }
         // The engine's refusal travels out as the write verb's `Err` — the same
         // `String` channel every other dynamic verb answers on, carrying the
         // engine's own text rather than a generic message.
         self.store
-            .commit_batch(&batch)
+            .commit_batch(batch)
             .map_err(|e| format!("dynamic write failed: {e}"))
     }
 
@@ -1000,15 +989,20 @@ impl<S: VirtualStorage> DynamicCollection<S> {
         pkey: &[u8],
         fields: &Dict,
         write: bool,
-    ) -> Result<Vec<EngineOp>, String> {
+    ) -> Result<okm_core::Batch, String> {
+        let mut out = okm_core::Batch::default();
         if !self.has_path_index() {
-            return Ok(Vec::new());
+            return Ok(out);
         }
         let entries =
             crate::index::path_index_entries(&self.schema, &self.ns, &self.indexes, pkey, fields)?;
-        Ok(entries
-            .into_iter()
-            .map(|(k, v)| (k, if write { Some(v) } else { None }))
-            .collect())
+        for (k, v) in entries {
+            if write {
+                out.put(k, v);
+            } else {
+                out.del(&k);
+            }
+        }
+        Ok(out)
     }
 }

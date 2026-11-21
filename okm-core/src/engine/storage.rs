@@ -431,7 +431,7 @@ impl<S: VirtualStorage + ?Sized> VirtualStorage for &S {
 /// `KvBatch` trait — `batch()` returned this concrete type, so no engine
 /// could ever wrap a different carrier, and `KvBatch::commit` had zero
 /// callers: the commit boundary is the engine method, never the carrier).
-#[derive(Default)]
+#[derive(Default, Clone)]
 pub struct Batch {
     /// Every op's bytes, back to back.
     bytes: Vec<u8>,
@@ -450,6 +450,25 @@ pub struct OpSpan {
 }
 
 impl Batch {
+    /// How many ops are buffered.
+    pub fn len(&self) -> usize {
+        self.ops.len()
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.ops.is_empty()
+    }
+
+    /// Append one op in the pair form plans are built in (`None` = remove). The
+    /// planning side speaks `(key, Option<value>)` because a plan may or may not carry
+    /// bytes for an op; the batch is where that becomes a span either way.
+    pub fn put_opt(&mut self, key: Vec<u8>, value: Option<Vec<u8>>) {
+        match value {
+            Some(value) => self.put(key, value),
+            None => self.del(&key),
+        }
+    }
+
     /// Empty the op list, KEEPING the buffer: the next write of a collection that owns its
     /// batch reuses it (ADR-0074 §3 — the buffer is the write's, not the row's).
     pub fn clear(&mut self) {
@@ -485,6 +504,21 @@ impl Batch {
         });
     }
 
+    /// Append another batch's ops, spans rebased onto this buffer — how a plan
+    /// assembled in pieces (a row plan plus its path-index sweep) becomes one
+    /// carrier without walking pairs.
+    pub fn append(&mut self, other: &Batch) {
+        let base = self.bytes.len() as u32;
+        self.bytes.extend_from_slice(&other.bytes);
+        self.ops.reserve(other.ops.len());
+        for op in &other.ops {
+            self.ops.push(OpSpan {
+                key: (op.key.0 + base, op.key.1 + base),
+                value: op.value.map(|(start, end)| (start + base, end + base)),
+            });
+        }
+    }
+
     /// The batch's ops as `(key, value-when-a-put)`, in write order.
     pub fn iter(&self) -> Ops<'_> {
         Ops {
@@ -501,6 +535,36 @@ impl Batch {
         self.iter()
             .map(|(k, v)| (k.to_vec(), v.map(<[u8]>::to_vec)))
             .collect()
+    }
+}
+
+impl PartialEq for Batch {
+    /// Equal when they carry the same ops with the same bytes — the comparison a plan's
+    /// `PartialEq` needs, and the reason spans are resolved rather than compared.
+    fn eq(&self, other: &Self) -> bool {
+        self.ops.len() == other.ops.len() && self.iter().eq(other.iter())
+    }
+}
+
+impl Eq for Batch {}
+
+impl std::fmt::Debug for Batch {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("Batch")
+            .field("ops", &DebugOps(self))
+            .finish()
+    }
+}
+
+struct DebugOps<'a>(&'a Batch);
+
+impl std::fmt::Debug for DebugOps<'_> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let mut list = f.debug_list();
+        for (key, value) in self.0.iter() {
+            list.entry(&(String::from_utf8_lossy(key), value.map(|v| v.len())));
+        }
+        list.finish()
     }
 }
 

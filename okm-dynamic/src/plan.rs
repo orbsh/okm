@@ -25,7 +25,7 @@ use okm_core::storage::VirtualStorage;
 /// values the caller must adopt into its local cache.
 #[derive(Debug, Clone, PartialEq)]
 pub struct PlannedPut {
-    pub ops: Vec<(Vec<u8>, Option<Vec<u8>>)>,
+    pub ops: okm_core::Batch,
     /// Group entry key → the accumulator bytes that entry now holds.
     /// The actor updates its local acc cache from this receipt; the
     /// next plan reads the same keys through its `acc_of` closure.
@@ -37,7 +37,7 @@ pub struct PlannedPut {
 /// embedded path's delete of a missing key is a no-op, mirrored here).
 #[derive(Debug, Clone, PartialEq)]
 pub struct PlannedDelete {
-    pub ops: Vec<(Vec<u8>, Option<Vec<u8>>)>,
+    pub ops: okm_core::Batch,
     pub new_accs: Vec<(Vec<u8>, Vec<u8>)>,
 }
 
@@ -48,7 +48,7 @@ pub struct PlannedDelete {
 /// allocated — the caller adopts it into its mirror before the next plan.
 #[derive(Debug, Clone, PartialEq, Default)]
 pub struct PlannedWrite {
-    pub ops: Vec<(Vec<u8>, Option<Vec<u8>>)>,
+    pub ops: okm_core::Batch,
     pub new_accs: Vec<(Vec<u8>, Vec<u8>)>,
     pub new_vocab_entries: Vec<(String, u16)>,
 }
@@ -111,7 +111,7 @@ impl<S: VirtualStorage> DynamicCollection<S> {
         self.check_key(pkey)?;
         self.check_declared(document)?;
         let mut plan = PlannedPut {
-            ops: Vec::new(),
+            ops: okm_core::Batch::default(),
             new_accs: Vec::new(),
         };
         let mut overlay = AccOverlay::new(acc_of);
@@ -120,7 +120,7 @@ impl<S: VirtualStorage> DynamicCollection<S> {
         if let Some(old_row) = old {
             let old_entries = index_entries(self.schema(), &self.ns, &self.indexes, pkey, old_row)?;
             for (ek, _) in old_entries {
-                plan.ops.push((ek, None));
+                plan.ops.del(&ek);
             }
             self.plan_reduces(pkey, old_row, false, &mut plan, &mut overlay)?;
         }
@@ -128,9 +128,9 @@ impl<S: VirtualStorage> DynamicCollection<S> {
         let entries = index_entries(self.schema(), &self.ns, &self.indexes, pkey, document)?;
         let payload = encode_payload(self.schema(), document).map_err(|e| e.to_string())?;
         self.plan_reduces(pkey, document, true, &mut plan, &mut overlay)?;
-        plan.ops.push((self.primary_key(pkey), Some(payload)));
+        plan.ops.put(self.primary_key(pkey), payload);
         for (ek, ev) in entries {
-            plan.ops.push((ek, Some(ev)));
+            plan.ops.put(ek, ev);
         }
         Ok(plan)
     }
@@ -146,16 +146,16 @@ impl<S: VirtualStorage> DynamicCollection<S> {
     ) -> Result<PlannedDelete, String> {
         self.check_key(pkey)?;
         let mut plan = PlannedDelete {
-            ops: Vec::new(),
+            ops: okm_core::Batch::default(),
             new_accs: Vec::new(),
         };
         let mut overlay = AccOverlay::new(acc_of);
         let entries = index_entries(self.schema(), &self.ns, &self.indexes, pkey, old)?;
         for (ek, _) in entries {
-            plan.ops.push((ek, None));
+            plan.ops.del(&ek);
         }
         self.plan_reduces(pkey, old, false, &mut plan, &mut overlay)?;
-        plan.ops.push((self.primary_key(pkey), None));
+        plan.ops.del(&self.primary_key(pkey));
         Ok(plan)
     }
 
@@ -192,7 +192,7 @@ impl<S: VirtualStorage> DynamicCollection<S> {
             carried.push(declared);
             let row_map = self.row_base(pkey, &carried)?;
             let row = self.plan_put(pkey, &row_map, stored.row, acc_of)?;
-            plan.ops.extend(row.ops);
+            plan.ops.append(&row.ops);
             plan.new_accs = row.new_accs;
         }
         if !dynamic.is_empty() {
@@ -222,13 +222,13 @@ impl<S: VirtualStorage> DynamicCollection<S> {
         if declared.is_empty() {
             if let Some(old) = stored.row {
                 let row = self.plan_delete(pkey, old, acc_of)?;
-                plan.ops.extend(row.ops);
+                plan.ops.append(&row.ops);
                 plan.new_accs = row.new_accs;
             }
         } else {
             let row_map = self.row_base(pkey, &[declared])?;
             let row = self.plan_put(pkey, &row_map, stored.row, acc_of)?;
-            plan.ops.extend(row.ops);
+            plan.ops.append(&row.ops);
             plan.new_accs = row.new_accs;
         }
         self.plan_dynamic(pkey, stored.dynamic, dynamic, vocab, &mut plan)?;
@@ -249,13 +249,13 @@ impl<S: VirtualStorage> DynamicCollection<S> {
         let mut plan = PlannedWrite::default();
         if let Some(old) = old_row {
             let row = self.plan_delete(pkey, old, acc_of)?;
-            plan.ops.extend(row.ops);
+            plan.ops.append(&row.ops);
             plan.new_accs = row.new_accs;
         }
         if let Some(old) = old_dynamic {
-            plan.ops.extend(self.path_entry_ops(pkey, old, false)?);
+            plan.ops.append(&self.path_entry_ops(pkey, old, false)?);
             plan.ops
-                .push((crate::plan_fields::fields_key(&self.ns, pkey), None));
+                .del(&crate::plan_fields::fields_key(&self.ns, pkey));
         }
         Ok(plan)
     }
@@ -274,12 +274,14 @@ impl<S: VirtualStorage> DynamicCollection<S> {
         plan: &mut PlannedWrite,
     ) -> Result<(), String> {
         let fields = crate::plan_fields::plan_put_fields(&self.ns, pkey, new, vocab)?;
-        plan.ops.extend(fields.ops);
+        for (key, value) in fields.ops {
+            plan.ops.put_opt(key, value);
+        }
         plan.new_vocab_entries = fields.new_vocab_entries;
         if let Some(old) = old {
-            plan.ops.extend(self.path_entry_ops(pkey, old, false)?);
+            plan.ops.append(&self.path_entry_ops(pkey, old, false)?);
         }
-        plan.ops.extend(self.path_entry_ops(pkey, new, true)?);
+        plan.ops.append(&self.path_entry_ops(pkey, new, true)?);
         Ok(())
     }
 
@@ -405,7 +407,10 @@ trait PlanSink {
 
 impl PlanSink for PlannedPut {
     fn push(&mut self, op: (Vec<u8>, Option<Vec<u8>>)) {
-        self.ops.push(op);
+        match op {
+            (key, Some(value)) => self.ops.put(key, value),
+            (key, None) => self.ops.del(&key),
+        }
     }
     fn push_acc(&mut self, entry: (Vec<u8>, Vec<u8>)) {
         self.new_accs.push(entry);
@@ -414,7 +419,10 @@ impl PlanSink for PlannedPut {
 
 impl PlanSink for PlannedDelete {
     fn push(&mut self, op: (Vec<u8>, Option<Vec<u8>>)) {
-        self.ops.push(op);
+        match op {
+            (key, Some(value)) => self.ops.put(key, value),
+            (key, None) => self.ops.del(&key),
+        }
     }
     fn push_acc(&mut self, entry: (Vec<u8>, Vec<u8>)) {
         self.new_accs.push(entry);
