@@ -11,10 +11,11 @@
 //! 3. **Catch-up and flip.** Rows written while the copy ran are the log's tail — replayed
 //!    after the mark the copy started from — and then one `put` of the new record is the flip.
 //!
-//! What is deliberately *not* here: the vacuum. A migrated table keeps its old range and its
-//! old record until the vacuum (ADR-0075 §"a migrated table keeps its old range"), so a failed
-//! verification costs a re-run rather than the data, and a reader that is still on the old
-//! generation keeps working through its window.
+//! The vacuum is its own function and its own verb, never a step of the migration run: a
+//! migrated table keeps its old range and its old record until someone asks for the vacuum
+//! (ADR-0075 §"a migrated table keeps its old range"), so a failed verification costs a re-run
+//! rather than the data, and a reader still on the old generation keeps working through its
+//! window.
 
 use std::path::Path;
 
@@ -132,6 +133,111 @@ where
         to_address,
         copied,
         replayed,
+    })
+}
+
+/// What a vacuum took away.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Vacuum {
+    /// The generation that stays.
+    pub kept: u8,
+    /// The generation whose range was removed — `0` when there was nothing older to remove,
+    /// which makes a second run the same answer as a finished first one.
+    pub removed: u8,
+    /// Rows deleted from the old range (data, index entries and the old record together).
+    pub keys: usize,
+    /// Sealed segments whose directory was retired, when a log root was given.
+    pub log_segments: usize,
+}
+
+/// Retire the older generation a migration left behind (ADR-0075 §"a migrated table keeps its
+/// old range and record until the vacuum").
+///
+/// Two things go, and only when the store says which one is older: every key under the old
+/// address — the data, the index entries and the old record are all in that range — and, when a
+/// log root is given, the old generation's directory. The second is not cosmetic: a log left
+/// behind would be replayed into a range that has no record, which is a table nobody can open.
+pub fn vacuum_generation<S: VirtualStorage + ?Sized>(
+    store: &S,
+    root: Option<&Path>,
+    table: &[u8],
+) -> Result<Vacuum, String> {
+    let (kept, kept_address, _) = crate::model::meta::current(store, table, 0)
+        .map_err(|e| e.to_string())?
+        .ok_or_else(|| {
+            format!(
+                "{}: the store records no table at this address — there is no generation to keep",
+                hex(table)
+            )
+        })?;
+    let old_address = crate::model::meta::other_parity(&kept_address);
+    let older = crate::model::meta::read(store, &old_address).map_err(|e| e.to_string())?;
+    let Some(older_row) = older else {
+        // Already vacuumed, or never migrated: one answer, so a re-run is harmless.
+        return Ok(Vacuum {
+            kept,
+            removed: 0,
+            keys: 0,
+            log_segments: 0,
+        });
+    };
+    let removed = older_row.layout_version().ok_or_else(|| {
+        format!(
+            "{}: the other generation's record names no version, so which one is older is not \
+             a question the store can answer",
+            hex(&old_address)
+        )
+    })?;
+    if removed >= kept {
+        return Err(format!(
+            "v{removed} is not older than v{kept}: the store's current record is the one to keep, \
+             and the other address is not a generation behind it (ADR-0075 §3)"
+        ));
+    }
+
+    // One pass to collect, one to delete: an engine iterator must not move under its own
+    // deletions.
+    let end = crate::storage::prefix_end(&old_address);
+    let doomed: Vec<Vec<u8>> = store
+        .scan_range(&old_address, end.as_deref())
+        .map(|item| item.map(|(key, _)| key))
+        .collect::<crate::error::Result<Vec<_>>>()
+        .map_err(|e| e.to_string())?;
+    for key in &doomed {
+        store.del(key).map_err(|e| e.to_string())?;
+    }
+    // The record row sits inside that range, but a store that recorded it elsewhere would leave
+    // a record pointing at nothing — so it is named once, explicitly.
+    store
+        .del(&crate::model::meta::meta_key(&old_address))
+        .map_err(|e| e.to_string())?;
+
+    let mut log_segments = 0usize;
+    if let Some(root) = root {
+        let dir = crate::changelog::table_dir(root, &old_address);
+        if dir.exists() {
+            log_segments = std::fs::read_dir(&dir)
+                .map(|entries| {
+                    entries
+                        .flatten()
+                        .filter(|e| {
+                            e.path()
+                                .extension()
+                                .and_then(|x| x.to_str())
+                                .is_some_and(|x| x == "segment")
+                        })
+                        .count()
+                })
+                .unwrap_or(0);
+            std::fs::remove_dir_all(&dir).map_err(|e| format!("{}: {e}", dir.display()))?;
+        }
+    }
+
+    Ok(Vacuum {
+        kept,
+        removed,
+        keys: doomed.len(),
+        log_segments,
     })
 }
 

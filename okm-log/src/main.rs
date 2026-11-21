@@ -47,6 +47,10 @@ fn run() -> Result<i32, String> {
             args.remove(0);
             migrate(&args)
         }
+        Some("vacuum") => {
+            args.remove(0);
+            vacuum(&args)
+        }
         Some("-h" | "--help" | "help") => {
             println!(
                 "okm-log <verb>\n\
@@ -55,14 +59,16 @@ fn run() -> Result<i32, String> {
                  compact --root <log dir> --store <data dir> [--keep N] [--table <hex header>] [--force]\n\
                  replay  --root <log dir> --store <dir> [--reconcile <old store dir>] [--table <hex header>]\n\
                  migrate --store <data dir> --table <hex header> --to <schema.json> [--root <log dir>]\n\
+                 vacuum  --store <data dir> --table <hex header> [--root <log dir>]\n\
                  \n\
                  The log, not the lake: `okm-lake` writes the exported table."
             );
             Ok(0)
         }
-        _ => {
-            Err("okm-log needs a verb: status, compact, replay or migrate (try --help)".to_string())
-        }
+        _ => Err(
+            "okm-log needs a verb: status, compact, replay, migrate or vacuum (try --help)"
+                .to_string(),
+        ),
     }
 }
 
@@ -120,6 +126,56 @@ fn migrate(args: &[String]) -> Result<i32, String> {
         report.replayed,
         hex_of(&report.from_address),
         hex_of(&report.to_address)
+    );
+    Ok(0)
+}
+
+/// Retire the generation a migration left behind: the old range, its record, its log.
+///
+/// Only the older of the two generations is removed, and the store's own record decides which
+/// one that is — a vacuum cannot be pointed at the live range by mistake.
+fn vacuum(args: &[String]) -> Result<i32, String> {
+    let mut store_dir: Option<PathBuf> = None;
+    let mut root: Option<PathBuf> = None;
+    let mut table: Option<String> = None;
+
+    let mut it = args.iter();
+    while let Some(arg) = it.next() {
+        let mut value = || {
+            it.next()
+                .cloned()
+                .ok_or_else(|| format!("{arg} needs a value"))
+        };
+        match arg.as_str() {
+            "--store" | "--data" => store_dir = Some(PathBuf::from(value()?)),
+            "--root" | "--log" => root = Some(PathBuf::from(value()?)),
+            "--table" => table = Some(value()?),
+            "-h" | "--help" => {
+                println!(
+                    "okm-log vacuum --store <data dir> --table <hex header> [--root <log dir>]"
+                );
+                return Ok(0);
+            }
+            other => return Err(format!("unknown argument `{other}` (try --help)")),
+        }
+    }
+
+    let store_dir = store_dir.ok_or("--store is required (the data directory)")?;
+    let table = decode_hex(
+        &table.ok_or("--table is required (the header hex a table directory is named by)")?,
+    )?;
+    let store = open_store(&store_dir)?;
+    let report = okm_core::changelog::migrate::vacuum_generation(&store, root.as_deref(), &table)?;
+    if report.removed == 0 {
+        println!(
+            "layout v{} is the only generation here: nothing to vacuum",
+            report.kept
+        );
+        return Ok(0);
+    }
+    println!(
+        "vacuumed layout v{}: {} keys, {} segments retired — v{} stays",
+        report.removed, report.keys, report.log_segments, report.kept
     );
     Ok(0)
 }

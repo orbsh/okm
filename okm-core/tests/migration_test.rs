@@ -13,7 +13,7 @@
     clippy::panic_in_result_fn
 )]
 
-use okm_core::changelog::migrate::migrate_table;
+use okm_core::changelog::migrate::{migrate_table, vacuum_generation};
 use okm_core::model::dynamic_collection::DynamicCollection;
 use okm_core::schema::CollectionSchema;
 use okm_core::testing::TestStore;
@@ -139,4 +139,50 @@ fn a_target_on_another_table_is_refused() {
         err.contains("never the table"),
         "the refusal says what a migration may move: {err}"
     );
+}
+
+#[test]
+fn the_vacuum_takes_the_old_range_and_leaves_the_new_one_whole() {
+    let store = seeded();
+    let target = CollectionSchema::of::<K, Gen2>();
+    let moved =
+        migrate_table(&store, None, <Gen1 as Document>::NS_PREFIX, &target).expect("migrate");
+
+    let report = vacuum_generation(&store, None, &moved.to_address).expect("vacuum");
+    assert_eq!((report.kept, report.removed), (2, 1));
+    assert!(
+        report.keys >= 2,
+        "the two rows and the old record: {} keys",
+        report.keys
+    );
+
+    // The new generation still reads; the old range answers nothing at all.
+    let two: Collection<_, K, Gen2> = Collection::open(store.clone()).expect("attach generation 2");
+    assert_eq!(
+        two.get_row(&K { id: 1 }).expect("read").expect("the row"),
+        Gen2 { level: 7, score: 0 }
+    );
+    let old = DynamicCollection::new(
+        store.clone(),
+        120,
+        CollectionSchema::of::<K, Gen1>(),
+        Vec::new(),
+    );
+    assert!(
+        old.fetch(&K { id: 1 }.encode()).expect("fetch").is_none(),
+        "the old range is gone, so a stale declaration answers nothing instead of stale rows"
+    );
+}
+
+#[test]
+fn a_second_vacuum_is_the_same_answer() {
+    let store = seeded();
+    let target = CollectionSchema::of::<K, Gen2>();
+    let moved =
+        migrate_table(&store, None, <Gen1 as Document>::NS_PREFIX, &target).expect("migrate");
+    vacuum_generation(&store, None, &moved.to_address).expect("vacuum");
+
+    let again = vacuum_generation(&store, None, &moved.to_address).expect("re-run");
+    assert_eq!(again.removed, 0, "nothing older is left to remove");
+    assert_eq!(again.kept, 2);
 }
