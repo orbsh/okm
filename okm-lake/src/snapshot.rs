@@ -490,7 +490,7 @@ pub mod parquet_io {
         let n = batch.num_rows();
         // Vocabulary keys live under the same `[part][ns]` header the intern hook
         // writes through — the COLLECTION's, not the declaration's.
-        let ns_header = collection.header();
+        let ns_header = collection.header().to_vec();
         let mut count = 0usize;
         // Phase 1 — reassemble per-document bytes: key encoding
         // (declaration-order BE fields) then the two-segment payload —

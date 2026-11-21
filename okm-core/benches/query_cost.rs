@@ -384,7 +384,7 @@ fn point(c: &mut Criterion, f: &Fixture) {
 fn scan(c: &mut Criterion, f: &Fixture) {
     let probe = org_probe(PROBE_ORG);
     // The same bound the door builds: the entry prefix, and its exclusive end.
-    let mut begin = ByOrg::entry_prefix(&f.col.header(), &[]);
+    let mut begin = ByOrg::entry_prefix(f.col.header(), &[]);
     begin.extend_from_slice(&probe);
     let end = okm_core::engine::storage::prefix_end(&begin);
 

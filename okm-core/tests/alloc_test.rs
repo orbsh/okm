@@ -67,23 +67,23 @@ fn allocations<F: FnOnce()>(f: F) -> u64 {
     ALLOCATIONS.with(Cell::get) - before
 }
 
-/// A warm typed row costs at most this many allocations. Measured: 18.
+/// A warm typed row costs at most this many allocations. Measured: 15.
 ///
-/// The buffers this ADR series removed are not the whole story: what is left is one `Vec`
-/// per call of the helpers that still answer owned bytes (`header()`, `primary_key()`,
-/// `encode_payload`), plus whatever the engine copies on the way in. Pinned where measured,
-/// not where it should be — a number nobody has looked at is a number that drifts.
-const TYPED_ROW_CEILING: u64 = 18;
+/// Was 18 before `header()` stopped building a `Vec` per call (a handle's header is now
+/// bytes it carries, so the 26 read sites allocate nothing) and `primary_key` assembled its
+/// answer in one buffer. What is left is the payload's own buffer — the one copy the batch
+/// must own — plus whatever the engine copies on the way into its chunks.
+const TYPED_ROW_CEILING: u64 = 15;
 
 /// A warm map write (`merge`, the read-modify-write path) costs at most this many. Measured:
-/// 48 — the previous row is decoded into a `Dict`, then re-encoded, and the dict round trip
-/// owns every one of its strings. The gap against the typed row's 18 is the next thing to
+/// 44 — the previous row is decoded into a `Dict`, then re-encoded, and the dict round trip
+/// owns every one of its strings. The gap against the typed row's 15 is the next thing to
 /// look at, not something this lock pretends is fine.
-const MAP_MERGE_CEILING: u64 = 48;
+const MAP_MERGE_CEILING: u64 = 44;
 
-/// A warm purge costs at most this many. Measured: 22 — it reads the previous row to sweep
+/// A warm purge costs at most this many. Measured: 19 — it reads the previous row to sweep
 /// its faces, so it pays the typed row's cost plus the decode.
-const DELETE_CEILING: u64 = 22;
+const DELETE_CEILING: u64 = 19;
 
 #[derive(KeyEncode, Clone, PartialEq, Debug, Default)]
 pub struct ItemKey {

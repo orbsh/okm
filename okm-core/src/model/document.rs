@@ -61,6 +61,14 @@ pub struct Collection<S, K: KeyEncode, R: Document<Key = K>> {
     /// ([`Self::commit`]); before that a label is re-probed, so a refused commit
     /// needs no undo.
     vocabs: std::cell::RefCell<R::Vocabs>,
+    /// The bytes every key of this handle starts with — the partition prefix (ADR-0014 §5)
+    /// and the ns, assembled ONCE when the handle is built. It used to be a `Vec` built per
+    /// call, which was one allocation per key the write path touched; a handle's ns cannot
+    /// change after construction (`with_ns`/`rebased` build another handle), so the answer is
+    /// fixed and `[u8; 16]` holds it.
+    header_bytes: [u8; HEADER_CAPACITY],
+    /// How much of [`Self::header_bytes`] is real (3 for an unpartitioned table).
+    header_len: u8,
     /// The ns this handle writes under, when it is NOT the declaration's. A
     /// restore maps a table into a namespace the application just created
     /// (ADR-0062), and the ns is part of the KEY HEADER, so the whole handle has
@@ -78,6 +86,36 @@ pub type ScanHit<I> = (
     PrefixKey<<I as KvIndex>::Key>,
     Option<<I as KvIndex>::Document>,
 );
+
+/// How long a handle's key header is: the partition prefix plus the ns.
+const fn header_len(prefix: &[u8]) -> u8 {
+    (prefix.len() + 2) as u8
+}
+
+/// Capacity of a handle's header bytes. A declaration emits a partition prefix of at most
+/// two bytes (`0xFF, id`) and the ns is two, so four is the real maximum; the rest is slack
+/// so a future prefix cannot silently truncate.
+const HEADER_CAPACITY: usize = 16;
+
+/// The key header as copyable bytes: partition prefix, then the ns two bytes big-endian
+/// (ADR-0014 §5). The declaration's own `NS_PREFIX` is used VERBATIM when no override is
+/// set — a document without an `[ns 2B]` (an `okm-core` test fixture) must keep writing
+/// exactly the bytes it always did.
+const fn assemble_header(prefix: &[u8], ns: &[u8]) -> [u8; HEADER_CAPACITY] {
+    assert!(prefix.len() + ns.len() <= HEADER_CAPACITY);
+    let mut buf = [0u8; HEADER_CAPACITY];
+    let mut i = 0;
+    while i < prefix.len() {
+        buf[i] = prefix[i];
+        i += 1;
+    }
+    let mut j = 0;
+    while j < ns.len() {
+        buf[i + j] = ns[j];
+        j += 1;
+    }
+    buf
+}
 
 /// Where an index entry's field segment starts: after the ns header and the
 /// slot (one byte for a fixed face, two for a counting family — measured, not
@@ -102,6 +140,8 @@ impl<S: VirtualStorage, K: KeyEncode, R: Document<Key = K>> Collection<S, K, R> 
             batch: std::cell::RefCell::new(crate::engine::storage::Batch::default()),
             fields_vocab: std::cell::RefCell::new(Vocabulary::new()),
             vocabs: std::cell::RefCell::new(<R::Vocabs as ::core::default::Default>::default()),
+            header_bytes: assemble_header(R::PARTITION_PREFIX, R::NS_PREFIX),
+            header_len: header_len(R::PARTITION_PREFIX),
             ns_override: None,
             _marker: std::marker::PhantomData,
         }
@@ -174,7 +214,7 @@ impl<S: VirtualStorage, K: KeyEncode, R: Document<Key = K>> Collection<S, K, R> 
             None => {}
         }
         if dirty {
-            crate::model::meta::write(&self.store, &header, &meta)?;
+            crate::model::meta::write(&self.store, header, &meta)?;
         }
         // The store has the row now; a wrapper that keeps history reads it instead of being
         // told (ADR-0074 §3). This is the only call: once per table per process, here.
@@ -200,6 +240,8 @@ impl<S: VirtualStorage, K: KeyEncode, R: Document<Key = K>> Collection<S, K, R> 
             batch: std::cell::RefCell::new(crate::engine::storage::Batch::default()),
             fields_vocab: std::cell::RefCell::new(Vocabulary::new()),
             vocabs: std::cell::RefCell::new(<R::Vocabs as ::core::default::Default>::default()),
+            header_bytes: assemble_header(R::PARTITION_PREFIX, &ns.to_be_bytes()),
+            header_len: header_len(R::PARTITION_PREFIX),
             ns_override: Some(ns),
             _marker: std::marker::PhantomData,
         }
@@ -218,6 +260,8 @@ impl<S: VirtualStorage, K: KeyEncode, R: Document<Key = K>> Collection<S, K, R> 
             batch: std::cell::RefCell::new(crate::engine::storage::Batch::default()),
             fields_vocab: std::cell::RefCell::new(Vocabulary::new()),
             vocabs: std::cell::RefCell::new(<R::Vocabs as ::core::default::Default>::default()),
+            header_bytes: assemble_header(R::PARTITION_PREFIX, &ns.to_be_bytes()),
+            header_len: header_len(R::PARTITION_PREFIX),
             ns_override: Some(ns),
             _marker: std::marker::PhantomData,
         }
@@ -263,7 +307,7 @@ impl<S: VirtualStorage, K: KeyEncode, R: Document<Key = K>> Collection<S, K, R> 
     where
         A: crate::model::reduce::Reduce<Document = R>,
     {
-        crate::model::reduce::reduce_get::<S, A>(&self.store, &self.header(), key, document)
+        crate::model::reduce::reduce_get::<S, A>(&self.store, self.header(), key, document)
     }
 
     /// Every group of one reduce on THIS table: `(group segment, accumulator)`,
@@ -273,7 +317,7 @@ impl<S: VirtualStorage, K: KeyEncode, R: Document<Key = K>> Collection<S, K, R> 
     where
         A: crate::model::reduce::Reduce<Document = R>,
     {
-        crate::model::reduce::scan_reduces::<S, A>(&self.store, &self.header())
+        crate::model::reduce::scan_reduces::<S, A>(&self.store, self.header())
     }
 
     /// The table's key header: `[0xFF][part 1B] (if declared)[ns 2B]` — every
@@ -281,23 +325,14 @@ impl<S: VirtualStorage, K: KeyEncode, R: Document<Key = K>> Collection<S, K, R> 
     /// the partition segment precedes the ns header (workload isolation
     /// lives outside ownership scope); absent when the document declares no
     /// `#[ok_partition]`.
-    pub fn header(&self) -> Vec<u8> {
-        let mut buf = Vec::with_capacity(3);
-        buf.extend_from_slice(R::PARTITION_PREFIX);
-        // The declaration's own header is used VERBATIM when no override is set: a
-        // document without an `[ns 2B]` (an `okm-core` test fixture) must keep
-        // writing exactly the bytes it always did.
-        match self.ns_override {
-            Some(ns) => buf.extend_from_slice(&ns.to_be_bytes()),
-            None => buf.extend_from_slice(R::NS_PREFIX),
-        }
-        buf
+    pub fn header(&self) -> &[u8] {
+        &self.header_bytes[..self.header_len as usize]
     }
 
     /// The table's meta entry (fixed face 0x1F, ADR-0043): `None` when the store
     /// was never stamped. One point read; an engine failure comes back as `Err`.
     pub fn meta(&self) -> crate::error::Result<Option<crate::model::meta::TableMeta>> {
-        crate::model::meta::read(&self.store, &self.header())
+        crate::model::meta::read(&self.store, self.header())
     }
 
     /// First-touch verb (ADR-0043): on a fresh store, record the layout generation
@@ -323,7 +358,7 @@ impl<S: VirtualStorage, K: KeyEncode, R: Document<Key = K>> Collection<S, K, R> 
     pub fn ensure_layout(&self) -> crate::error::Result<crate::model::meta::TableMeta> {
         let header = self.header();
         let mut meta =
-            crate::model::meta::ensure_layout(&self.store, &header, R::LAYOUT_VERSION, R::FACES)?;
+            crate::model::meta::ensure_layout(&self.store, header, R::LAYOUT_VERSION, R::FACES)?;
         if !R::TABLE_NAME.is_empty() {
             match meta.table_name() {
                 Some(existing) if existing != R::TABLE_NAME => {
@@ -336,7 +371,7 @@ impl<S: VirtualStorage, K: KeyEncode, R: Document<Key = K>> Collection<S, K, R> 
                 Some(_) => {}
                 None => {
                     meta.set(crate::model::meta::TABLE, R::TABLE_NAME.as_bytes().to_vec());
-                    crate::model::meta::write(&self.store, &header, &meta)?;
+                    crate::model::meta::write(&self.store, header, &meta)?;
                 }
             }
         }
@@ -356,7 +391,7 @@ impl<S: VirtualStorage, K: KeyEncode, R: Document<Key = K>> Collection<S, K, R> 
     /// not serve stale faces is the one that asks.
     pub fn faces_status(&self) -> crate::error::Result<crate::model::meta::FaceStatus> {
         Ok(
-            match crate::model::meta::read(&self.store, &self.header())? {
+            match crate::model::meta::read(&self.store, self.header())? {
                 Some(meta) => meta.face_status(R::FACES),
                 None => crate::model::meta::FaceStatus::Unknown { current: R::FACES },
             },
@@ -406,7 +441,7 @@ impl<S: VirtualStorage, K: KeyEncode, R: Document<Key = K>> Collection<S, K, R> 
             .iter()
             .filter(|d| !d.deprecated)
         {
-            let mut prefix = header.clone();
+            let mut prefix = header.to_vec();
             crate::model::index::write_slot(&mut prefix, decl.slot);
             let end = prefix_end(&prefix);
             for item in self.store.scan_range(&prefix, end.as_deref()) {
@@ -440,7 +475,7 @@ impl<S: VirtualStorage, K: KeyEncode, R: Document<Key = K>> Collection<S, K, R> 
                     Some(crate::model::faces::FaceKind::Index)
                 )
         });
-        let mut prefix = header.clone();
+        let mut prefix = header.to_vec();
         crate::model::index::write_slot(&mut prefix, crate::model::index::PRIMARY_SLOT);
         let end = prefix_end(&prefix);
         for item in self.store.scan_range(&prefix, end.as_deref()) {
@@ -458,9 +493,9 @@ impl<S: VirtualStorage, K: KeyEncode, R: Document<Key = K>> Collection<S, K, R> 
             let decoded = K::decode(&suffix[suffix.len() - K::KEY_LEN..]);
             let entries = if needs_payload {
                 let document = R::decode_payload(&value);
-                R::index_entries(&decoded, &document, &header)
+                R::index_entries(&decoded, &document, header)
             } else {
-                R::key_entries(&decoded, &header)
+                R::key_entries(&decoded, header)
             };
             for (ek, ev) in entries {
                 batch.put(ek, ev);
@@ -478,7 +513,7 @@ impl<S: VirtualStorage, K: KeyEncode, R: Document<Key = K>> Collection<S, K, R> 
         }
 
         // Phase 3 — the stamp, the last write. Nothing above claims completion.
-        crate::model::meta::stamp_layout(&self.store, &header, R::LAYOUT_VERSION, R::FACES)?;
+        crate::model::meta::stamp_layout(&self.store, header, R::LAYOUT_VERSION, R::FACES)?;
         Ok(report)
     }
 
@@ -510,7 +545,7 @@ impl<S: VirtualStorage, K: KeyEncode, R: Document<Key = K>> Collection<S, K, R> 
         };
         meta.set(name, value);
         meta.set(crate::model::meta::VERSION, vec![R::LAYOUT_VERSION]);
-        crate::model::meta::write(&self.store, &self.header(), &meta)?;
+        crate::model::meta::write(&self.store, self.header(), &meta)?;
         Ok(meta)
     }
 
@@ -523,7 +558,8 @@ impl<S: VirtualStorage, K: KeyEncode, R: Document<Key = K>> Collection<S, K, R> 
     /// unpartitioned keys structurally disjoint. Absent when the document
     /// declares no `#[ok_partition]`.
     pub fn primary_key(&self, key: &K) -> Vec<u8> {
-        let mut buf = self.header();
+        let mut buf = Vec::with_capacity(self.header().len() + 10 + 16);
+        buf.extend_from_slice(self.header());
         crate::model::index::write_slot(&mut buf, crate::model::index::PRIMARY_SLOT);
         buf.extend_from_slice(&key.encode());
         buf
@@ -596,7 +632,7 @@ impl<S: VirtualStorage, K: KeyEncode, R: Document<Key = K>> Collection<S, K, R> 
             let mut store = crate::engine::storage::BatchStore::new(&self.store, &mut batch);
             if R::HAS_VOCAB {
                 let mut copy = document.clone();
-                copy.__okm_intern(&mut self.vocabs.borrow_mut(), &mut store, &header)?;
+                copy.__okm_intern(&mut self.vocabs.borrow_mut(), &mut store, header)?;
                 interned = Some(copy);
             }
             let document = interned.as_ref().unwrap_or(document);
@@ -605,12 +641,12 @@ impl<S: VirtualStorage, K: KeyEncode, R: Document<Key = K>> Collection<S, K, R> 
             // include for this key.
             let prev = store.get(&pkey)?.map(|v| R::decode_payload(&v));
             if let Some(old) = &prev {
-                R::__okm_apply_reduces(&mut store, key, old, &header, false)?;
+                R::__okm_apply_reduces(&mut store, key, old, header, false)?;
             }
             store.put_bytes(&pkey, &document.encode_payload())?;
             let mut entries = self.entries.borrow_mut();
             entries.clear();
-            R::index_entries_into(key, document, &header, &mut entries);
+            R::index_entries_into(key, document, header, &mut entries);
             for (ek, ev) in entries.iter() {
                 store.put_bytes(ek, ev)?;
             }
@@ -631,7 +667,7 @@ impl<S: VirtualStorage, K: KeyEncode, R: Document<Key = K>> Collection<S, K, R> 
             }
             // Cross-document reduces: fold this document into each declared
             // group.
-            R::__okm_apply_reduces(&mut store, key, document, &header, true)?;
+            R::__okm_apply_reduces(&mut store, key, document, header, true)?;
         }
         self.commit(&batch)?;
         drop(batch);
@@ -734,7 +770,7 @@ impl<S: VirtualStorage, K: KeyEncode, R: Document<Key = K>> Collection<S, K, R> 
         // a scan is exactly what a batch cannot do.
         let interned: Option<R> = if R::HAS_VOCAB {
             let mut copy = document.clone();
-            copy.__okm_intern(&mut self.vocabs.borrow_mut(), &mut adapter, &header)?;
+            copy.__okm_intern(&mut self.vocabs.borrow_mut(), &mut adapter, header)?;
             Some(copy)
         } else {
             None
@@ -744,7 +780,7 @@ impl<S: VirtualStorage, K: KeyEncode, R: Document<Key = K>> Collection<S, K, R> 
         // Unfold the old document from every reduce group before folding the
         // new one in — without this the second write double-counts.
         if let Some(old) = prev {
-            R::__okm_apply_reduces(&mut adapter, key, old, &header, false)?;
+            R::__okm_apply_reduces(&mut adapter, key, old, header, false)?;
         }
 
         adapter.put(pkey, document.encode_payload())?;
@@ -752,11 +788,11 @@ impl<S: VirtualStorage, K: KeyEncode, R: Document<Key = K>> Collection<S, K, R> 
         // Faces: write the new set, drop the old set's leftovers. An entry
         // key present in both sets holds the same (key, value) pair, so it is
         // written once and never deleted.
-        let new_faces = R::index_entries(key, document, &header);
+        let new_faces = R::index_entries(key, document, header);
         if let Some(old) = prev {
             let fresh: std::collections::HashSet<&Vec<u8>> =
                 new_faces.iter().map(|(ek, _)| ek).collect();
-            for (ek, _) in R::index_entries(key, old, &header) {
+            for (ek, _) in R::index_entries(key, old, header) {
                 if !fresh.contains(&ek) {
                     adapter.del(&ek)?;
                 }
@@ -782,13 +818,13 @@ impl<S: VirtualStorage, K: KeyEncode, R: Document<Key = K>> Collection<S, K, R> 
         }
 
         // Fold the new document into each declared group.
-        R::__okm_apply_reduces(&mut adapter, key, document, &header, true)?;
+        R::__okm_apply_reduces(&mut adapter, key, document, header, true)?;
         Ok(())
     }
 
     /// Index entry key for access method `I` derived from `key` + `document`.
     pub fn index_key<I: KvIndex<Key = K, Document = R>>(&self, key: &K, document: &R) -> Vec<u8> {
-        I::entry_key(&self.header(), key, document)
+        I::entry_key(self.header(), key, document)
     }
 
     /// Point lookup, the row alone: decode key payload + TLV payload.
@@ -876,10 +912,10 @@ impl<S: VirtualStorage, K: KeyEncode, R: Document<Key = K>> Collection<S, K, R> 
     {
         let header = self.header();
         let encoded = probe.probe_bytes();
-        let mut b = I::entry_prefix(&header, &[]);
+        let mut b = I::entry_prefix(header, &[]);
         b.extend_from_slice(encoded);
         let e = crate::engine::storage::prefix_end(&b);
-        Scan::new(self, header, encoded.len(), false, b, e)
+        Scan::new(self, header.to_vec(), encoded.len(), false, b, e)
     }
 
     /// [`scan`](Self::scan) as a REPOSITIONABLE cursor: the same entries, in the
@@ -930,10 +966,10 @@ impl<S: VirtualStorage, K: KeyEncode, R: Document<Key = K>> Collection<S, K, R> 
     {
         let header = self.header();
         let encoded = probe.probe_bytes();
-        let mut b = I::entry_prefix(&header, &[]);
+        let mut b = I::entry_prefix(header, &[]);
         b.extend_from_slice(encoded);
         let e = crate::engine::storage::prefix_end(&b);
-        Scan::new(self, header, encoded.len(), true, b, e)
+        Scan::new(self, header.to_vec(), encoded.len(), true, b, e)
     }
 
     /// Range scan over access method `I`: `begin`/`end` are the ENCODED forms of
@@ -954,14 +990,14 @@ impl<S: VirtualStorage, K: KeyEncode, R: Document<Key = K>> Collection<S, K, R> 
         S: SharedVirtualStorage,
     {
         let header = self.header();
-        let mut b = I::entry_prefix(&header, &[]);
+        let mut b = I::entry_prefix(header, &[]);
         b.extend_from_slice(begin);
         let e = end.map(|end| {
-            let mut e = I::entry_prefix(&header, &[]);
+            let mut e = I::entry_prefix(header, &[]);
             e.extend_from_slice(end);
             e
         });
-        Scan::new(self, header, begin.len(), false, b, e)
+        Scan::new(self, header.to_vec(), begin.len(), false, b, e)
     }
 
     /// Raw documents: `(key encoding suffix, payload)` per document, in key
@@ -975,9 +1011,9 @@ impl<S: VirtualStorage, K: KeyEncode, R: Document<Key = K>> Collection<S, K, R> 
     /// half is one prefix scan WITH values, the segment half a key-only scan, and
     /// the union is a two-pointer merge: no point read per document.
     pub fn scan_documents_raw(&self) -> crate::error::Result<Vec<RawDocument>> {
-        let mut rows = self.header();
+        let mut rows = self.header().to_vec();
         crate::model::index::write_slot(&mut rows, crate::model::index::PRIMARY_SLOT);
-        let mut segs = self.header();
+        let mut segs = self.header().to_vec();
         crate::model::index::write_slot(&mut segs, crate::model::index::DYNAMIC_SLOT);
         let rows = scan_suffix_kv(&self.store, &rows)?;
         let segs = self.store.scan_suffix(&segs)?;
@@ -1017,7 +1053,7 @@ impl<S: VirtualStorage, K: KeyEncode, R: Document<Key = K>> Collection<S, K, R> 
         batch.clear();
         let mut removed = 0;
         for slot in R::DEPRECATED_SLOTS {
-            let mut p = self.header();
+            let mut p = self.header().to_vec();
             crate::model::index::write_slot(&mut p, *slot);
             for sfx in self.store.scan_suffix(&p)? {
                 let mut full = p.clone();
@@ -1057,7 +1093,7 @@ impl<S: VirtualStorage, K: KeyEncode, R: Document<Key = K>> Collection<S, K, R> 
         &self,
         probe: &crate::model::prefix::PrefixProbe<K>,
     ) -> impl DoubleEndedIterator<Item = crate::error::Result<K>> + '_ {
-        let mut begin = self.header();
+        let mut begin = self.header().to_vec();
         crate::model::index::write_slot(&mut begin, crate::model::index::PRIMARY_SLOT);
         begin.extend_from_slice(probe.as_bytes());
         let taken = probe.taken();
@@ -1114,10 +1150,10 @@ impl<S: VirtualStorage, K: KeyEncode, R: Document<Key = K>> Collection<S, K, R> 
     ) -> crate::error::Result<Vec<K>> {
         let taken = probe.taken();
         let key_len = K::KEY_LEN;
-        let mut rows = self.header();
+        let mut rows = self.header().to_vec();
         crate::model::index::write_slot(&mut rows, crate::model::index::PRIMARY_SLOT);
         rows.extend_from_slice(probe.as_bytes());
-        let mut segs = self.header();
+        let mut segs = self.header().to_vec();
         crate::model::index::write_slot(&mut segs, crate::model::index::DYNAMIC_SLOT);
         segs.extend_from_slice(probe.as_bytes());
         let rows = self.store.scan_suffix(&rows)?;
@@ -1177,7 +1213,7 @@ impl<S: VirtualStorage, K: KeyEncode, R: Document<Key = K>> Collection<S, K, R> 
     /// an index entry with no field segment (ADR-0012; fixed face per
     /// ADR-0030).
     fn fields_key(&self, key: &K) -> Vec<u8> {
-        let mut buf = self.header();
+        let mut buf = self.header().to_vec();
         crate::model::index::write_slot(&mut buf, crate::model::index::DYNAMIC_SLOT);
         buf.extend_from_slice(&key.encode());
         buf
@@ -1382,7 +1418,7 @@ impl<S: VirtualStorage, K: KeyEncode, R: Document<Key = K>> Collection<S, K, R> 
         };
         let mut d = self.fields_vocab.borrow_mut();
         let header = self.header();
-        let mut door = Faces::<_, u16>::new(&self.store, &header, FIELD_VOCAB);
+        let mut door = Faces::<_, u16>::new(&self.store, header, FIELD_VOCAB);
         // decode_named resolves nested obj field ids through the same
         // vocabulary — nested maps come back fully name-keyed. The resolver
         // answers ids, so an engine failure is parked and re-raised after the
@@ -1428,7 +1464,7 @@ impl<S: VirtualStorage, K: KeyEncode, R: Document<Key = K>> Collection<S, K, R> 
         // One value per obj: a block table and a value area, joined before the
         // put (ADR-0057). Nested objects resolve through the same vocabulary.
         let body = {
-            let mut door = Faces::<_, u16>::new(&store, &header, FIELD_VOCAB);
+            let mut door = Faces::<_, u16>::new(&store, header, FIELD_VOCAB);
             let mut resolver = |name: &str| d.ensure(&mut door, name);
             okm_value::encode(variants, &mut resolver)?
         };
@@ -1451,10 +1487,10 @@ impl<S: VirtualStorage, K: KeyEncode, R: Document<Key = K>> Collection<S, K, R> 
         let header = self.header();
         let mut store = crate::engine::storage::BatchStore::new(&self.store, batch);
         store.del(&self.primary_key(key))?;
-        for (ek, _) in R::index_entries(key, document, &header) {
+        for (ek, _) in R::index_entries(key, document, header) {
             store.del(&ek)?;
         }
-        R::__okm_apply_reduces(&mut store, key, document, &header, false)
+        R::__okm_apply_reduces(&mut store, key, document, header, false)
     }
 
     /// Split a name-keyed map along the declaration: declared names are the
@@ -1484,7 +1520,7 @@ impl<S: VirtualStorage, K: KeyEncode, R: Document<Key = K>> Collection<S, K, R> 
         let header = self.header();
         let promoted = {
             let vocab = self.fields_vocab.borrow();
-            pending_in(&vocab, &header, FIELD_VOCAB, batch)
+            pending_in(&vocab, header, FIELD_VOCAB, batch)
         };
         self.store.commit_batch(batch)?;
         self.fields_vocab.borrow_mut().landed(&promoted);

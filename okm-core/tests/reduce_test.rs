@@ -284,7 +284,7 @@ fn the_reduce_prefix_is_the_tables_own_header() {
     );
 
     // The entry really is `[partition][ns][slot][group]`.
-    let entry = <BookTotal as Reduce>::entry_key(&t.header(), &group_key, &group_row);
+    let entry = <BookTotal as Reduce>::entry_key(t.header(), &group_key, &group_row);
     // `[0xFF][partition 1B][ns 2B][slot 2B][group]` — the ns is TWO bytes, so a
     // window of three can only ever see its high byte.
     assert_eq!(
