@@ -528,7 +528,7 @@ impl<S: VirtualStorage> DynamicCollection<S> {
             crate::write_slot(&mut prefix, slot);
             let end = prefix_end(&prefix);
             for item in self.store.scan_range(&prefix, end.as_deref()) {
-                let (key, _) = item.map_err(codec)?;
+                let (key, value) = item.map_err(codec)?;
                 let pkey = &key[prefix.len()..];
                 let Some(document) = self.fetch(pkey)? else {
                     continue;
@@ -540,26 +540,42 @@ impl<S: VirtualStorage> DynamicCollection<S> {
                 // that case either. A path index addresses the SEGMENT, so it is
                 // derived on both slots (same bytes for a row-bearing document, which
                 // is why the double derivation is harmless).
-                let mut entries = if slot == crate::index::PRIMARY_SLOT {
-                    crate::model::access_method::index_entries(
+                let mut entries = self.entries();
+                entries.clear();
+                if slot == crate::index::PRIMARY_SLOT {
+                    // The row slot's VALUE IS the payload the row was written with, so the
+                    // compiled walk starts from the bytes the scan just handed us — no
+                    // re-encode, no name lookup, and one producer for the write path and the
+                    // repair (`index_entries` over the same two faces costs 187.7 ns, the
+                    // walk 27.1). `produce` rather than `produce_encoded`: these bytes did
+                    // not come from this declaration's encoder, so the cold tags the walk
+                    // reads are checked before the first entry is appended.
+                    self.entry_layout()?
+                        .produce(&ns, pkey, &value, &mut entries)
+                        .map_err(|m| m.to_string())?;
+                    // The faces the walk cannot produce keep their runtime producer, exactly
+                    // as on the write path — one producer per face, both paths.
+                    for (ek, ev) in crate::model::access_method::callable_entries(
                         &self.schema,
                         &ns,
                         &self.indexes,
                         pkey,
                         &document,
-                    )?
-                } else {
-                    Vec::new()
-                };
-                entries.extend(crate::model::access_method::path_index_entries(
+                    )? {
+                        entries.extend_pair(&ek, &ev);
+                    }
+                }
+                for (ek, ev) in crate::model::access_method::path_index_entries(
                     &self.schema,
                     &ns,
                     &self.indexes,
                     pkey,
                     &document,
-                )?);
-                for (ek, ev) in entries {
-                    batch.put(ek, ev);
+                )? {
+                    entries.extend_pair(&ek, &ev);
+                }
+                for (ek, ev) in entries.iter() {
+                    batch.put_bytes(ek, ev);
                     report.entries_written += 1;
                 }
                 report.documents += 1;

@@ -1476,3 +1476,49 @@ fn a_plain_face_indexes_a_vocab_field_by_its_id() {
             .is_empty()
     );
 }
+
+/// A rebuild re-derives every declared face from the stored documents. It starts
+/// from the same compiled walk the write path runs, so it ENCODES the row again
+/// instead of reading indexed names back out of the map — which is what keeps a
+/// categorical face rebuildable at all (`encode_fixed` never learned `Vocab`).
+#[test]
+fn a_rebuild_rederives_a_categorical_face() {
+    let store = TestStore::default();
+    let method = || AccessMethod::plain(0x4001, vec!["status".into()], vec!["score".into()]);
+    let table = DynamicCollection::new(
+        store.clone(),
+        43,
+        CollectionSchema::of::<CatKey, CatRow>(),
+        vec![method()],
+    );
+    for (id, status, score) in [(1u64, 3u8, 10u32), (2, 7, 41), (3, 7, 42)] {
+        let mut doc = Dict::new();
+        doc.insert("status".into(), Value::U8(status));
+        doc.insert("score".into(), Value::U32(score));
+        table.put(&CatKey { id }.encode(), &doc).unwrap();
+    }
+    // Every entry under the face slot, verbatim: ns | slot 0x4001 | ...
+    let face = |store: &TestStore| -> Vec<Vec<u8>> {
+        store
+            .scan_suffix(&[])
+            .unwrap()
+            .into_iter()
+            .filter(|k| k.starts_with(&[0u8, 43, 0x40, 0x01]))
+            .collect()
+    };
+    let before = face(&store);
+    assert_eq!(before.len(), 3);
+
+    let report = table.rebuild_faces(1).unwrap();
+    assert_eq!(report.entries_deleted, 3, "phase 1 sweeps the face");
+    assert_eq!(report.entries_written, 3, "phase 2 derives one per row");
+    assert_eq!(
+        face(&store),
+        before,
+        "the walk reproduces the entries the write path wrote"
+    );
+
+    // And the id that two rows share still answers both of them.
+    let hits = table.scan_access_method_keys(0x4001, &[7]).unwrap();
+    assert_eq!(hits.len(), 2);
+}
