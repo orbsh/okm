@@ -1437,6 +1437,13 @@ pub struct CatRow {
     pub score: u32,
 }
 
+/// The address a dynamic table of `CatKey`/`CatRow` writes under: the ns WITH the layout
+/// generation's bit (ADR-0075 §2). A test never spells that prefix itself — the bit belongs
+/// to the declaration, and `new` takes its answer from here too.
+fn cat_address() -> Vec<u8> {
+    okm_core::model::table_plan::address_for(&CollectionSchema::of::<CatKey, CatRow>(), 43)
+}
+
 #[test]
 fn a_plain_face_indexes_a_vocab_field_by_its_id() {
     let store = TestStore::default();
@@ -1458,8 +1465,11 @@ fn a_plain_face_indexes_a_vocab_field_by_its_id() {
     doc.insert("score".into(), Value::U32(41));
     table.put(&pkey, &doc).unwrap();
 
-    // ns | slot | the field's OWN byte (the id) | pkey — no label, no dictionary.
-    let mut expected = vec![0u8, 43, 0x40, 0x01, 7];
+    // The table's own header (its address, generation bit and all) | slot | the field's
+    // OWN byte (the id) | pkey — no label, no dictionary.
+    let mut expected = cat_address();
+    expected.extend_from_slice(&0x4001u16.to_be_bytes());
+    expected.push(7);
     expected.extend_from_slice(&pkey);
     let keys = table.scan_access_method_keys(0x4001, &[7]).unwrap();
     assert_eq!(keys, vec![expected.clone()], "the entry is keyed by the id");
@@ -1497,13 +1507,15 @@ fn a_rebuild_rederives_a_categorical_face() {
         doc.insert("score".into(), Value::U32(score));
         table.put(&CatKey { id }.encode(), &doc).unwrap();
     }
-    // Every entry under the face slot, verbatim: ns | slot 0x4001 | ...
+    // Every entry under the face slot, verbatim: the table's own header | slot 0x4001 | ...
+    let mut face_prefix = cat_address();
+    face_prefix.extend_from_slice(&0x4001u16.to_be_bytes());
     let face = |store: &TestStore| -> Vec<Vec<u8>> {
         store
             .scan_suffix(&[])
             .unwrap()
             .into_iter()
-            .filter(|k| k.starts_with(&[0u8, 43, 0x40, 0x01]))
+            .filter(|k| k.starts_with(&face_prefix))
             .collect()
     };
     let before = face(&store);
