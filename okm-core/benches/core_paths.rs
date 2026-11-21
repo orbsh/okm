@@ -615,6 +615,55 @@ fn bench_index_entries(c: &mut Criterion) {
             black_box(sink.as_bytes().len())
         })
     });
+    // The compiled form (ADR-0076 §1): one walk over field references, fed from the bytes a
+    // write already holds — the key it encoded and the payload it is about to store. Its
+    // output is byte-identical to `index_entries_into` above (locked by
+    // `tests/entry_layout_test.rs`); what this measures is the walk itself.
+    let schema = okm_core::schema::CollectionSchema::of::<BenchKey, BenchRow>();
+    let layout = okm_core::model::entry_layout::EntryLayout::compile(
+        &schema,
+        &[
+            okm_core::model::entry_layout::FaceDecl {
+                name: "by_level",
+                slot: <ByLevel as KvIndex>::SLOT,
+                fields: <ByLevel as KvIndex>::FIELDS,
+                includes: <ByLevel as KvIndex>::INCLUDES,
+                key_prefix: <ByLevel as KvIndex>::KEY_PREFIX,
+                lead: false,
+                func: false,
+                partial: false,
+            },
+            okm_core::model::entry_layout::FaceDecl {
+                name: "by_name",
+                slot: <__OkmIndex_BenchRow_by_name as KvIndex>::SLOT,
+                fields: <__OkmIndex_BenchRow_by_name as KvIndex>::FIELDS,
+                includes: <__OkmIndex_BenchRow_by_name as KvIndex>::INCLUDES,
+                key_prefix: <__OkmIndex_BenchRow_by_name as KvIndex>::KEY_PREFIX,
+                lead: false,
+                func: false,
+                partial: false,
+            },
+        ],
+    )
+    .unwrap();
+    let mut key_bytes = Vec::new();
+    key.encode_into(&mut key_bytes);
+    let payload = row.encode_payload();
+    let mut walked = okm_core::model::entries::Entries::new();
+    g.bench_function("entry_layout/compiled", |b| {
+        b.iter(|| {
+            walked.clear();
+            layout
+                .produce(
+                    black_box(ns),
+                    black_box(&key_bytes),
+                    black_box(&payload),
+                    &mut walked,
+                )
+                .unwrap();
+            black_box(walked.as_bytes().len())
+        })
+    });
     g.bench_function("index_entries/one_declared", |b| {
         b.iter(|| {
             black_box(<ByLevel as KvIndex>::entry_pairs(
