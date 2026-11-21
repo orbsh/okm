@@ -26,7 +26,8 @@
 - `Entries`——写的缓冲，read-modify-write 时还有被替换那一行的——成为两种形态里写面生成的唯一位置。
 - bindings 与 `okm-log replay` 的入口不变；它们失去的是入口背后的第二份实现。
 - PLAN 里量过 walk 的那一条（「把 `TablePlan` 编译到 attach」）并入这一条，数字一并带过去。
-- typed 写路径并不会因此变快。`put` 开着 walk 与关掉 walk 量下来持平（1.2975 µs 对 1.3002 µs），因为它刚编码完的 document 本来就在 cache 里；条目本身那 42%（`entry_layout/compiled` 33.8 ns 对 `index_entries_into/reused` 58.4 ns）落在「字节是唯一通货」的地方——dynamic 形态，以及任何 payload 到手、身边没有 typed document 的生产者。
+- typed 写路径不会因为 walk 本身变快：`put` 开着 walk 与关掉 walk 量下来持平（1.2975 µs 对 1.3002 µs），因为它刚编码完的 document 本来就在 cache 里。真正把 `put` 推到 1.2385 µs 的是 `BatchStore::put_bytes` 改成一次拷进 batch 缓冲，而不是两个 `to_vec` 加一次拷贝——那是 batch 边界的修正，不是这个决定的功劳。条目本身那 42%（`entry_layout/compiled` 33.8 ns 对 `index_entries_into/reused` 58.4 ns）落在「字节是唯一通货」的地方：dynamic 形态，以及任何 payload 到手、身边没有 typed document 的生产者。
+- 被替换那一行的面按 store 里的字节切，不按为 reduce 钩子解出来的那行切：那行经过 `__okm_deref_vocab` 后拿的是标签，而 store 里存的是 id，从它推出来的面未必指向写路径记下的那条 entry——在 vocab 字段上，merge 删不掉 put 写下的东西。
 - plan 编译所用的声明不是 store 的 schema，目前也还不可能是：`IndexSchema` 带的是 `name/slot/fields/includes/func/deprecated`，所以 `key(...)` 的尾部截断与 `where(...)` 谓词在存储字节里不可见，而 reduce 声明整个不在 `CollectionSchema` 里（`faces` 只对已声明的面取指纹）。因此两个只在截断或谓词上不同的声明会描述出同一份 schema，attach 分辨不出来。补上这个洞要加宽存储的声明与它的指纹——那是一次布局代数变更（ADR-0042），是另一个决定。
 
 ## 被否

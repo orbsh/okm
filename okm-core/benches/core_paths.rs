@@ -699,7 +699,7 @@ fn bench_write_ephemeral(c: &mut Criterion) {
             Collection::open(TestStore::default()).unwrap();
         const SEED: u64 = 1 << 10;
         let mut patch = okm_core::okm_value::Dict::new();
-        patch.insert("visits".to_string(), okm_core::okm_value::Variant::I64(7));
+        patch.insert("visits".to_string(), okm_core::okm_value::Variant::U64(7));
         let patch = okm_core::okm_value::Variant::Map(patch);
         // A patch carrying no declared name is not a merge of anything, so pick one the
         // declaration has: `visits` is a payload field on this row.

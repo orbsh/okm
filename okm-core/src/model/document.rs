@@ -797,9 +797,20 @@ impl<S: VirtualStorage, K: KeyEncode, R: Document<Key = K>> Collection<S, K, R> 
 
         // The old row: the caller's, or read through the adapter so a pending
         // write of the SAME key in this batch counts as the old row.
+        let mut prev_payload: Option<Vec<u8>> = None;
         let mut prev_owned = match prev {
             Some(_) => None,
-            None => adapter.get(&pkey)?.map(|v| R::decode_payload(&v)),
+            None => match adapter.get(&pkey)? {
+                Some(bytes) => {
+                    // The stored payload is where the old row's faces come from: it already
+                    // holds the interned form, and the decode below is for the reduce hooks,
+                    // not for the entries.
+                    let row = R::decode_payload(&bytes);
+                    prev_payload = Some(bytes);
+                    Some(row)
+                }
+                None => None,
+            },
         };
         // A decoded row carries ids, not labels: name it, so a reduce group on a
         // categorical field folds and unfolds under the same key `put` uses.
@@ -829,18 +840,38 @@ impl<S: VirtualStorage, K: KeyEncode, R: Document<Key = K>> Collection<S, K, R> 
             R::__okm_apply_reduces(&mut adapter, key, old, header, false)?;
         }
 
-        adapter.put(pkey, document.encode_payload())?;
+        // One payload, two uses: the store copies it, the walk slices both face sets out of
+        // the bytes (ADR-0076 §1) — the new row's from this one, the replaced row's from the
+        // bytes just read back.
+        let payload = document.encode_payload();
+        adapter.put_bytes(&pkey, &payload)?;
 
         // Faces: write the new set, drop the old set's leftovers. An entry
         // key present in both sets holds the same (key, value) pair, so it is
         // written once and never deleted.
+        let key_bytes = &pkey
+            [header.len() + crate::model::index::slot_len(crate::model::index::PRIMARY_SLOT)..];
         let mut new_faces = self.entries.borrow_mut();
         new_faces.clear();
-        R::index_entries_into(key, document, header, &mut new_faces);
+        match self.entry_layout.as_ref() {
+            Some(layout) => layout
+                .produce_encoded(header, key_bytes, &payload, &mut new_faces)
+                .map_err(|m| crate::error::Error::Corrupt {
+                    what: m.to_string(),
+                })?,
+            None => R::index_entries_into(key, document, header, &mut new_faces),
+        }
         if let Some(old) = prev {
             let mut old_faces = self.entries_prev.borrow_mut();
             old_faces.clear();
-            R::index_entries_into(key, old, header, &mut old_faces);
+            match (self.entry_layout.as_ref(), prev_payload.as_deref()) {
+                (Some(layout), Some(stored)) => layout
+                    .produce_encoded(header, key_bytes, stored, &mut old_faces)
+                    .map_err(|m| crate::error::Error::Corrupt {
+                        what: m.to_string(),
+                    })?,
+                _ => R::index_entries_into(key, old, header, &mut old_faces),
+            }
             let fresh: std::collections::HashSet<&[u8]> =
                 new_faces.iter().map(|(ek, _)| ek).collect();
             for (ek, _) in old_faces.iter() {
