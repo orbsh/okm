@@ -18,7 +18,7 @@
 use std::alloc::{GlobalAlloc, Layout, System};
 use std::cell::Cell;
 
-use okm_async::TestStore;
+use okm_core::testing::TestStore;
 use okm_core::{Collection, DocumentEncode, KeyEncode};
 
 thread_local! {

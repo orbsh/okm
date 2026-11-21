@@ -30,9 +30,9 @@ use std::rc::Rc;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicUsize, Ordering};
 
-use okm_async::TestStore;
 use okm_core::engine::storage::{ExternalScan, ScanIter};
 use okm_core::error::Result;
+use okm_core::testing::TestStore;
 use okm_core::{
     Decl, Document, DocumentEncode, EdgeHead, EdgeKey, EdgeStep, Fragment, Graph, GraphEncode,
     KeyEncode, NodeRef, Seekable, VirtualStorage,

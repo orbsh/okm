@@ -36,7 +36,6 @@ okm-wire = { path = "../okm-wire" }
 # call it: the dependency direction is unchanged (a dev-dependency, and the
 # parallel of `okm-dynamic` above, which also depends on this crate).
 okm-query = { path = "../okm-query" }
-okm-async = { path = "../okm-async", features = ["slatedb", "fjall", "redb"] }
 tokio = { version = "1", features = ["rt-multi-thread", "macros", "sync", "time"] }
 arrow = { version = "60" }
 parquet = { version = "60", default-features = false, features = ["arrow", "zstd"] }
@@ -73,8 +72,8 @@ required-features = ["fjall"]
 name = "size_vs_parquet"
 required-features = ["fjall"]
 
-# The store comes from the `okm-async` dev-dependency (ADR-0059): this file calls
-# `TestStore::slatedb_mem()` and `Graph::to_record_batch_table`.
+# The store comes from `okm_core::testing` — this crate's own engine matrix, so no
+# dependency points upward (ADR-0059). This file also calls `Graph::to_record_batch_table`.
 [[test]]
 name = "deprecated_index_test"
 
@@ -97,7 +96,7 @@ name = "subscribe_batch_test"
 name = "subscribe_verbs_test"
 
 # The change log (ADR-0045) runs on a real engine like every other write-path
-# suite; the engine arrives through the `okm-async` dev-dependency.
+# suite; the engine arrives through `okm_core::testing`.
 [[test]]
 name = "changelog_test"
 
@@ -147,7 +146,7 @@ name = "subscribe_test"
 name = "upsert_test"
 
 # The uuid suite opens a temp-dir engine (`TestStore::fjall_tmp`), which is
-# `#[cfg(feature = "fjall")]` inside `okm-async`, so the suite must enable
+# `#[cfg(feature = "fjall")]` inside `okm_core::testing`, so the suite must enable
 # core's `fjall` as well.
 [[test]]
 name = "uuid_key"

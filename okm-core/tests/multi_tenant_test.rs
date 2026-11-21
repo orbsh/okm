@@ -15,7 +15,7 @@
     clippy::panic_in_result_fn
 )]
 
-use okm_async::TestStore;
+use okm_core::testing::TestStore;
 use okm_core::{Collection, DocumentEncode, KeyEncode, RemoteStore, VirtualStorage};
 
 // TestStore now has handle-clone semantics (Arc kernel) and implements
@@ -54,7 +54,7 @@ fn one_engine_two_tenants_prefix_segments_disjoint() {
     // One physical engine instance (TestStore clones SHARE the map now),
     // handed to both hosts. The hosts own the only handles; the sender
     // endpoints are the contract-level view.
-    let engine = TestStore::slatedb_mem();
+    let engine = TestStore::default();
     let ha = TenantAStorage::serve(engine.clone());
     let hb = TenantBStorage::serve(engine);
     let sa = ha.open();
@@ -93,7 +93,7 @@ fn one_engine_two_tenants_prefix_segments_disjoint() {
 /// touch ns or the host prefix.
 #[test]
 fn internal_tenant_sharding_is_a_plain_key_field() {
-    let engine = TestStore::slatedb_mem();
+    let engine = TestStore::default();
     let handle = TenantAStorage::serve(engine);
     let s = handle.open();
 
@@ -126,7 +126,7 @@ fn internal_tenant_sharding_is_a_plain_key_field() {
 /// (primary + index entries) land inside the tenant's prefix segment.
 #[test]
 fn table_write_path_inside_tenant_segment() {
-    let handle = AppStorage::serve(TestStore::slatedb_mem());
+    let handle = AppStorage::serve(TestStore::default());
     let t: Collection<RemoteStore, DocKey, Doc> = Collection::open(handle.open()).unwrap();
 
     let t = t;

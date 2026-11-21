@@ -13,7 +13,7 @@
 
 use okm_core::{Collection, DocumentEncode, KeyEncode, RemoteStore, VirtualStorage};
 
-use okm_async::TestStore;
+use okm_core::testing::TestStore;
 // Receiver declaration: no data methods, one execution surface.
 #[derive(okm_core::NestStorage)]
 #[ok_ns(21)]
@@ -40,7 +40,7 @@ fn nest_derive_end_to_end() {
     // encoding as Document::NS_PREFIX.
     assert_eq!(AppStorage::NS_PREFIX, &[0, 21]);
 
-    let handle = AppStorage::serve(TestStore::slatedb_mem());
+    let handle = AppStorage::serve(TestStore::default());
     let remote = handle.open();
     let t: Collection<RemoteStore, ItemKey, Item> = Collection::open(remote).unwrap();
 
@@ -77,8 +77,8 @@ fn two_instances_isolated_by_declared_prefix() {
 
     assert_eq!(OtherStorage::NS_PREFIX, &[0, 22]);
 
-    let h1 = AppStorage::serve(TestStore::slatedb_mem());
-    let h2 = OtherStorage::serve(TestStore::slatedb_mem());
+    let h1 = AppStorage::serve(TestStore::default());
+    let h2 = OtherStorage::serve(TestStore::default());
     let s1 = h1.open();
     let s2 = h2.open();
 

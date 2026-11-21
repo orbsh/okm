@@ -17,7 +17,7 @@
     clippy::panic_in_result_fn
 )]
 
-use okm_async::TestStore;
+use okm_core::testing::TestStore;
 use okm_core::{Collection, Document, DocumentEncode, KeyEncode, Ref, VirtualStorage, Vocab};
 
 #[derive(KeyEncode, Clone, PartialEq, Debug, Default)]
@@ -64,7 +64,7 @@ pub struct AuthorPostRow {
 
 #[test]
 fn a_batch_defers_until_commit() {
-    let store = TestStore::slatedb_mem();
+    let store = TestStore::default();
     let mut batch = okm_core::Batch::default();
     let t: Collection<TestStore, PostKey, Post> = Collection::open(store.clone()).unwrap();
 
@@ -96,7 +96,7 @@ fn a_batch_defers_until_commit() {
 #[test]
 fn cross_collection_one_batch() {
     // Document collection + junction share one batch: both live or neither does.
-    let store = TestStore::slatedb_mem();
+    let store = TestStore::default();
     let mut batch = okm_core::Batch::default();
 
     {
@@ -186,7 +186,7 @@ fn entry(id: u64, account: u64, amount: u32) -> (EntryKey, Entry) {
 fn same_group_twice_in_one_batch_accumulates() {
     // The double-count the ADR removes: without read-through both writes
     // would fold from the pre-batch accumulator and the group would end at 1.
-    let store = TestStore::slatedb_mem();
+    let store = TestStore::default();
     let t = <Entry as Document>::open(store.clone()).unwrap();
     let mut batch = okm_core::Batch::default();
 
@@ -209,7 +209,7 @@ fn same_group_twice_in_one_batch_accumulates() {
 fn overwrite_in_one_batch_reads_the_pending_old_row() {
     // prev = None reads through the adapter, so the row THIS batch produced
     // is the old row: its fold is undone before the new fold lands.
-    let store = TestStore::slatedb_mem();
+    let store = TestStore::default();
     let t = <Entry as Document>::open(store.clone()).unwrap();
     let (k, v1) = entry(1, 7, 10);
     let v2 = Entry {
@@ -242,7 +242,7 @@ fn overwrite_in_one_batch_reads_the_pending_old_row() {
 #[test]
 fn caller_supplied_prev_drives_the_unfold_and_the_cleanup() {
     // The common shape: the caller already read the old row in a prior batch.
-    let store = TestStore::slatedb_mem();
+    let store = TestStore::default();
     let t = <Entry as Document>::open(store.clone()).unwrap();
     let (k, v1) = entry(1, 7, 10);
 
@@ -272,7 +272,7 @@ fn caller_supplied_prev_drives_the_unfold_and_the_cleanup() {
 
 #[test]
 fn an_uncommitted_batch_moves_neither_the_row_nor_the_ledger() {
-    let store = TestStore::slatedb_mem();
+    let store = TestStore::default();
     let t = <Entry as Document>::open(store.clone()).unwrap();
     let (k, v1) = entry(1, 7, 1);
     let mut batch = okm_core::Batch::default();
@@ -301,7 +301,7 @@ fn an_uncommitted_batch_moves_neither_the_row_nor_the_ledger() {
 #[test]
 fn atomic_write_and_reduce_in_one_commit() {
     // The ADR's headline: multi-table atomicity AND a ledger, together.
-    let store = TestStore::slatedb_mem();
+    let store = TestStore::default();
     let mut batch = okm_core::Batch::default();
     let t = <Entry as Document>::open(store.clone()).unwrap();
     let edges: Collection<TestStore, AuthorPostKey, AuthorPostRow> =
@@ -329,7 +329,7 @@ fn atomic_write_and_reduce_in_one_commit() {
 
 #[test]
 fn batch_store_reads_pending_ops_newest_first() {
-    let store = TestStore::slatedb_mem();
+    let store = TestStore::default();
     store.put(b"k1".to_vec(), b"stored".to_vec()).unwrap();
     let mut batch = okm_core::Batch::default();
     {
@@ -361,7 +361,7 @@ fn batch_store_reads_pending_ops_newest_first() {
 
 #[test]
 fn scans_on_a_batch_view_are_refused() {
-    let store = TestStore::slatedb_mem();
+    let store = TestStore::default();
     let mut batch = okm_core::Batch::default();
     let view = okm_core::BatchStore::new(&store, &mut batch);
     let refused = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
@@ -403,7 +403,7 @@ pub struct Card {
 
 #[test]
 fn embedded_children_are_written_and_released_in_the_batch() {
-    let store = TestStore::slatedb_mem();
+    let store = TestStore::default();
     let cards = <Card as Document>::open(store.clone()).unwrap();
     let contacts: Collection<TestStore, ContactKey, Contact> =
         Collection::open(store.clone()).unwrap();
@@ -492,7 +492,7 @@ pub struct LogRow {
 
 #[test]
 fn save_with_prev_into_interns_inside_the_batch() {
-    let store = TestStore::slatedb_mem();
+    let store = TestStore::default();
     let c = Collection::<_, LogKey, LogRow>::open(store.clone()).unwrap();
     let k = LogKey { id: 1 };
 
@@ -560,7 +560,7 @@ fn save_with_prev_into_interns_inside_the_batch() {
 
 #[test]
 fn purge_into_defers_until_the_commit() {
-    let store = TestStore::slatedb_mem();
+    let store = TestStore::default();
     let t = <Entry as Document>::open(store.clone()).unwrap();
     let (k, v) = entry(1, 7, 10);
     t.put(&k, &v).unwrap();
@@ -591,7 +591,7 @@ fn purge_into_reads_the_batch_it_is_building() {
     // The row is written by THIS batch. Reading the store would find nothing,
     // answer `false`, and the commit would land a row whose face it never
     // removed and whose fold it never unfolded.
-    let store = TestStore::slatedb_mem();
+    let store = TestStore::default();
     let t = <Entry as Document>::open(store.clone()).unwrap();
     let (k, v) = entry(1, 7, 10);
     let mut batch = okm_core::Batch::default();
@@ -615,7 +615,7 @@ fn purge_into_reads_the_batch_it_is_building() {
 
 #[test]
 fn purge_into_of_a_missing_key_writes_nothing() {
-    let store = TestStore::slatedb_mem();
+    let store = TestStore::default();
     let t = <Entry as Document>::open(store.clone()).unwrap();
     let mut batch = okm_core::Batch::default();
     assert!(!t.purge_into(&mut batch, &EntryKey { id: 99 }).unwrap());
@@ -628,7 +628,7 @@ fn purge_into_of_a_missing_key_writes_nothing() {
 
 #[test]
 fn two_tables_leave_in_one_commit() {
-    let store = TestStore::slatedb_mem();
+    let store = TestStore::default();
     let posts: Collection<TestStore, PostKey, Post> = Collection::open(store.clone()).unwrap();
     let entries = <Entry as Document>::open(store.clone()).unwrap();
     posts

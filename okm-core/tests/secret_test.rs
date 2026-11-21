@@ -17,8 +17,8 @@
     clippy::panic_in_result_fn
 )]
 
-use okm_async::TestStore;
 use okm_core::model::schema::CollectionSchema;
+use okm_core::testing::TestStore;
 use okm_core::{Bytes, Collection, Document, DocumentEncode, FieldType, KeyEncode, Secret};
 
 #[derive(KeyEncode, Clone, PartialEq, Debug)]
@@ -175,7 +175,7 @@ fn stand_in_digest(token: &[u8]) -> [u8; 32] {
 
 #[test]
 fn a_digest_is_indexable_and_the_token_never_reaches_the_keyspace() {
-    let store = TestStore::slatedb_mem();
+    let store = TestStore::default();
     let col: Collection<_, VaultId, TokenRow> = Collection::open(&store).unwrap();
     let token = b"tok_live_0123456789abcdef";
     let digest = stand_in_digest(token);

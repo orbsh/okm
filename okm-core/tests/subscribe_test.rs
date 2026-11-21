@@ -16,8 +16,8 @@
     clippy::panic_in_result_fn
 )]
 
-use okm_async::TestStore;
 use okm_core::Collection;
+use okm_core::testing::TestStore;
 
 #[path = "subscribe_common.rs"]
 mod subscribe_common;
@@ -49,7 +49,7 @@ fn subscribe_round_trip() {
     assert!(okm_subscribe::SINK_ROWEVENT.has_sink());
 
     let t: Collection<TestStore, AccountKey, Account> =
-        Collection::open(TestStore::slatedb_mem()).unwrap();
+        Collection::open(TestStore::default()).unwrap();
     t.put(&AccountKey { id: 1 }, &Account { balance: 10 })
         .unwrap();
     t.put(&AccountKey { id: 2 }, &Account { balance: 20 })
@@ -59,8 +59,7 @@ fn subscribe_round_trip() {
     // Epoch: the table's monotonic write-batch counter — 1, 2, 3 across
     // the three writes, giving consumers an exact same-table boundary.
     // Fan-in: the second document type lands in the same enum (tag 100+).
-    let a: Collection<TestStore, AuditKey, Audit> =
-        Collection::open(TestStore::slatedb_mem()).unwrap();
+    let a: Collection<TestStore, AuditKey, Audit> = Collection::open(TestStore::default()).unwrap();
     a.put(&AuditKey { id: 7 }, &Audit { note: "hi".into() })
         .unwrap();
     a.purge(&AuditKey { id: 7 }).unwrap();
@@ -83,8 +82,7 @@ fn no_sink_drops_silently() {
     // panic — the zero-cost default. A write round-trip works regardless
     // of event delivery. (Ghost rides its own `ShadowEvents` enum, so
     // this test cannot race the RowEvent consumers above.)
-    let t: Collection<TestStore, GhostKey, Ghost> =
-        Collection::open(TestStore::slatedb_mem()).unwrap();
+    let t: Collection<TestStore, GhostKey, Ghost> = Collection::open(TestStore::default()).unwrap();
     t.put(&GhostKey { id: 3 }, &Ghost { v: 30 }).unwrap();
     assert!(t.has_row(&GhostKey { id: 3 }).unwrap());
 }

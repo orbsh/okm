@@ -16,8 +16,8 @@
 use okm_core::{Collection, Document, DocumentEncode, KeyEncode};
 use okm_value::{Dict, Variant};
 
-use okm_async::TestStore;
 use okm_core::parts;
+use okm_core::testing::TestStore;
 /// A key whose fields collide with `KeyEncode::decode`'s own names.
 #[derive(KeyEncode, Clone, PartialEq, Eq, Debug)]
 pub struct ShadowKey {

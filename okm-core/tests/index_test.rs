@@ -16,7 +16,7 @@ use okm_core::{
 };
 use okm_value::Variant;
 
-use okm_async::TestStore;
+use okm_core::testing::TestStore;
 // marker struct 生成在 derive 展开点（本文件），直接引用
 use __OkmIndex_Post_by_timeline as ByTimeline;
 use __OkmIndex_Session_by_kind as ByKind;
@@ -110,7 +110,7 @@ fn mk_session(user: u64, sid: u64, kind: u8) -> (SessionKey, Session) {
 
 #[test]
 fn table_put_writes_primary_and_indexes() {
-    let t = <User as Document>::open(TestStore::slatedb_mem()).unwrap();
+    let t = <User as Document>::open(TestStore::default()).unwrap();
     let (k, r) = mk_user(101, 100);
     t.put(&k, &r).unwrap();
 
@@ -144,7 +144,7 @@ fn table_put_writes_primary_and_indexes() {
 
 #[test]
 fn delete_by_pkey_fetches_row_and_cleans_indexes() {
-    let t = <User as Document>::open(TestStore::slatedb_mem()).unwrap();
+    let t = <User as Document>::open(TestStore::default()).unwrap();
     let (k, r) = mk_user(101, 100);
     t.put(&k, &r).unwrap();
 
@@ -165,7 +165,7 @@ fn delete_by_pkey_fetches_row_and_cleans_indexes() {
 
 #[test]
 fn scan_via_index_returns_rows() {
-    let t = <User as Document>::open(TestStore::slatedb_mem()).unwrap();
+    let t = <User as Document>::open(TestStore::default()).unwrap();
     let rows_in = [
         mk_user(101, 10),
         mk_user(102, 20),
@@ -240,7 +240,7 @@ fn timeline_is_a_list_encoding() {
     // by_timeline：fields(author_id, created_at)，分组维度在 fields 首位，
     // 一条前缀扫描（author=7）即返回该作者的整个时间线，组内按
     // created_at 升序；includes(title_len) 覆盖，无需回表。
-    let t = <Post as Document>::open(TestStore::slatedb_mem()).unwrap();
+    let t = <Post as Document>::open(TestStore::default()).unwrap();
     let rows = [
         mk_post(500, 7, 30, 10),
         mk_post(501, 7, 20, 11),
@@ -288,7 +288,7 @@ fn truncated_key_prefix_drops_redundant_tail() {
     // by_kind：fields(kind) 分组 + key(session_id) 截断尾段。session_id
     // 全局唯一，(kind, session_id) 行级唯一——user_id 留在尾段只会冗余。
     // 扫描 kind=3 → 该类型的全部会话（列表语义），不回表。
-    let t = <Session as Document>::open(TestStore::slatedb_mem()).unwrap();
+    let t = <Session as Document>::open(TestStore::default()).unwrap();
     let rows = [
         mk_session(9, 777, 3),
         mk_session(9, 778, 3), // 同用户同类型的另一会话：session_id 区分，不覆盖
@@ -401,7 +401,7 @@ fn variable_length_index_text_first() {
     // 变长字段索引（text-first regime）：裸 UTF-8 字节参与排序，共享前缀
     // 文本按字典序相邻；精确匹配靠尾部主键回表核验（无定界符是本 regime
     // 的代价——"ab" 的前缀扫描会扫到 "abc"，这正是字典序的行为）。
-    let t = <Doc as Document>::open(TestStore::slatedb_mem()).unwrap();
+    let t = <Doc as Document>::open(TestStore::default()).unwrap();
     let rows = [
         mk_doc(1, 10, "alpha"),
         mk_doc(2, 10, "alphabet"), // "alpha" 的扩展，字典序紧随其后
@@ -461,7 +461,7 @@ fn variable_length_index_text_first() {
 /// 调用方必须回表或声明 `includes` 才能读出自己刚扫描的那一列。
 #[test]
 fn the_sort_segment_comes_back_with_each_hit() {
-    let t = <Doc as Document>::open(TestStore::slatedb_mem()).unwrap();
+    let t = <Doc as Document>::open(TestStore::default()).unwrap();
     let rows = [
         mk_doc(1, 10, "alpha"),
         mk_doc(2, 10, "beta"),
@@ -507,7 +507,7 @@ fn the_sort_segment_comes_back_with_each_hit() {
 /// (Fields, Key) 是两个问题，(Fields, Row) 是第三个——数量少了就是活儿少了。
 #[test]
 fn the_parts_tuple_order_and_count_are_the_callers() {
-    let t = <Doc as Document>::open(TestStore::slatedb_mem()).unwrap();
+    let t = <Doc as Document>::open(TestStore::default()).unwrap();
     for (k, r) in [mk_doc(1, 10, "a"), mk_doc(2, 10, "b")] {
         t.put(&k, &r).unwrap();
     }
@@ -539,7 +539,7 @@ fn the_parts_tuple_order_and_count_are_the_callers() {
 /// join 的第一步只需要 (字段, 主键)；先把行读出来再丢掉是白花。
 #[test]
 fn scan_entries_answers_the_same_hits_without_the_row() {
-    let t = <Doc as Document>::open(TestStore::slatedb_mem()).unwrap();
+    let t = <Doc as Document>::open(TestStore::default()).unwrap();
     for (k, r) in [
         mk_doc(1, 10, "alpha"),
         mk_doc(2, 10, "beta"),
@@ -593,7 +593,7 @@ fn scan_entries_answers_the_same_hits_without_the_row() {
 /// 于是它交回裸字节。
 #[test]
 fn a_function_index_hands_back_the_raw_segment() {
-    let t = <DocFunc as Document>::open(TestStore::slatedb_mem()).unwrap();
+    let t = <DocFunc as Document>::open(TestStore::default()).unwrap();
     let rows = [mk_docf(1, 10, "RUST KV"), mk_docf(2, 10, "Rust")];
     for (k, r) in &rows {
         t.put(k, r).unwrap();
@@ -615,7 +615,7 @@ fn probe_never_spills_into_the_key_tail() {
     // 拼出来（字母数字混用是完全合法的数据，不能靠纪律禁止）。
     // 判据是一个长度比较：剩余字节短于尾段宽度 ⇒ 字段段比探针短 ⇒ 值不
     // 可能以探针开头。
-    let t = <Doc as Document>::open(TestStore::slatedb_mem()).unwrap();
+    let t = <Doc as Document>::open(TestStore::default()).unwrap();
     let id_trap = 0x3100_0000_0000_0001; // 主键编码首字节 = 0x31（'1'）
     let rows = [
         mk_doc(id_trap, 10, "ad"), // 假命中：值 "ad" + 主键首字节 '1'
@@ -718,7 +718,7 @@ fn mk_docf(id: u64, city: u32, name: &str) -> (DocKey, DocFunc) {
 fn function_index_normalizes_both_sides() {
     // 写入端：entry 排序段 = lower_name(&document) 的结果（裸 UTF-8，字典序）；
     // 查询端：探针行调用同一个函数归一化，两侧共享一条声明。
-    let t = <DocFunc as Document>::open(TestStore::slatedb_mem()).unwrap();
+    let t = <DocFunc as Document>::open(TestStore::default()).unwrap();
     let rows = [
         mk_docf(1, 10, "Apple"),
         mk_docf(2, 10, "APPLE"),
@@ -777,7 +777,7 @@ fn multi_entry_function_index_fans_out() {
 
     use __OkmIndex_DocTags_by_tag as ByTag;
 
-    let t = <DocTags as Document>::open(TestStore::slatedb_mem()).unwrap();
+    let t = <DocTags as Document>::open(TestStore::default()).unwrap();
     let rows = [
         (
             DocKey { id: 1 },
@@ -851,7 +851,7 @@ fn function_index_accepts_any_iterator() {
 
     use __OkmIndex_HourRow_by_bucket as ByBucket;
 
-    let t = <HourRow as Document>::open(TestStore::slatedb_mem()).unwrap();
+    let t = <HourRow as Document>::open(TestStore::default()).unwrap();
     let k = DocKey { id: 7 };
     t.put(&k, &HourRow { base: 100, span: 2 }).unwrap();
 
@@ -900,7 +900,7 @@ fn function_index_iterates_borrowed_values() {
 
     use __OkmIndex_Borrowed_by_bucket as ByBucket;
 
-    let t = <Borrowed as Document>::open(TestStore::slatedb_mem()).unwrap();
+    let t = <Borrowed as Document>::open(TestStore::default()).unwrap();
     let k = DocKey { id: 11 };
     let row = Borrowed {
         ids: Vector::new(vec![7u32, 9]),
@@ -942,7 +942,7 @@ fn function_index_with_no_values_writes_no_entries() {
 
     use __OkmIndex_Quiet_by_none as ByNone;
 
-    let t = <Quiet as Document>::open(TestStore::slatedb_mem()).unwrap();
+    let t = <Quiet as Document>::open(TestStore::default()).unwrap();
     let k = DocKey { id: 9 };
     let row = Quiet { x: 1 };
     t.put(&k, &row).unwrap();
@@ -1032,7 +1032,7 @@ fn mk_ticket(
 
 #[test]
 fn partial_index_admits_only_matching_rows() {
-    let t = <Ticket as Document>::open(TestStore::slatedb_mem()).unwrap();
+    let t = <Ticket as Document>::open(TestStore::default()).unwrap();
     let open_a = mk_ticket(1, 7, 10, 3, 0, "");
     let closed = mk_ticket(2, 7, 20, 5, 1, "");
     let open_b = mk_ticket(3, 7, 30, 2, 0, "");
@@ -1097,7 +1097,7 @@ fn partial_index_flip_needs_delete_then_put() {
     // ——同一个地址，写侧只是这次不再产它。put 覆盖不清理旧索引条目
     // （document.rs 的既有契约，值变化与谓词翻转同类），于是旧条目悬挂，
     // 且扫描把它当被接纳的行返回——谓词的保证到 delete 为止。
-    let t = <Ticket as Document>::open(TestStore::slatedb_mem()).unwrap();
+    let t = <Ticket as Document>::open(TestStore::default()).unwrap();
     let (k, open) = mk_ticket(1, 7, 10, 3, 0, "");
     t.put(&k, &open).unwrap();
     let e = t.index_key::<ByOpenAssignee>(&k, &open);
@@ -1124,7 +1124,7 @@ fn partial_index_flip_needs_delete_then_put() {
     );
 
     // 删除集合由「存储的行」派生：先清再写就干净。
-    let t2 = <Ticket as Document>::open(TestStore::slatedb_mem()).unwrap();
+    let t2 = <Ticket as Document>::open(TestStore::default()).unwrap();
     t2.put(&k, &open).unwrap();
     t2.purge(&k).unwrap(); // 派生自 open → 条目清掉
     t2.put(&k, &closed).unwrap();
@@ -1147,7 +1147,7 @@ fn partial_index_flip_needs_delete_then_put() {
 
     // 该走的覆盖路径：merge / replace 先扫存储行的面再写 —— 同一次覆盖
     // 不产生悬挂条目。put 是「新行」快路径，不是更新路径。
-    let t3 = <Ticket as Document>::open(TestStore::slatedb_mem()).unwrap();
+    let t3 = <Ticket as Document>::open(TestStore::default()).unwrap();
     t3.put(&k, &open).unwrap();
     t3.put(&k, &Variant::Map(closed.to_map())).unwrap();
     assert!(
@@ -1164,7 +1164,7 @@ fn partial_index_flip_needs_delete_then_put() {
     // replace 也是覆盖路径：它读存储行（重建或删行只有存储行说了算），
     // 所以旧值产生的面同样随之扫掉。这是 rule 4「row's previous faces are
     // removed」的可执行版本 —— prev 传 None 会留下悬挂条目。
-    let t4 = <Ticket as Document>::open(TestStore::slatedb_mem()).unwrap();
+    let t4 = <Ticket as Document>::open(TestStore::default()).unwrap();
     t4.put(&k, &open).unwrap();
     t4.put(&k, (&Variant::Map(closed.to_map()),)).unwrap();
     assert!(
@@ -1176,7 +1176,7 @@ fn partial_index_flip_needs_delete_then_put() {
 
 #[test]
 fn function_index_empty_vec_skips_row() {
-    let t = <Ticket as Document>::open(TestStore::slatedb_mem()).unwrap();
+    let t = <Ticket as Document>::open(TestStore::default()).unwrap();
     let open = mk_ticket(1, 7, 10, 3, 0, "rust,kv");
     let closed = mk_ticket(2, 7, 20, 5, 1, "rust");
     t.put(&open.0, &open.1).unwrap();
@@ -1220,7 +1220,7 @@ fn function_index_empty_vec_skips_row() {
 fn function_index_with_where_filters_row() {
     // 函数索引形态叠加声明谓词：切分无条件，过滤在 where——同一个谓词对
     // 两种索引形态一视同仁（都是 admits 覆盖 + entry_pairs 短路）。
-    let t = <Ticket as Document>::open(TestStore::slatedb_mem()).unwrap();
+    let t = <Ticket as Document>::open(TestStore::default()).unwrap();
     let open = mk_ticket(1, 7, 10, 3, 0, "rust,kv");
     let closed = mk_ticket(2, 7, 20, 5, 1, "rust");
     t.put(&open.0, &open.1).unwrap();
@@ -1284,7 +1284,7 @@ fn covered_scan_answers_without_the_primary_table() {
     // includes 是派生副本，不是第二份真相：主表行删掉（索引条目留着），覆盖
     // 扫描照样答得出。一次 entry-value 解码代替一次点读 + 整行解码，这就是
     // includes 用字节换回来的东西。
-    let t = <Post as Document>::open(TestStore::slatedb_mem()).unwrap();
+    let t = <Post as Document>::open(TestStore::default()).unwrap();
     let (k, r) = mk_post(601, 7, 11, 77);
     t.put(&k, &r).unwrap();
 
@@ -1311,7 +1311,7 @@ fn covered_scan_answers_without_the_primary_table() {
 fn covered_includes_walk_fixed_widths_then_the_variable_tail() {
     // 覆盖段按声明顺序解：定宽字段按宽度切（rank 4B），最后一个变宽字段取
     // 剩余字节——两条不同长度的 title 各自解回自己，rank 不串位。
-    let t = <Note as Document>::open(TestStore::slatedb_mem()).unwrap();
+    let t = <Note as Document>::open(TestStore::default()).unwrap();
     t.put(
         &NoteKey { id: 1 },
         &Note {

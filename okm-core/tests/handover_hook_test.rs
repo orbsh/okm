@@ -16,9 +16,9 @@
 
 use std::time::Duration;
 
-use okm_async::TestStore;
 use okm_core::changelog::owner::{self, State};
 use okm_core::changelog::{ChangelogConfig, ChangelogStore, HandoverHook, table_dir};
+use okm_core::testing::TestStore;
 use okm_core::{Collection, Document, DocumentEncode, KeyEncode};
 
 #[derive(KeyEncode, Clone, PartialEq, Debug, Default)]
@@ -37,7 +37,7 @@ pub struct Row {
 fn store(root: &std::path::Path, hook: Option<HandoverHook>) -> ChangelogStore<TestStore> {
     let mut cfg = ChangelogConfig::new(root);
     cfg.handover = hook;
-    ChangelogStore::new(TestStore::slatedb_mem(), cfg)
+    ChangelogStore::new(TestStore::default(), cfg)
 }
 
 /// A hook that records what it was told, in one line of `|`-separated fields.

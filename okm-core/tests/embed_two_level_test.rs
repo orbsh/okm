@@ -8,7 +8,7 @@
     clippy::panic_in_result_fn
 )]
 
-use okm_async::TestStore;
+use okm_core::testing::TestStore;
 use okm_core::{DocumentEncode, KeyEncode, Ref};
 
 #[derive(KeyEncode, Clone, PartialEq, Debug, Default)]
@@ -67,7 +67,7 @@ pub struct Org {
 #[test]
 fn two_level_embed_roundtrip() {
     let orgs: okm_core::Collection<TestStore, OrgKey, Org> =
-        okm_core::Collection::open(TestStore::slatedb_mem()).unwrap();
+        okm_core::Collection::open(TestStore::default()).unwrap();
     let depts: okm_core::Collection<TestStore, DeptKey, DeptV2> =
         okm_core::Collection::open(orgs.store().clone()).unwrap();
     let floors: okm_core::Collection<TestStore, FloorKey, Floor> =

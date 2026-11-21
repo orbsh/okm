@@ -14,7 +14,7 @@
 
 use okm_core::{Collection, DocumentEncode, KeyEncode};
 
-use okm_async::TestStore;
+use okm_core::testing::TestStore;
 #[derive(KeyEncode, Clone, PartialEq, Debug)]
 pub struct RowId {
     pub id: u64,

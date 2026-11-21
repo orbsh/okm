@@ -10,7 +10,7 @@
     clippy::panic_in_result_fn
 )]
 
-use okm_async::TestStore;
+use okm_core::testing::TestStore;
 use okm_core::{Document, DocumentEncode, KeyEncode};
 
 /// 普通 key：无 partition（默认布局，无 part 段）。

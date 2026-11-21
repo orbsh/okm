@@ -26,7 +26,7 @@
 
 use okm_value::{Dict, Variant};
 
-use okm_async::TestStore;
+use okm_core::testing::TestStore;
 use okm_core::{Collection, Document, DocumentEncode, KeyEncode};
 
 #[derive(KeyEncode, Clone, PartialEq, Debug, Default)]
@@ -46,7 +46,7 @@ pub struct Doc {
 use __OkmIndex_Doc_by_owner as Doc_ByOwner;
 
 fn table() -> Collection<TestStore, DocKey, Doc> {
-    <Doc as Document>::open(TestStore::slatedb_mem()).unwrap()
+    <Doc as Document>::open(TestStore::default()).unwrap()
 }
 
 fn map(pairs: &[(&str, Variant)]) -> Dict {

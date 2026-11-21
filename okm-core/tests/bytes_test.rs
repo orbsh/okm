@@ -13,7 +13,7 @@
 
 use okm_core::{Bytes, Collection, Document, DocumentEncode, KeyEncode};
 
-use okm_async::TestStore;
+use okm_core::testing::TestStore;
 #[derive(KeyEncode, Clone, Debug, PartialEq)]
 pub struct BlobId {
     pub id: u64,

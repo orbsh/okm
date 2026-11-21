@@ -16,8 +16,8 @@
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 
-use okm_async::TestStore;
 use okm_core::changelog::{ChangelogConfig, ChangelogStore, sealed_segments};
+use okm_core::testing::TestStore;
 use okm_core::{Collection, Document, DocumentEncode, KeyEncode};
 
 #[derive(KeyEncode, Clone, PartialEq, Debug, Default)]
@@ -35,7 +35,7 @@ pub struct Row {
 
 fn captured(root: &std::path::Path) -> Collection<ChangelogStore<TestStore>, RowKey, Row> {
     Collection::open(ChangelogStore::new(
-        TestStore::slatedb_mem(),
+        TestStore::default(),
         ChangelogConfig::new(root),
     ))
     .unwrap()

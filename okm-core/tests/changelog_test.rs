@@ -21,10 +21,10 @@
     clippy::panic_in_result_fn
 )]
 
-use okm_async::TestStore;
 use okm_core::changelog::{
     ChangelogConfig, ChangelogStore, PARTIAL_EXT, read_open_tail, read_sealed, sealed_segments,
 };
+use okm_core::testing::TestStore;
 use okm_core::{Batch, Collection, Document, DocumentEncode, KeyEncode, OP_DELETE, OP_PUT, Vocab};
 use okm_value::{Dict, Variant};
 
@@ -131,8 +131,8 @@ fn frames_in(root: &std::path::Path, header: &[u8]) -> Vec<CapturedFrame> {
 #[test]
 fn a_put_leaves_the_row_and_drops_the_derived_faces() {
     let dir = tempfile::tempdir().expect("tempdir");
-    let app = captured(TestStore::slatedb_mem(), ChangelogConfig::new(dir.path()))
-        .expect("changelog opens");
+    let app =
+        captured(TestStore::default(), ChangelogConfig::new(dir.path())).expect("changelog opens");
 
     let key = LogKey { id: 7 };
     app.put(
@@ -165,8 +165,8 @@ fn the_whole_document_verbs_are_captured() {
     // ADR-0031 §5: these go through `save_with_prev_into`, which emits no
     // subscribe event. A capture hung on that sink would lose all four.
     let dir = tempfile::tempdir().expect("tempdir");
-    let app = captured(TestStore::slatedb_mem(), ChangelogConfig::new(dir.path()))
-        .expect("changelog opens");
+    let app =
+        captured(TestStore::default(), ChangelogConfig::new(dir.path())).expect("changelog opens");
 
     let key = LogKey { id: 1 };
     app.put(
@@ -211,8 +211,8 @@ fn the_whole_document_verbs_are_captured() {
 #[test]
 fn categorical_labels_ride_and_their_cursor_does_not() {
     let dir = tempfile::tempdir().expect("tempdir");
-    let app = captured(TestStore::slatedb_mem(), ChangelogConfig::new(dir.path()))
-        .expect("changelog opens");
+    let app =
+        captured(TestStore::default(), ChangelogConfig::new(dir.path())).expect("changelog opens");
 
     app.put(
         &LogKey { id: 1 },
@@ -223,7 +223,7 @@ fn categorical_labels_ride_and_their_cursor_does_not() {
     )
     .expect("row put");
     let tag_app: Collection<ChangelogStore<TestStore>, TagKey, TagRow> =
-        captured(TestStore::slatedb_mem(), ChangelogConfig::new(dir.path()))
+        captured(TestStore::default(), ChangelogConfig::new(dir.path()))
             .expect("tag changelog opens");
     tag_app
         .put(
@@ -268,8 +268,8 @@ fn categorical_labels_ride_and_their_cursor_does_not() {
 #[test]
 fn a_torn_tail_ends_a_partial_and_corrupts_a_sealed_segment() {
     let dir = tempfile::tempdir().expect("tempdir");
-    let app = captured(TestStore::slatedb_mem(), ChangelogConfig::new(dir.path()))
-        .expect("changelog opens");
+    let app =
+        captured(TestStore::default(), ChangelogConfig::new(dir.path())).expect("changelog opens");
     app.put(
         &LogKey { id: 1 },
         &LogRow {
@@ -315,7 +315,7 @@ fn rotation_seals_both_by_bytes_and_by_age() {
     let mut config = ChangelogConfig::new(dir.path());
     config.segment_bytes = 1; // seal on the next commit, whatever the payload
     config.segment_seconds = 0; // and let age do it too, to exercise the branch
-    let app = captured(TestStore::slatedb_mem(), config).expect("open");
+    let app = captured(TestStore::default(), config).expect("open");
 
     for id in 0..3 {
         app.put(
@@ -348,7 +348,7 @@ fn the_batch_writer_verb_captures_save_into() {
     // the store directly and no collection-level hook could see the write.
     let dir = tempfile::tempdir().expect("tempdir");
     let app: Collection<ChangelogStore<TestStore>, LogKey, LogRow> =
-        captured(TestStore::slatedb_mem(), ChangelogConfig::new(dir.path())).expect("open");
+        captured(TestStore::default(), ChangelogConfig::new(dir.path())).expect("open");
 
     let key = LogKey { id: 42 };
     let row = LogRow {
@@ -377,7 +377,7 @@ fn the_batch_writer_verb_captures_save_into() {
 #[test]
 fn status_reports_a_log_that_never_took_a_write() {
     let dir = tempfile::tempdir().expect("tempdir");
-    let store = ChangelogStore::new(TestStore::slatedb_mem(), ChangelogConfig::new(dir.path()));
+    let store = ChangelogStore::new(TestStore::default(), ChangelogConfig::new(dir.path()));
     let _: Collection<_, LogKey, LogRow> = Collection::open(&store).expect("attach");
     assert!(
         store.status::<LogRow>().is_none(),
@@ -413,7 +413,7 @@ fn a_segment_carries_its_tables_declaration() {
 
     let dir = tempfile::tempdir().expect("tempdir");
     let app: Collection<ChangelogStore<TestStore>, LogKey, LogRow> =
-        captured(TestStore::slatedb_mem(), ChangelogConfig::new(dir.path())).expect("open");
+        captured(TestStore::default(), ChangelogConfig::new(dir.path())).expect("open");
     app.put(
         &LogKey { id: 1 },
         &LogRow {
@@ -459,8 +459,7 @@ fn a_cross_table_batch_captures_each_tables_own_share() {
     {
         // ONE decorator for both tables: a second one over the same directory
         // would be a second writer on one segment number.
-        let store =
-            ChangelogStore::new(TestStore::slatedb_mem(), ChangelogConfig::new(root.path()));
+        let store = ChangelogStore::new(TestStore::default(), ChangelogConfig::new(root.path()));
         let _: Collection<_, LogKey, LogRow> = Collection::open(&store).expect("attach");
         let _: Collection<_, LogKey, OtherRow> = Collection::open(&store).expect("attach");
         let a: Collection<_, LogKey, LogRow> = Collection::open(&store).unwrap();
@@ -586,7 +585,7 @@ fn a_segments_declaration_carries_the_tables_name() {
     let root = tempfile::tempdir().expect("root");
     {
         let c: Collection<ChangelogStore<TestStore>, LogKey, LogRow> =
-            captured(TestStore::slatedb_mem(), ChangelogConfig::new(root.path()))
+            captured(TestStore::default(), ChangelogConfig::new(root.path()))
                 .expect("the log opens");
         c.put(
             &LogKey { id: 1 },
@@ -617,7 +616,7 @@ fn a_segments_declaration_carries_the_tables_name() {
 fn sealed_one(root: &std::path::Path) -> std::path::PathBuf {
     {
         let app: Collection<ChangelogStore<TestStore>, LogKey, LogRow> =
-            captured(TestStore::slatedb_mem(), ChangelogConfig::new(root)).expect("the log opens");
+            captured(TestStore::default(), ChangelogConfig::new(root)).expect("the log opens");
         app.put(
             &LogKey { id: 7 },
             &LogRow {
@@ -678,8 +677,8 @@ fn a_flipped_byte_in_a_sealed_segment_is_refused() {
 #[test]
 fn a_drain_does_not_end_capture() {
     let dir = tempfile::tempdir().expect("tempdir");
-    let app = captured(TestStore::slatedb_mem(), ChangelogConfig::new(dir.path()))
-        .expect("changelog opens");
+    let app =
+        captured(TestStore::default(), ChangelogConfig::new(dir.path())).expect("changelog opens");
 
     app.put(
         &LogKey { id: 1 },

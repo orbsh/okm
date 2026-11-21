@@ -23,7 +23,7 @@ use okm_core::{
 use __OkmIndex_Note_by_author as Note_ByAuthor;
 use __OkmIndex_NotePlus_by_author as NotePlus_ByAuthor;
 use __OkmIndex_NotePlus_by_body as NotePlus_ByBody;
-use okm_async::TestStore;
+use okm_core::testing::TestStore;
 
 #[derive(KeyEncode, Clone, PartialEq, Debug, Default)]
 pub struct NoteKey {

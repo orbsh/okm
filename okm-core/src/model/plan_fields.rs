@@ -501,40 +501,14 @@ mod tests {
         assert_eq!(back, two_fields());
     }
 
-    /// A `BTreeMap` engine: the one scan this test needs, without pulling `okm-async` into
-    /// the crate's own unit tests — that would link a second `okm-core` and its
-    /// `VirtualStorage` would not be this one.
-    struct MapStore(std::cell::RefCell<std::collections::BTreeMap<Vec<u8>, Vec<u8>>>);
-
-    impl crate::engine::storage::VirtualStorage for MapStore {
-        fn put(&self, key: Vec<u8>, value: Vec<u8>) -> crate::error::Result<()> {
-            self.0.borrow_mut().insert(key, value);
-            Ok(())
-        }
-        fn get(&self, key: &[u8]) -> crate::error::Result<Option<Vec<u8>>> {
-            Ok(self.0.borrow().get(key).cloned())
-        }
-        fn del(&self, key: &[u8]) -> crate::error::Result<()> {
-            self.0.borrow_mut().remove(key);
-            Ok(())
-        }
-        fn scan_range(&self, begin: &[u8], end: Option<&[u8]>) -> crate::engine::storage::ScanIter {
-            let map = self.0.borrow();
-            let items: Vec<crate::error::Result<(Vec<u8>, Vec<u8>)>> = map
-                .range(begin.to_vec()..)
-                .take_while(|(k, _)| end.is_none_or(|e| k.as_slice() < e))
-                .map(|(k, v)| Ok((k.clone(), v.clone())))
-                .collect();
-            crate::engine::storage::ScanIter::Buffered(items.into_iter())
-        }
-    }
-
     /// ONE scan: the id face is the complete mapping (every writer emits both directions in
     /// the same batch), so `by_name` is built by inversion. The name face is left EMPTY here
     /// on purpose — the load must not need it.
     #[test]
     fn load_inverts_the_id_face_and_needs_no_name_scan() {
-        let store = MapStore(Default::default());
+        // A real engine, not a double: the matrix lives in this crate now, so a unit
+        // test no longer has to borrow one from above.
+        let store = crate::testing::TestStore::default();
         for (id, name) in [(0u16, "note"), (1u16, "weight")] {
             let mut k = ns();
             crate::write_slot(&mut k, FIELD_VOCAB_ID_SLOT);

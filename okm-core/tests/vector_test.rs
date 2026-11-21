@@ -9,7 +9,7 @@
     clippy::panic_in_result_fn
 )]
 
-use okm_async::TestStore;
+use okm_core::testing::TestStore;
 use okm_core::{Collection, DocumentEncode, KeyEncode, Vector, VectorElem};
 
 #[derive(KeyEncode, Clone, PartialEq, Debug, Default)]
@@ -58,7 +58,7 @@ fn payload_roundtrip_le() {
 
 #[test]
 fn cold_frame_roundtrip() {
-    let t: Collection<TestStore, DocKey, Doc> = Collection::open(TestStore::slatedb_mem()).unwrap();
+    let t: Collection<TestStore, DocKey, Doc> = Collection::open(TestStore::default()).unwrap();
     let k = DocKey { id: 1 };
     let r = Doc {
         id: 1,
@@ -75,7 +75,7 @@ fn cold_frame_roundtrip() {
 #[test]
 fn length_is_data_not_schema() {
     // 同一个文档类型，不同长度的向量都是合法数据（换模型 = 换帧长）。
-    let t: Collection<TestStore, DocKey, Doc> = Collection::open(TestStore::slatedb_mem()).unwrap();
+    let t: Collection<TestStore, DocKey, Doc> = Collection::open(TestStore::default()).unwrap();
     t.put(
         &DocKey { id: 1 },
         &Doc {
@@ -104,7 +104,7 @@ fn ok_len_contract_enforced_at_encode() {
     // 解码不检查（绕过解码器 = 乱码自负，与直接看图片字节流同理）。
     let bad = std::panic::catch_unwind(|| {
         let t: Collection<TestStore, DocKey, ContractedDoc> =
-            Collection::open(TestStore::slatedb_mem()).unwrap();
+            Collection::open(TestStore::default()).unwrap();
         t.put(
             &DocKey { id: 1 },
             &ContractedDoc {

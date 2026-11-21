@@ -8,7 +8,7 @@
     clippy::panic_in_result_fn
 )]
 
-use okm_async::TestStore;
+use okm_core::testing::TestStore;
 use okm_core::{DocumentEncode, KeyEncode, Refs};
 
 #[derive(KeyEncode, Clone, PartialEq, Debug, Default)]
@@ -40,7 +40,7 @@ pub struct DeptKey {
 #[test]
 fn list_roundtrip_and_stale_release() {
     let depts: okm_core::Collection<TestStore, DeptKey, Dept> =
-        okm_core::Collection::open(TestStore::slatedb_mem()).unwrap();
+        okm_core::Collection::open(TestStore::default()).unwrap();
     let rooms: okm_core::Collection<TestStore, RoomKey, Room> =
         okm_core::Collection::open(depts.store().clone()).unwrap();
 

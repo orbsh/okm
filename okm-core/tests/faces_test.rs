@@ -17,7 +17,7 @@
 
 use okm_core::{Collection, Document, DocumentEncode, FaceStatus, KeyEncode, TableMeta, meta};
 
-use okm_async::TestStore;
+use okm_core::testing::TestStore;
 #[derive(KeyEncode, Clone, PartialEq, Debug, Default)]
 pub struct NoteKey {
     pub id: u64,

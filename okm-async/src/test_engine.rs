@@ -1,6 +1,9 @@
-//! Test engine matrix: `TestStore` is a concrete enum over the backends, so
-//! logic tests run against actual engines — no mock, no parallel implementation
-//! to drift.
+//! Test engine matrix: the engines core owns, plus the one that needs a runtime.
+//!
+//! `TestStore` is a concrete enum over the backends, so logic tests run against
+//! actual engines — no mock, no parallel implementation to drift. This crate adds
+//! exactly one arm to the matrix `okm_core::testing` defines: slatedb, whose
+//! backend is async and therefore belongs to a crate that may host a runtime.
 //!
 //! Matrix: the ephemeral engine (ADR-0072 — in memory, zero fs, always
 //! present, the default), slatedb in-memory, fjall temp-dir, redb temp-file.
@@ -14,30 +17,17 @@
 //! Only the engine arms are gated: tests compile against whatever engines the
 //! build has, and the ephemeral arm is always one of them.
 
-use okm_core::engine::storage::VirtualStorage;
+use okm_core::engine::storage::{SharedVirtualStorage, VirtualStorage};
 
 /// A concrete engine handle. Clones share the underlying keyspace (same
 /// semantics as real engine handles).
 #[derive(Clone)]
 pub enum TestStore {
-    /// The ephemeral engine (ADR-0072): a packed B+tree over chunked tables.
-    /// Always in the matrix — it is a supported engine, not a test double.
-    Ephemeral(okm_core::engine::ephemeral::EphemeralStore),
+    /// One of the engines core owns — its own matrix, not a copy of it.
+    Core(okm_core::testing::TestStore),
     /// slatedb over the in-memory object store. Zero fs.
     #[cfg(feature = "slatedb")]
     Slatedb(std::sync::Arc<crate::slatedb_backend::SlatedbSync>),
-    /// fjall over a temp dir. The dir lives as long as the handle.
-    #[cfg(feature = "fjall")]
-    Fjall {
-        store: okm_core::engine::fjall_backend::FjallStore,
-        _dir: std::sync::Arc<tempfile::TempDir>,
-    },
-    /// redb over a temp file. The file lives as long as the handle.
-    #[cfg(feature = "redb")]
-    Redb {
-        store: okm_core::engine::redb_backend::RedbStore,
-        _dir: std::sync::Arc<tempfile::TempDir>,
-    },
 }
 
 impl TestStore {
@@ -60,7 +50,7 @@ impl TestStore {
     }
 
     pub fn ephemeral() -> Self {
-        Self::Ephemeral(okm_core::engine::ephemeral::EphemeralStore::new())
+        Self::Core(okm_core::testing::TestStore::ephemeral())
     }
 
     #[cfg(feature = "slatedb")]
@@ -78,39 +68,13 @@ impl TestStore {
     }
 
     #[cfg(feature = "fjall")]
-    // Test-double construction: a machine that cannot open a temp-dir engine
-    // has nothing to test against.
-    #[allow(
-        clippy::expect_used,
-        clippy::unwrap_in_result,
-        clippy::panic_in_result_fn
-    )]
     pub fn fjall_tmp() -> Self {
-        let dir = tempfile::TempDir::new().expect("tempdir");
-        let store = okm_core::engine::fjall_backend::FjallStore::open(dir.path(), "okm-test")
-            .expect("fjall open");
-        Self::Fjall {
-            store,
-            _dir: std::sync::Arc::new(dir),
-        }
+        Self::Core(okm_core::testing::TestStore::fjall_tmp())
     }
 
     #[cfg(feature = "redb")]
-    // Test-double construction: a machine that cannot open a temp-file engine
-    // has nothing to test against.
-    #[allow(
-        clippy::expect_used,
-        clippy::unwrap_in_result,
-        clippy::panic_in_result_fn
-    )]
     pub fn redb_tmp() -> Self {
-        let dir = tempfile::TempDir::new().expect("tempdir");
-        let store = okm_core::engine::redb_backend::RedbStore::open(&dir.path().join("okm.redb"))
-            .expect("redb open");
-        Self::Redb {
-            store,
-            _dir: std::sync::Arc::new(dir),
-        }
+        Self::Core(okm_core::testing::TestStore::redb_tmp())
     }
 
     /// Both variants are Arc-kernel handles: clone shares the keyspace.
@@ -120,13 +84,9 @@ impl TestStore {
 
     pub fn name(&self) -> &'static str {
         match self {
-            Self::Ephemeral(_) => "ephemeral",
+            Self::Core(store) => store.name(),
             #[cfg(feature = "slatedb")]
             Self::Slatedb(_) => "slatedb-mem",
-            #[cfg(feature = "fjall")]
-            Self::Fjall { .. } => "fjall",
-            #[cfg(feature = "redb")]
-            Self::Redb { .. } => "redb",
         }
     }
 }
@@ -142,66 +102,54 @@ impl Default for TestStore {
     }
 }
 
-impl okm_core::engine::storage::SharedVirtualStorage for TestStore {
+impl SharedVirtualStorage for TestStore {
     fn shared_handle(&self) -> Self {
         self.shared_handle()
     }
 }
 
 impl VirtualStorage for TestStore {
+    fn note_table(&self, plan: &'static okm_core::model::table_plan::TablePlan) {
+        match self {
+            Self::Core(store) => store.note_table(plan),
+            #[cfg(feature = "slatedb")]
+            Self::Slatedb(_) => {}
+        }
+    }
+
     fn put(&self, key: Vec<u8>, value: Vec<u8>) -> okm_core::error::Result<()> {
         match self {
-            Self::Ephemeral(store) => store.put(key, value),
+            Self::Core(store) => store.put(key, value),
             #[cfg(feature = "slatedb")]
             Self::Slatedb(s) => s.put_sync(key, value),
-            #[cfg(feature = "fjall")]
-            Self::Fjall { store, .. } => store.clone().put(key, value),
-            #[cfg(feature = "redb")]
-            Self::Redb { store, .. } => store.clone().put(key, value),
         }
     }
     fn get(&self, key: &[u8]) -> okm_core::error::Result<Option<Vec<u8>>> {
         match self {
-            Self::Ephemeral(store) => store.get(key),
+            Self::Core(store) => store.get(key),
             #[cfg(feature = "slatedb")]
             Self::Slatedb(s) => s.get_sync(key),
-            #[cfg(feature = "fjall")]
-            Self::Fjall { store, .. } => store.get(key),
-            #[cfg(feature = "redb")]
-            Self::Redb { store, .. } => store.get(key),
         }
     }
     fn del(&self, key: &[u8]) -> okm_core::error::Result<()> {
         match self {
-            Self::Ephemeral(store) => store.del(key),
+            Self::Core(store) => store.del(key),
             #[cfg(feature = "slatedb")]
             Self::Slatedb(s) => s.del_sync(key),
-            #[cfg(feature = "fjall")]
-            Self::Fjall { store, .. } => store.clone().del(key),
-            #[cfg(feature = "redb")]
-            Self::Redb { store, .. } => store.clone().del(key),
         }
     }
     fn scan_suffix(&self, prefix: &[u8]) -> okm_core::error::Result<Vec<Vec<u8>>> {
         match self {
-            Self::Ephemeral(store) => store.scan_suffix(prefix),
+            Self::Core(store) => store.scan_suffix(prefix),
             #[cfg(feature = "slatedb")]
             Self::Slatedb(s) => s.scan_suffix_sync(prefix),
-            #[cfg(feature = "fjall")]
-            Self::Fjall { store, .. } => store.scan_suffix(prefix),
-            #[cfg(feature = "redb")]
-            Self::Redb { store, .. } => store.scan_suffix(prefix),
         }
     }
     fn scan_range(&self, begin: &[u8], end: Option<&[u8]>) -> okm_core::engine::storage::ScanIter {
         match self {
-            Self::Ephemeral(store) => store.scan_range(begin, end),
+            Self::Core(store) => store.scan_range(begin, end),
             #[cfg(feature = "slatedb")]
             Self::Slatedb(s) => s.scan_range_iter_sync(begin, end),
-            #[cfg(feature = "fjall")]
-            Self::Fjall { store, .. } => store.scan_range(begin, end),
-            #[cfg(feature = "redb")]
-            Self::Redb { store, .. } => store.scan_range(begin, end),
         }
     }
 }

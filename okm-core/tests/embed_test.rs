@@ -8,7 +8,7 @@
     clippy::panic_in_result_fn
 )]
 
-use okm_async::TestStore;
+use okm_core::testing::TestStore;
 use okm_core::{Document, DocumentEncode, KeyEncode, Ref};
 
 #[derive(KeyEncode, Clone, PartialEq, Debug, Default)]
@@ -41,7 +41,7 @@ pub struct User {
 
 #[test]
 fn embed_roundtrip() {
-    let users = <User as Document>::open(TestStore::slatedb_mem()).unwrap();
+    let users = <User as Document>::open(TestStore::default()).unwrap();
     let addrs: okm_core::Collection<TestStore, AddressKey, Address> =
         okm_core::Collection::open(users.store().clone()).unwrap();
     let akey = AddressKey {

@@ -15,7 +15,7 @@
     clippy::panic_in_result_fn
 )]
 
-use okm_async::TestStore;
+use okm_core::testing::TestStore;
 use okm_core::{Collection, Document};
 
 #[path = "subscribe_common.rs"]
@@ -27,7 +27,7 @@ use subscribe_common::*;
 #[test]
 fn upsert_with_full_paths() {
     let t: Collection<TestStore, CounterKey, Counter> =
-        Collection::open(TestStore::slatedb_mem()).unwrap();
+        Collection::open(TestStore::default()).unwrap();
 
     // ---------- insert path: old = None ----------
     let written = t

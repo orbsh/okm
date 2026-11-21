@@ -18,7 +18,7 @@ So the async face exists for two reasons and costs two different things, only on
 Census at the time of the decision (2026-11-10):
 
 - `WireClient` has no consumer outside `okm-core/tests/wire_client_test.rs`. The live remote shape is mudra's `NestStorage<FjallStore>` receiving frames over WS, and aura applying `okm_wire::OpFrame`s to a sync store.
-- `TestStore` (`engine/test_engine.rs`) is the matrix over the real backends — slatedb in-memory (zero fs, the default), fjall temp-dir, redb temp-file — and its slatedb arm is `SlatedbSync`. It is used by `okm-core` (48 call sites), `okm-lake` (13), `okm-dynamic` (8), `okm-query` (1) and both bindings (3).
+- `TestStore` is the matrix over the real backends, and it is split where the engines are: `okm_core::testing::TestStore` holds the arms core owns — the ephemeral engine (zero fs, the default), fjall temp-dir, redb temp-file — and `okm_async::TestStore` wraps that enum to add the one arm whose backend is async, slatedb in-memory (`SlatedbSync`).
 - No crate in `~/world` names `SlatedbStore`, `SlatedbSync` or `WireClient`.
 
 ## Decision
@@ -35,7 +35,7 @@ Dependencies point one way: `okm-async → okm-core` (for `Batch`, `ScanIter`, `
 
 **Core gains one variant: `ScanIter::External(Box<dyn DoubleEndedIterator<Item = Result<(Vec<u8>, Vec<u8>)>> + Send>)`.** `ScanIter` (`storage.rs:174`) is a closed enum whose arms are feature-gated (`Fjall`, `Redb`, `Slatedb`, `Remote`, `Buffered`) and whose `Iterator` / `DoubleEndedIterator` implementations live in core (`:192`, `:219`). The `Slatedb` arm leaves with the crate, and the alternative — making the sync adapter buffer the whole range — deletes a guarantee, not an optimization: ADR-0020 makes a scan lazy so that abandoning it half way costs only the reads performed. A type-erased arm is engine-agnostic: it is the door any engine living outside core hands its iterator through, so the next crate that leaves does not need another core change.
 
-**`test-engines` stops being a feature and becomes a dev-dependency** on `okm-async` in the crates whose tests want the matrix. Cargo allows that cycle (`okm-core` dev-depends on `okm-async`, which depends on `okm-core`). `okm-core`'s own dev-dependencies keep `tokio` because its tests use it directly; that is a test-only edge, not part of the contract.
+**`test-engines` stops being a feature**, and nothing points upward from core: the matrix over core's own engines ships with core (`testing::TestStore`), and the slatedb arm ships with the crate that hosts its backend. Crates whose tests want slatedb take a dev-dependency on `okm-async`; core does not, so core's unit tests can bind the matrix like any other test (see the amendment below — its first attempt could not).
 
 **The boundary is enforced by the build, not by memory.** CI asserts that `cargo tree -p okm-core` (normal edges) contains neither `tokio` nor `slatedb`, and that `slatedb` appears nowhere under `okm-core/src`.
 
@@ -73,7 +73,7 @@ Files that move:
 
 Core edits: `Cargo.toml` (drop the `slatedb` and `test-engines` features, the `slatedb` and optional `tokio` dependencies, the `required-features` entries that name them; add the dev-dependency), `engine.rs` (module declarations), `lib.rs` (the `SlatedbStore`, `slatedb_backend`, `WireClient`, `WireTransport` and `test_engine` re-exports), `storage.rs` (`External` plus two match arms), and the `ScanIter::Slatedb` uses removed.
 
-Test fanout: `okm-core`, `okm-dynamic`, `okm-lake`, `okm-query`, `bindings/okm-entry`, `bindings/okm-python` each take a dev-dependency on `okm-async` and change `okm_core::TestStore` to `okm_async::TestStore` at their import sites — mechanical, ~70 call sites, no behaviour change.
+Test fanout: `okm-dynamic`, `okm-lake`, `okm-query`, `bindings/okm-entry`, `bindings/okm-python` each take a dev-dependency on `okm-async` and import `okm_async::TestStore`; `okm-core` imports its own `okm_core::testing::TestStore` — mechanical, ~70 call sites, no behaviour change.
 
 Nothing downstream moves: no crate outside okm uses any of the types this crate takes.
 
@@ -90,3 +90,25 @@ Reopen on evidence, not on taste:
 1. 2026-11-10 — opened as "take SlateDB out of the transaction engine so the storage contract returns to sync". The premise did not survive a read: `VirtualStorage` has no `async fn`, and the only runtime entry is the `slatedb` feature. The question became where the asynchronous surface lives rather than whether the contract is synchronous.
 2. Named `okm-slatedb` first, then `okm-async`: the split axis is the contract, not a product.
 3. `TestStore` was going to stay in core until the slatedb arm forced the question; it moves with the crate, which is also why the dev-dependency fanout exists.
+
+## Amendment — 2026-11-21: the matrix splits where the engines split
+
+The landing found what the paper had assumed away. `okm-core`'s own unit tests could not
+use `okm_async::TestStore`, because a dev-dependency that leads back into the package makes
+cargo build `okm-core` twice, and the two copies' `VirtualStorage` traits are distinct types
+(the paragraph "One thing the paper could not see" records it). The first answer was to give
+the one store-backed unit test a local `BTreeMap` engine.
+
+The dev-dependency itself was the defect. Three of the four arms are engines core owns
+(ephemeral, fjall, redb); only slatedb needs a runtime, which is why only slatedb belongs
+above. So the matrix moved down: `okm_core::testing::TestStore` carries the three arms core
+can build, `okm_async::TestStore` wraps it and adds `Slatedb`. Core's dev-dependency on
+`okm-async` is gone, the dependency graph is one-way again, and the local `BTreeMap` engine
+that existed only to work around the two-copies problem is deleted — that test now runs on
+`TestStore::default()`.
+
+What this costs: core's suite stops cross-checking slatedb. The `--all-features` job still
+runs the slatedb arm, but from the crates above (lake, async), not from core. `cargo test
+--workspace` alone no longer enables core's `redb`/`fjall` features through the removed
+dev-dependency, so four engine-gated tests appear only in the `--all-features` run — both
+commands are in CI, and that is now load-bearing rather than incidental.

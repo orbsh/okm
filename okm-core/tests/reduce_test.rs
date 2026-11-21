@@ -14,7 +14,7 @@
 
 use okm_core::{Document, DocumentEncode, Reduce, ReduceCodec, ReduceLogic};
 
-use okm_async::TestStore;
+use okm_core::testing::TestStore;
 /// PostKey：代理主键。
 #[derive(okm_core::KeyEncode, Clone, PartialEq, Debug, Default)]
 pub struct PostKey {
@@ -72,7 +72,7 @@ impl ReduceLogic for AuthorStats {
 
 #[test]
 fn fold_unfold_roundtrip_is_exact() {
-    let t = <Post as Document>::open(TestStore::slatedb_mem()).unwrap();
+    let t = <Post as Document>::open(TestStore::default()).unwrap();
 
     let k1 = PostKey { id: 1 };
     let r1 = Post {
@@ -169,7 +169,7 @@ impl ReduceLogic for TopicStats {
 
 #[test]
 fn group_and_fold_use_key_fields() {
-    let t = <Topic as Document>::open(TestStore::slatedb_mem()).unwrap();
+    let t = <Topic as Document>::open(TestStore::default()).unwrap();
 
     let k1 = TopicKey { forum: 7, id: 100 };
     let k2 = TopicKey { forum: 7, id: 42 };
@@ -201,7 +201,7 @@ fn group_and_fold_use_key_fields() {
 
 #[test]
 fn entry_layout_is_ns_slot_group() {
-    let t = <Post as Document>::open(TestStore::slatedb_mem()).unwrap();
+    let t = <Post as Document>::open(TestStore::default()).unwrap();
     let k = PostKey { id: 9 };
     let r = Post {
         author_id: 55,

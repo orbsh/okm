@@ -9,7 +9,7 @@
     clippy::panic_in_result_fn
 )]
 
-use okm_async::TestStore;
+use okm_core::testing::TestStore;
 use okm_core::{
     Batch, Collection, Document, DocumentEncode, FieldType, KeyEncode, VirtualStorage, Vocab,
 };
@@ -41,7 +41,7 @@ fn row(status: &str, color: &str, n: u32) -> VRow {
 
 #[test]
 fn labels_round_trip_through_per_field_vocabularies() {
-    let store = TestStore::slatedb_mem();
+    let store = TestStore::default();
     let c = Collection::<_, VKey, VRow>::open(store).unwrap();
 
     c.put(&VKey { org: 1, id: 1 }, &row("active", "red", 7))
@@ -142,7 +142,7 @@ impl VirtualStorage for NoScan {
 
 #[test]
 fn a_put_on_a_categorical_table_never_scans() {
-    let c = Collection::<_, VKey, VRow>::open(NoScan(TestStore::slatedb_mem())).unwrap();
+    let c = Collection::<_, VKey, VRow>::open(NoScan(TestStore::default())).unwrap();
 
     // First write allocates two labels; the second reuses them (label-face
     // probe); the third allocates two more through the cursor.
@@ -169,18 +169,10 @@ fn a_put_on_a_categorical_table_never_scans() {
 /// counting families, `0x6nnn` (label → id) and `0x2nnn` (id → label). The
 /// header is `[ns 2B]` with no partition, so the slot's first byte is
 /// `key[2]`.
+#[derive(Default)]
 struct VocabProbes {
     inner: TestStore,
     reads: std::sync::Arc<std::sync::atomic::AtomicUsize>,
-}
-
-impl Default for VocabProbes {
-    fn default() -> Self {
-        Self {
-            inner: TestStore::slatedb_mem(),
-            reads: std::sync::Arc::default(),
-        }
-    }
 }
 
 /// The same engine and the same counter behind a second handle.

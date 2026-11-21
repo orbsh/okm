@@ -13,8 +13,8 @@
     clippy::panic_in_result_fn
 )]
 
-use okm_async::TestStore;
 use okm_core::Collection;
+use okm_core::testing::TestStore;
 
 #[path = "subscribe_common.rs"]
 mod subscribe_common;
@@ -37,7 +37,7 @@ fn a_batch_emits_no_event_and_still_lands() {
     });
 
     let t: Collection<TestStore, AccountKey, Account> =
-        Collection::open(TestStore::slatedb_mem()).unwrap();
+        Collection::open(TestStore::default()).unwrap();
 
     // Direction check first: this collection DOES announce a point write. Without
     // it, "the queue stayed empty" would also be true of a sink that was never

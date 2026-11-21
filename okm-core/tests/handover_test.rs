@@ -18,9 +18,9 @@
 
 use std::time::Duration;
 
-use okm_async::TestStore;
 use okm_core::changelog::owner::{self, Role, State};
 use okm_core::changelog::{ChangelogConfig, ChangelogStore, Location, table_dir};
+use okm_core::testing::TestStore;
 use okm_core::{Collection, Document, DocumentEncode, KeyEncode};
 
 #[derive(KeyEncode, Clone, PartialEq, Debug, Default)]
@@ -37,7 +37,7 @@ pub struct Row {
 }
 
 fn store(root: &std::path::Path) -> ChangelogStore<TestStore> {
-    ChangelogStore::new(TestStore::slatedb_mem(), ChangelogConfig::new(root))
+    ChangelogStore::new(TestStore::default(), ChangelogConfig::new(root))
 }
 
 fn write(collection: &Collection<ChangelogStore<TestStore>, RowKey, Row>, id: u64, title: &str) {
@@ -137,7 +137,7 @@ fn a_second_instance_over_the_same_store_is_refused() {
 fn capture_off_opens_nothing_and_writes_nothing() {
     let log = tempfile::tempdir().unwrap();
     let off = ChangelogStore::new(
-        TestStore::slatedb_mem(),
+        TestStore::default(),
         ChangelogConfig {
             location: Location::Off,
             ..ChangelogConfig::new(log.path())

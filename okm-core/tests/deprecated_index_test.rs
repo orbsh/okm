@@ -14,7 +14,7 @@
     clippy::panic_in_result_fn
 )]
 
-use okm_async::TestStore;
+use okm_core::testing::TestStore;
 use okm_core::{Collection, DocumentEncode, KeyEncode, VirtualStorage};
 
 #[derive(KeyEncode, Clone, PartialEq, Debug, Default)]
@@ -36,8 +36,7 @@ pub struct User {
 
 #[test]
 fn deprecated_slot_is_reserved_and_not_written() {
-    let t: Collection<TestStore, UserKey, User> =
-        Collection::open(TestStore::slatedb_mem()).unwrap();
+    let t: Collection<TestStore, UserKey, User> = Collection::open(TestStore::default()).unwrap();
     t.put(
         &UserKey { id: 1 },
         &User {
@@ -79,7 +78,7 @@ fn prune_deletes_only_deprecated_prefix() {
     // was deprecated; simulate one by writing directly at slot 1 — on a
     // store handed to the Collection AFTER seeding (TestStore::clone is a deep
     // copy, so the seeded entry lands in the table's own engine).
-    let store = TestStore::slatedb_mem();
+    let store = TestStore::default();
     let stale = [
         vec![0u8, 9, 0x40, 0x01],
         99u32.to_be_bytes().to_vec(),
@@ -130,7 +129,7 @@ fn no_deprecated_declarations_prunes_nothing() {
     }
 
     let t: Collection<TestStore, UserKey, PlainUser> =
-        Collection::open(TestStore::slatedb_mem()).unwrap();
+        Collection::open(TestStore::default()).unwrap();
     t.put(&UserKey { id: 1 }, &PlainUser { level: 3 }).unwrap();
     assert_eq!(t.prune_deprecated_slots().unwrap(), 0);
 }

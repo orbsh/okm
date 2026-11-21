@@ -25,7 +25,7 @@ use std::cell::Cell;
 
 use okm_core::{Batch, Document, DocumentEncode, KeyEncode, VirtualStorage};
 
-use okm_async::TestStore;
+use okm_core::testing::TestStore;
 
 /// The document as one map: the row's value with the dynamic segment laid over
 /// it — a point read answers parts, a row converts to a value, and values
@@ -172,7 +172,7 @@ fn row(account: u64) -> LedgerRow {
 
 #[test]
 fn put_is_one_engine_commit() {
-    let t = <LedgerRow as Document>::open(Counting::new(TestStore::slatedb_mem())).unwrap();
+    let t = <LedgerRow as Document>::open(Counting::new(TestStore::default())).unwrap();
     // Attach wrote the table's meta row on the way in (ADR-0074 §1); what this test is about
     // is the WRITE path, so the counters are read from where the caller's work begins.
     let c = t.store();
@@ -211,7 +211,7 @@ fn put_is_one_engine_commit() {
 
 #[test]
 fn overwrite_is_one_engine_commit() {
-    let t = <LedgerRow as Document>::open(Counting::new(TestStore::slatedb_mem())).unwrap();
+    let t = <LedgerRow as Document>::open(Counting::new(TestStore::default())).unwrap();
     let k = LedgerKey { id: 1 };
     t.put(&k, &row(7)).unwrap();
     t.store().reset();
@@ -241,7 +241,7 @@ fn overwrite_is_one_engine_commit() {
 
 #[test]
 fn delete_is_one_engine_commit() {
-    let t = <LedgerRow as Document>::open(Counting::new(TestStore::slatedb_mem())).unwrap();
+    let t = <LedgerRow as Document>::open(Counting::new(TestStore::default())).unwrap();
     let k = LedgerKey { id: 1 };
     t.put(&k, &row(7)).unwrap();
     t.store().reset();
@@ -264,7 +264,7 @@ fn delete_is_one_engine_commit() {
 
 #[test]
 fn dynamic_write_including_vocabulary_growth_is_one_engine_commit() {
-    let t = <LedgerRow as Document>::open(Counting::new(TestStore::slatedb_mem())).unwrap();
+    let t = <LedgerRow as Document>::open(Counting::new(TestStore::default())).unwrap();
     t.store().reset();
 
     let mut fields = Dict::new();
@@ -296,7 +296,7 @@ fn dynamic_write_including_vocabulary_growth_is_one_engine_commit() {
 
 #[test]
 fn merge_of_a_declared_field_is_one_engine_commit() {
-    let t = <LedgerRow as Document>::open(Counting::new(TestStore::slatedb_mem())).unwrap();
+    let t = <LedgerRow as Document>::open(Counting::new(TestStore::default())).unwrap();
     let k = LedgerKey { id: 1 };
     t.put(&k, &row(7)).unwrap();
     t.store().reset();
@@ -321,7 +321,7 @@ fn merge_of_a_declared_field_is_one_engine_commit() {
 
 #[test]
 fn replace_is_one_engine_commit_across_both_slots() {
-    let t = <LedgerRow as Document>::open(Counting::new(TestStore::slatedb_mem())).unwrap();
+    let t = <LedgerRow as Document>::open(Counting::new(TestStore::default())).unwrap();
     let k = LedgerKey { id: 1 };
     t.put(&k, &row(7)).unwrap();
     // Intern the dynamic name first, so the replace below measures the write
@@ -369,7 +369,7 @@ fn replace_is_one_engine_commit_across_both_slots() {
 
 #[test]
 fn purge_is_one_engine_commit() {
-    let t = <LedgerRow as Document>::open(Counting::new(TestStore::slatedb_mem())).unwrap();
+    let t = <LedgerRow as Document>::open(Counting::new(TestStore::default())).unwrap();
     let k = LedgerKey { id: 1 };
     t.put(&k, &row(7)).unwrap();
     t.put(
@@ -432,7 +432,7 @@ fn the_verbs_take_a_shared_handle_and_still_commit_once_each() {
         );
     }
 
-    let t = <LedgerRow as Document>::open(Counting::new(TestStore::slatedb_mem())).unwrap();
+    let t = <LedgerRow as Document>::open(Counting::new(TestStore::default())).unwrap();
     let c = t.store();
     let (commits, puts, dels) = (c.commits.get(), c.bare_puts.get(), c.bare_dels.get());
     drive(&t);

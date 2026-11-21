@@ -66,6 +66,8 @@ pub mod decode;
 /// that uses it lives in `okm-query`.
 pub mod seek;
 pub mod subscribe;
+/// Test support: the engine matrix the crate's own tests bind. No production use.
+pub mod testing;
 
 // ================= re-exports (stable public surface) =================
 
@@ -112,6 +114,8 @@ pub use okm_value::Id;
 pub use okm_wire::{OP_DELETE, OP_PUT, OpFrame, OpResponse};
 pub use seek::Seekable;
 pub use subscribe::{Event, Op, SinkCell};
+/// The engine matrix the suite binds (test support; no production use).
+pub use testing::TestStore;
 
 #[cfg(feature = "fjall")]
 pub use engine::fjall_backend::FjallStore;

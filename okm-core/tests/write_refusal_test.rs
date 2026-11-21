@@ -23,7 +23,7 @@
 
 use std::cell::Cell;
 
-use okm_async::TestStore;
+use okm_core::testing::TestStore;
 use okm_core::{Collection, DocumentEncode, Error, KeyEncode, VirtualStorage};
 
 /// The text the refusing engine answers with; asserted verbatim so a test cannot

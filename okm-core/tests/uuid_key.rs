@@ -14,7 +14,7 @@
 
 use okm_core::{Collection, DocumentEncode, KeyEncode, Ref, Uuid4, Uuid7};
 
-use okm_async::TestStore;
+use okm_core::testing::TestStore;
 #[derive(DocumentEncode, Clone, PartialEq, Debug)]
 #[ok_ref(Uuid7)]
 #[ok_ns(70)]

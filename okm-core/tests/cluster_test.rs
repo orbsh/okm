@@ -15,8 +15,8 @@
     clippy::panic_in_result_fn
 )]
 
-use okm_async::TestStore;
 use okm_core::engine::storage::prefix_end;
+use okm_core::testing::TestStore;
 use okm_core::{
     Cluster, ClusterRef, Decl, Document, DocumentEncode, EdgeHead, EdgeKey, EdgeSet, Error,
     Fragment, Graph, GraphEncode, HandleKey, Hyperedges, KeyEncode, Kind, NodeRef, NodeSet,

@@ -17,8 +17,8 @@
 
 use okm_value::{Dict, Variant};
 
-use okm_async::TestStore;
 use okm_core::Collection;
+use okm_core::testing::TestStore;
 
 #[path = "subscribe_common.rs"]
 mod subscribe_common;
@@ -49,7 +49,7 @@ fn every_point_verb_announces_the_row_it_leaves() {
     });
 
     let t: Collection<TestStore, AccountKey, Account> =
-        Collection::open(TestStore::slatedb_mem()).unwrap();
+        Collection::open(TestStore::default()).unwrap();
     let key = AccountKey { id: 1 };
 
     t.put(&key, &Account { balance: 10 }).unwrap();

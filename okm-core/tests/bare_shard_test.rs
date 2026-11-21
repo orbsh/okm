@@ -18,7 +18,7 @@
 
 use okm_core::{Collection, DocumentEncode, KeyEncode, NestStorage, RemoteStore, VirtualStorage};
 
-use okm_async::TestStore;
+use okm_core::testing::TestStore;
 #[test]
 fn bare_host_executes_frames_byte_identical() {
     let handle = NestStorage::bare(TestStore::default());

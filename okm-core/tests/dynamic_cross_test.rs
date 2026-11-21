@@ -17,8 +17,8 @@
     clippy::panic_in_result_fn
 )]
 
-use okm_async::TestStore;
 use okm_core::schema::CollectionSchema;
+use okm_core::testing::TestStore;
 use okm_core::{
     Collection, Document, DocumentEncode, KeyEncode, Offset, Quant, VarInt, VirtualStorage,
 };
@@ -170,8 +170,7 @@ fn dynamic_encode_equals_rust_derive_bytes() {
 #[test]
 fn rust_write_dynamic_read_and_reverse() {
     let schema = CollectionSchema::of::<UserKey, User>();
-    let t: Collection<TestStore, UserKey, User> =
-        Collection::open(TestStore::slatedb_mem()).unwrap();
+    let t: Collection<TestStore, UserKey, User> = Collection::open(TestStore::default()).unwrap();
     let key = UserKey {
         org_id: 1,
         user_id: 2,
@@ -345,9 +344,9 @@ fn a_key_name_in_a_map_is_a_value_field_in_both_modes() {
     use okm_value::Variant;
 
     let typed: Collection<TestStore, UserKey, User> =
-        Collection::open(TestStore::slatedb_mem()).unwrap();
+        Collection::open(TestStore::default()).unwrap();
     let dynamic = okm_dynamic::DynamicCollection::new(
-        TestStore::slatedb_mem(),
+        TestStore::default(),
         41,
         CollectionSchema::of::<UserKey, User>(),
         vec![],
@@ -408,7 +407,7 @@ fn the_two_enumeration_modes_see_the_two_kinds_of_document() {
     use okm_value::Variant;
 
     let typed: Collection<TestStore, UserKey, User> =
-        Collection::open(TestStore::slatedb_mem()).unwrap();
+        Collection::open(TestStore::default()).unwrap();
     let with_row = UserKey {
         org_id: 1,
         user_id: 1,
@@ -467,7 +466,7 @@ fn the_two_enumeration_modes_see_the_two_kinds_of_document() {
 
     // The dynamic face answers the same two modes over the same two kinds.
     let dynamic = okm_dynamic::DynamicCollection::new(
-        TestStore::slatedb_mem(),
+        TestStore::default(),
         41,
         CollectionSchema::of::<UserKey, User>(),
         vec![],

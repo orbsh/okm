@@ -15,8 +15,8 @@
     clippy::panic_in_result_fn
 )]
 
-use okm_async::TestStore;
 use okm_core::changelog::{ChangelogConfig, ChangelogStore, table_dir};
+use okm_core::testing::TestStore;
 use okm_core::{Document, DocumentEncode, Error, KeyEncode, meta};
 
 #[derive(KeyEncode, Clone, PartialEq, Debug, Default)]

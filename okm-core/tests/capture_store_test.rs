@@ -12,8 +12,8 @@
     clippy::panic_in_result_fn
 )]
 
-use okm_async::TestStore;
 use okm_core::changelog::{ChangelogConfig, ChangelogStore, read_sealed, sealed_segments};
+use okm_core::testing::TestStore;
 use okm_core::{Batch, Collection, Document, DocumentEncode, KeyEncode, VirtualStorage};
 
 #[derive(KeyEncode, Clone, PartialEq, Debug, Default)]
@@ -43,7 +43,7 @@ const NS: &[u8] = <Row as Document>::NS_PREFIX;
 const QUIET_NS: &[u8] = <Quiet as Document>::NS_PREFIX;
 
 fn store(root: &std::path::Path) -> ChangelogStore<TestStore> {
-    ChangelogStore::new(TestStore::slatedb_mem(), ChangelogConfig::new(root))
+    ChangelogStore::new(TestStore::default(), ChangelogConfig::new(root))
 }
 
 /// The declaration is registered at assembly, so the table directory carries its

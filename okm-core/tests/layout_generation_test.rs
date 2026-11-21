@@ -17,9 +17,9 @@
     clippy::panic_in_result_fn
 )]
 
-use okm_async::TestStore;
 use okm_core::changelog::window::{WindowConfig, declaration_of, load_declaration, read_window};
 use okm_core::changelog::{ChangelogConfig, ChangelogStore, apply_log_in_generation, table_dir};
+use okm_core::testing::TestStore;
 use okm_core::{Collection, Document, DocumentEncode, KeyEncode};
 use okm_value::{Dict, Variant};
 
@@ -50,7 +50,7 @@ pub struct Gen2 {
 }
 
 fn store(root: &std::path::Path) -> ChangelogStore<TestStore> {
-    ChangelogStore::new(TestStore::slatedb_mem(), ChangelogConfig::new(root))
+    ChangelogStore::new(TestStore::default(), ChangelogConfig::new(root))
 }
 
 fn dir(root: &std::path::Path) -> std::path::PathBuf {
@@ -247,7 +247,7 @@ fn a_byte_copy_refuses_a_segment_of_another_generation() {
     let log = tempfile::tempdir().expect("root");
     write_generation_one(log.path());
 
-    let target = TestStore::slatedb_mem();
+    let target = TestStore::default();
     let err = apply_log_in_generation(log.path(), <Gen1 as Document>::NS_PREFIX, &target, None, 2)
         .expect_err("generation 1 bytes under a generation 2 store");
     let text = err.to_string();

@@ -3,13 +3,13 @@
 //! (fjall / redb / localStorage / the remote sender) implements it; the async
 //! mirror and the engines that speak it live in `okm-async` (ADR-0059).
 //! Unit tests run on [`crate::engine::ephemeral::EphemeralStore`]; the real-engine
-//! matrix is `okm_async::TestStore`, used by integration tests.
+//! matrix is `okm_core::testing::TestStore`, used by integration tests.
 
 /// Minimal KV engine interface: one ordered-read primitive (`scan_range`)
 /// plus point reads and batches. The `fjall` / `redb` features
 /// each provide an implementation; unit tests run on
 /// [`crate::engine::ephemeral::EphemeralStore`], and the real-engine matrix is
-/// `okm_async::TestStore` (ADR-0059).
+/// `okm_core::testing::TestStore` (ADR-0059).
 /// The exclusive upper bound of a prefix as a FULL key: increment the
 /// last byte with carry (`[0x01, 0x7F]` -> `[0x01, 0x80]`). `None` when
 /// the prefix is all `0xFF` (no finite terminator — the range is

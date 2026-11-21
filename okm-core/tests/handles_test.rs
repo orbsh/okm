@@ -36,9 +36,9 @@ use std::rc::Rc;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicUsize, Ordering};
 
-use okm_async::TestStore;
 use okm_core::engine::storage::{ExternalScan, ScanIter, prefix_end};
 use okm_core::error::Result;
+use okm_core::testing::TestStore;
 use okm_core::{
     Decl, Document, DocumentEncode, EdgeHead, EdgeStep, Error, FIRST_HANDLE, Fragment, Graph,
     GraphEncode, HANDLE_NODE_SLOT, Handle, Handles, Hyperedges, KeyEncode, NODE_HANDLE_SLOT,

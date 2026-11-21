@@ -18,7 +18,7 @@ core 的存储契约一直是同步的：`VirtualStorage`（`okm-core/src/engine
 裁决当日的清点（2026-11-10）：
 
 - `WireClient` 在仓外没有消费者，只有 `okm-core/tests/wire_client_test.rs` 用它。线上的远程形态是 mudra 的 `NestStorage<FjallStore>` 收 WS 帧，以及 aura 把 `okm_wire::OpFrame` 应用到同步 store 上。
-- `TestStore`（`engine/test_engine.rs`）是真实后端上的矩阵枚举——slatedb 内存态（零文件系统，默认）、fjall 临时目录、redb 临时文件——其中 slatedb 那一臂就是 `SlatedbSync`。它的使用面：`okm-core` 48 处、`okm-lake` 13 处、`okm-dynamic` 8 处、`okm-query` 1 处、两个 bindings 共 3 处。
+- `TestStore` 是真实后端上的矩阵枚举，按引擎所属分层：`okm_core::testing::TestStore` 持有 core 自己拥有的三个臂——临时引擎（零文件系统，默认）、fjall 临时目录、redb 临时文件；`okm_async::TestStore` 包住这个枚举，加上唯一一个后端是异步的臂：slatedb 内存态（`SlatedbSync`）。它的使用面：`okm-core` 48 处、`okm-lake` 13 处、`okm-dynamic` 8 处、`okm-query` 1 处、两个 bindings 共 3 处。
 - `~/world` 下没有任何 crate 提到 `SlatedbStore`、`SlatedbSync` 或 `WireClient`。
 
 ## 裁决
@@ -35,7 +35,7 @@ core 的存储契约一直是同步的：`VirtualStorage`（`okm-core/src/engine
 
 **core 只多一个变体：`ScanIter::External(Box<dyn DoubleEndedIterator<Item = Result<(Vec<u8>, Vec<u8>)>> + Send>)`。** `ScanIter`（`storage.rs:174`）是封闭枚举，各臂由特性门控（`Fjall`、`Redb`、`Slatedb`、`Remote`、`Buffered`），它的 `Iterator` / `DoubleEndedIterator` 实现也在 core（`:192`、`:219`）。`Slatedb` 那一臂跟着 crate 走，而另一条路——让同步适配器先把整个区间缓冲下来——删掉的不是优化而是保证：ADR-0020 把扫描定成惰性，正是为了让半途放弃只付已读的代价。类型擦除的那一臂与引擎无关：它是任何住在 core 之外的引擎交回迭代器的口子，于是下一个搬出去的 crate 不必再改 core。
 
-**`test-engines` 不再是一个特性，而是 dev-dependency**，出现在需要矩阵的各个 crate 上。cargo 允许这个环（`okm-core` dev-dependency 指 `okm-async`，而 `okm-async` 依赖 `okm-core`）。`okm-core` 自己的 dev-dependencies 保留 `tokio`，因为它的测试直接用；那是只属于测试的边，不在契约里。
+**`test-engines` 不再是一个特性**，且没有任何东西从 core 指向上层：core 自己引擎上的矩阵随 core 发布（`testing::TestStore`），slatedb 那一臂随承载它后端的 crate 发布。需要 slatedb 的测试在上层各 crate 上加 dev-dependency，core 不加。`okm-core` 自己的 dev-dependencies 保留 `tokio`，因为它的测试直接用；那是只属于测试的边，不在契约里。
 
 **边界由构建来守，不靠记忆。** CI 断言 `cargo tree -p okm-core`（正规依赖边）里既没有 `tokio` 也没有 `slatedb`，并且 `okm-core/src` 下不出现 `slatedb` 字样。
 
@@ -90,3 +90,11 @@ core 要改的地方：`Cargo.toml`（去掉 `slatedb` 与 `test-engines` 两个
 1. 2026-11-10 —— 起初的题目是「把 SlateDB 从事务引擎里踢出去，让存储契约回归同步」。读代码后这个前提没站住：`VirtualStorage` 里没有 `async fn`，runtime 进入的唯一入口是 `slatedb` 特性。问题于是从"契约是否同步"变成"异步面住在哪里"。
 2. 先叫 `okm-slatedb`，后改 `okm-async`：切分轴是契约，不是产品。
 3. `TestStore` 本来打算留在 core，是 slatedb 那一臂逼出了这个问题；它跟着 crate 走，dev-dependency 的扩散也由此而来。
+
+## 追记（2026-11-21）：矩阵按引擎的归属分层
+
+落地时撞到了纸面绕开的那个事实：`okm-core` 自己的单元测试用不了 `okm_async::TestStore`——dev-dependency 指回本包会让 cargo 编出两份 `okm-core`，两份的 `VirtualStorage` 是不同的类型（正文「纸面看不见的一件事」记的就是这条）。当时的处置是给那唯一一个 store-backed 单元测试配一个本地 `BTreeMap` 引擎。
+
+真正的缺陷是那条 dev-dependency 本身。四个臂里有三个是 core 自己的引擎（临时、fjall、redb），只有 slatedb 需要运行时，也只有它属于上层。于是矩阵下沉：`okm_core::testing::TestStore` 装 core 能造的三个臂，`okm_async::TestStore` 包住它再加 `Slatedb`。core 对 `okm-async` 的 dev-dependency 删掉，依赖图重新单向；只为绕开"两份 core"而存在的本地 `BTreeMap` 引擎删除，那条测试改跑 `TestStore::default()`。
+
+代价：core 的测试集不再交叉检验 slatedb。`--all-features` 那一轮仍跑 slatedb 臂，但跑它的是上层（lake、async），不是 core。另外 `cargo test --workspace` 不再经由那条被删的 dev-dependency 打开 core 的 `redb`/`fjall` 特性，于是四个引擎门控的测试只出现在 `--all-features` 那一轮——两条命令都在 CI 里，现在这件事是承重的，不再顺带。

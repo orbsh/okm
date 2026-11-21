@@ -26,8 +26,8 @@
 use std::cell::{Cell, RefCell};
 use std::rc::Rc;
 
-use okm_async::TestStore;
 use okm_core::engine::storage::ScanIter;
+use okm_core::testing::TestStore;
 use okm_core::{
     Collection, DocumentEncode, KeyEncode, Seekable, SharedVirtualStorage, VirtualStorage,
 };

@@ -47,7 +47,7 @@ where
     }
 }
 
-use okm_async::TestStore;
+use okm_core::testing::TestStore;
 #[derive(KeyEncode, Clone, PartialEq, Debug, Default)]
 pub struct ProfileKey {
     pub org_id: u32,

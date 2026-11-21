@@ -14,14 +14,14 @@
     clippy::panic_in_result_fn
 )]
 
-use okm_async::TestStore;
 use okm_core::storage::VirtualStorage;
+use okm_core::testing::TestStore;
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 1)]
 async fn slatedb_sync_ops_run_inside_a_tokio_context() {
     // The async fn body runs WITH the runtime context entered — the
     // panic zone for the old shape. All four ops + the lazy iterator.
-    let store = TestStore::slatedb_mem();
+    let store = TestStore::default();
     let handle = store.shared_handle();
     store.put(b"a".to_vec(), b"1".to_vec()).unwrap();
     store.put(b"b".to_vec(), b"2".to_vec()).unwrap();
@@ -49,7 +49,7 @@ async fn slatedb_backwards_walk_drains_to_completion() {
     // next_back must BLOCK-drain the driver stream to its end sentinel
     // — a try_iter race would silently truncate (100 rows is plenty
     // for the driver to lag the consumer).
-    let store = TestStore::slatedb_mem();
+    let store = TestStore::default();
     for i in 0..100u32 {
         store.put(i.to_be_bytes().to_vec(), vec![0u8]).unwrap();
     }

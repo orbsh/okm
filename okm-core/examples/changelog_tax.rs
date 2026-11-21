@@ -13,8 +13,8 @@
 use std::hint::black_box;
 use std::time::{Duration, Instant};
 
-use okm_async::TestStore;
 use okm_core::changelog::ChangelogStore;
+use okm_core::testing::TestStore;
 use okm_core::{Collection, DocumentEncode, KeyEncode, Reverse, Reversible, VarInt};
 
 #[derive(KeyEncode, Clone, PartialEq, Debug, Default)]

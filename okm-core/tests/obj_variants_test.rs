@@ -12,7 +12,7 @@
 
 use okm_value::{Dict, Variant};
 
-use okm_async::TestStore;
+use okm_core::testing::TestStore;
 use okm_core::{Collection, DocumentEncode, KeyEncode, VirtualStorage};
 
 #[derive(KeyEncode, Clone, PartialEq, Debug, Default)]
@@ -79,8 +79,7 @@ fn dmap(pairs: &[(&str, Variant)]) -> Dict {
 
 #[test]
 fn view_projects_both_slots_and_leaves_the_typed_read_alone() {
-    let t: Collection<TestStore, UserKey, User> =
-        Collection::open(TestStore::slatedb_mem()).unwrap();
+    let t: Collection<TestStore, UserKey, User> = Collection::open(TestStore::default()).unwrap();
     t.put(&key(1), &user(1, 2)).unwrap();
 
     // A static-only document: the view carries the declared names.
@@ -129,8 +128,7 @@ fn view_projects_both_slots_and_leaves_the_typed_read_alone() {
 #[test]
 fn a_point_read_answers_parts_apart() {
     use okm_core::parts;
-    let t: Collection<TestStore, UserKey, User> =
-        Collection::open(TestStore::slatedb_mem()).unwrap();
+    let t: Collection<TestStore, UserKey, User> = Collection::open(TestStore::default()).unwrap();
     t.put(&key(1), &user(1, 2)).unwrap();
     t.put(
         &key(1),
@@ -177,8 +175,7 @@ fn a_point_read_answers_parts_apart() {
 
 #[test]
 fn merge_touches_only_the_names_it_is_given() {
-    let t: Collection<TestStore, UserKey, User> =
-        Collection::open(TestStore::slatedb_mem()).unwrap();
+    let t: Collection<TestStore, UserKey, User> = Collection::open(TestStore::default()).unwrap();
     t.put(&key(1), &user(1, 5)).unwrap();
 
     t.put(
@@ -202,8 +199,7 @@ fn merge_touches_only_the_names_it_is_given() {
 
 #[test]
 fn merge_of_a_declared_field_is_an_rmw_and_cleans_the_old_face() {
-    let t: Collection<TestStore, UserKey, User> =
-        Collection::open(TestStore::slatedb_mem()).unwrap();
+    let t: Collection<TestStore, UserKey, User> = Collection::open(TestStore::default()).unwrap();
     t.put(&key(1), &user(1, 5)).unwrap();
     assert_eq!(
         t.scan::<ByLevel>(&5u32.to_be_bytes())
@@ -240,8 +236,7 @@ fn merge_of_a_declared_field_is_an_rmw_and_cleans_the_old_face() {
 
 #[test]
 fn replace_is_the_doc_of() {
-    let t: Collection<TestStore, UserKey, User> =
-        Collection::open(TestStore::slatedb_mem()).unwrap();
+    let t: Collection<TestStore, UserKey, User> = Collection::open(TestStore::default()).unwrap();
     t.put(&key(1), &user(9, 9)).unwrap();
     t.put(&key(1), &Variant::Map(dmap(&[("gone", Variant::U64(1))])))
         .unwrap();
@@ -286,8 +281,7 @@ fn replace_is_the_doc_of() {
 
 #[test]
 fn purge_clears_both_slots_in_one_call() {
-    let t: Collection<TestStore, UserKey, User> =
-        Collection::open(TestStore::slatedb_mem()).unwrap();
+    let t: Collection<TestStore, UserKey, User> = Collection::open(TestStore::default()).unwrap();
     t.put(&key(2), &user(1, 1)).unwrap();
     t.put(&key(2), &Variant::Map(dmap(&[("x", Variant::U64(1))])))
         .unwrap();
@@ -347,8 +341,7 @@ fn from_map_refuses_a_value_that_does_not_fit_the_declared_width() {
 fn a_refused_merge_returns_the_error_and_writes_nothing() {
     // 拒绝发生在任何 op 进 batch 之前：存储原封不动，调用方拿到 Err 而不是
     // 一个静默改过的文档（也不是 panic —— 这是调用方数据，不是故障）。
-    let t: Collection<TestStore, UserKey, User> =
-        Collection::open(TestStore::slatedb_mem()).unwrap();
+    let t: Collection<TestStore, UserKey, User> = Collection::open(TestStore::default()).unwrap();
     t.put(&key(1), &user(3, 4)).unwrap();
 
     let err = t
@@ -378,7 +371,7 @@ fn a_refused_merge_returns_the_error_and_writes_nothing() {
 /// store per allocation rather than cached on the mirror.
 #[test]
 fn two_handles_on_one_engine_do_not_share_an_id() {
-    let store = TestStore::slatedb_mem();
+    let store = TestStore::default();
     let a: Collection<TestStore, UserKey, User> = Collection::open(store.shared_handle()).unwrap();
     let b: Collection<TestStore, UserKey, User> = Collection::open(store.shared_handle()).unwrap();
     a.put(
@@ -414,7 +407,7 @@ fn two_handles_on_one_engine_do_not_share_an_id() {
 /// by name — the vocabulary entry is durable, the mirror is only a shortcut.
 #[test]
 fn one_dynamic_name_across_documents_survives_a_fresh_mirror() {
-    let store = TestStore::slatedb_mem();
+    let store = TestStore::default();
     let t: Collection<TestStore, UserKey, User> = Collection::open(store.clone()).unwrap();
     t.put(&key(1), &user(1, 2)).unwrap();
     t.put(&key(2), &user(1, 3)).unwrap();

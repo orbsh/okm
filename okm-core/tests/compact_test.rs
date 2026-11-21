@@ -13,8 +13,8 @@
     clippy::panic_in_result_fn
 )]
 
-use okm_async::TestStore;
 use okm_core::changelog::{ChangelogConfig, ChangelogStore, CompactPolicy, apply_log, table_dir};
+use okm_core::testing::TestStore;
 use okm_core::{Collection, Document, DocumentEncode, KeyEncode};
 
 #[derive(KeyEncode, Clone, PartialEq, Debug, Default)]
@@ -32,7 +32,7 @@ pub struct Row {
 
 fn store(root: &std::path::Path) -> ChangelogStore<TestStore> {
     ChangelogStore::new(
-        TestStore::slatedb_mem(),
+        TestStore::default(),
         ChangelogConfig {
             // One segment per commit, so the test can see the cleanup.
             segment_bytes: 1,
@@ -122,7 +122,7 @@ fn a_compaction_prunes_what_the_baseline_covers_and_replay_still_works() {
     );
 
     // And a replay into an empty store rebuilds every row, from both sides of the seam.
-    let target = TestStore::slatedb_mem();
+    let target = TestStore::default();
     let applied = apply_log(log.path(), &header, &target, None).unwrap();
     assert!(
         applied.ops >= 16,
@@ -183,7 +183,7 @@ fn keep_leaves_a_window_of_history_under_the_baseline() {
 fn capture_off_has_nothing_to_compact() {
     let log = tempfile::tempdir().unwrap();
     let off = ChangelogStore::new(
-        TestStore::slatedb_mem(),
+        TestStore::default(),
         ChangelogConfig {
             location: okm_core::changelog::Location::Off,
             ..ChangelogConfig::new(log.path())
@@ -230,7 +230,7 @@ fn the_policy_compacts_at_a_rotation_without_being_asked() {
     let dir = table_dir(log.path(), &header);
 
     let writer = ChangelogStore::new(
-        TestStore::slatedb_mem(),
+        TestStore::default(),
         ChangelogConfig {
             segment_bytes: 1,
             // No baseline at first, so the age of the oldest segment answers; make that
@@ -273,7 +273,7 @@ fn the_policy_compacts_at_a_rotation_without_being_asked() {
         )
         .unwrap();
     }
-    let target = TestStore::slatedb_mem();
+    let target = TestStore::default();
     apply_log(log.path(), &header, &target, None).unwrap();
     let restored = Collection::<_, RowKey, Row>::open(target).unwrap();
     for id in 0..10 {
@@ -291,7 +291,7 @@ fn a_policy_of_none_never_compacts_on_its_own() {
     let dir = table_dir(log.path(), &header);
 
     let writer_store = ChangelogStore::new(
-        TestStore::slatedb_mem(),
+        TestStore::default(),
         ChangelogConfig {
             segment_bytes: 1,
             compact: None,
