@@ -141,7 +141,11 @@ pub mod owner;
 
 pub use hook::HandoverHook;
 
+/// A generation change's three legs, over the segments `replay` reads — so gated with it: the
+/// catch-up cannot be had without a declaration to read the tail through.
+#[cfg(feature = "schema-serde")]
 pub mod migrate;
+
 /// The window join: the drain's reading half, beside the segments it reads.
 ///
 /// Gated on `schema-serde`, because a window cannot be read without a

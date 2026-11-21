@@ -5,6 +5,7 @@
 //! one record — after which the new generation reads the rows and the old range is still
 //! there with the old declaration's address on it.
 
+#![cfg(feature = "schema-serde")]
 #![allow(
     clippy::unwrap_used,
     clippy::expect_used,
