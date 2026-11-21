@@ -117,7 +117,8 @@ fn a_secret_round_trips_through_the_store() {
         .unwrap_or_else(|e| panic!("{engine}: put: {e}"));
         let got = col
             .get_row(&key)
-            .unwrap_or_else(|e| panic!("{engine}: get: {e}"));
+            .unwrap()
+            .unwrap_or_else(|| panic!("{engine}: get: no row"));
         assert_eq!(got.level, 4);
         assert_eq!(got.blob.expose(), &CIPHERTEXT, "{engine}");
     }
@@ -196,5 +197,5 @@ fn a_digest_is_indexable_and_the_token_never_reaches_the_keyspace() {
         !entry.windows(token.len()).any(|w| w == token.as_slice()),
         "and never the token"
     );
-    assert_eq!(col.get_row(&key).unwrap().token_hash, digest);
+    assert_eq!(col.get_row(&key).unwrap().unwrap().token_hash, digest);
 }

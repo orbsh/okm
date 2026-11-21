@@ -114,8 +114,8 @@ fn prune_deletes_only_deprecated_prefix() {
     );
     // Live entries untouched.
     assert_eq!(t.store().scan_suffix(&[0, 9, 0x40, 0x02]).unwrap().len(), 2);
-    assert_eq!(t.get_row(&UserKey { id: 1 }).unwrap().level, 7);
-    assert_eq!(t.get_row(&UserKey { id: 2 }).unwrap().level, 8);
+    assert_eq!(t.get_row(&UserKey { id: 1 }).unwrap().unwrap().level, 7);
+    assert_eq!(t.get_row(&UserKey { id: 2 }).unwrap().unwrap().level, 8);
 }
 
 #[test]

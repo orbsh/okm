@@ -398,7 +398,10 @@ fn verify(store: TestStore) {
             0,
             "{name}: an answered entry outside the key set"
         );
-        let row = col.get_row(&id).expect("an answered key has a row");
+        let row = col
+            .get_row(&id)
+            .unwrap()
+            .expect("an answered key has a row");
         assert_eq!(row.tag, tag_of(id.id), "{name}: the row behind the key");
         fetched += 1;
     }

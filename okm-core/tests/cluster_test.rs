@@ -777,7 +777,8 @@ fn the_three_conflict_hooks_run_in_the_write_fragment() {
         for id in [1u64, 2] {
             let row = people
                 .get_row(&PersonId { id })
-                .unwrap_or_else(|e| panic!("{engine}: read {id}: {e}"));
+                .unwrap()
+                .unwrap_or_else(|| panic!("{engine}: read {id}: no row"));
             assert_eq!(
                 row.seen, 1,
                 "{engine}: the node conflict hook ran for person {id}"
@@ -807,12 +808,20 @@ fn the_three_conflict_hooks_run_in_the_write_fragment() {
         fragment.on_node_conflict::<Person>(|old, _declared| Person { seen: old.seen + 1 });
         g.incorporate(fragment).expect("second fragment");
         assert_eq!(
-            people.get_row(&PersonId { id: 1 }).expect("row").seen,
+            people
+                .get_row(&PersonId { id: 1 })
+                .unwrap()
+                .expect("row")
+                .seen,
             2,
             "{engine}: the counter accumulated"
         );
         assert_eq!(
-            people.get_row(&PersonId { id: 2 }).expect("row").seen,
+            people
+                .get_row(&PersonId { id: 2 })
+                .unwrap()
+                .expect("row")
+                .seen,
             1,
             "{engine}: an untouched node keeps its count"
         );

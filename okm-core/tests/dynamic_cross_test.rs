@@ -220,6 +220,7 @@ fn rust_write_dynamic_read_and_reverse() {
     t.put(&rust_key, &rust_decoded).unwrap();
     let document = t
         .get_row(&rust_key)
+        .unwrap()
         .expect("rust reads dynamic-encoded bytes");
     assert_eq!(document.name, "alice");
     assert_eq!(document.level, 9);

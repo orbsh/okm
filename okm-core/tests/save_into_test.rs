@@ -295,7 +295,7 @@ fn an_uncommitted_batch_moves_neither_the_row_nor_the_ledger() {
 
     assert_eq!(ledger(&t, 7), Some(1), "the unfold never landed");
     assert_eq!(ledger(&t, 8), None, "the fold never landed");
-    assert_eq!(t.get_row(&k).expect("row").account, 7);
+    assert_eq!(t.get_row(&k).unwrap().expect("row").account, 7);
 }
 
 #[test]
@@ -442,7 +442,7 @@ fn embedded_children_are_written_and_released_in_the_batch() {
 
     // Overwrite pointing somewhere else: the old child is released in the
     // same batch, exactly as put's overwrite pass does.
-    let old = cards.get_row(&k).expect("old card");
+    let old = cards.get_row(&k).unwrap().expect("old card");
     let mut batch = okm_core::Batch::default();
     cards
         .save_with_prev_into(
@@ -466,7 +466,10 @@ fn embedded_children_are_written_and_released_in_the_batch() {
         !contacts.has_row(&c1).unwrap(),
         "the dropped child is released"
     );
-    assert_eq!(contacts.get_row(&c2).unwrap().number, "222".to_string());
+    assert_eq!(
+        contacts.get_row(&c2).unwrap().unwrap().number,
+        "222".to_string()
+    );
 }
 
 // ---------- vocabulary growth rides the batch (ADR-0032 × ADR-0031) ----------
@@ -517,7 +520,7 @@ fn save_with_prev_into_interns_inside_the_batch() {
 
     // After the commit the row reads back with LABELS: the id → label entries
     // travelled in the same batch as the payload.
-    let back = c.get_row(&k).expect("row landed");
+    let back = c.get_row(&k).unwrap().expect("row landed");
     assert_eq!(back.event.as_str(), Some("http.request"));
     assert_eq!(back.status.as_str(), Some("warn"));
     assert_eq!(back.level, 3);
@@ -541,7 +544,7 @@ fn save_with_prev_into_interns_inside_the_batch() {
     .unwrap();
     store.commit_batch(&batch).expect("commit");
 
-    let second = c.get_row(&LogKey { id: 2 }).expect("row landed");
+    let second = c.get_row(&LogKey { id: 2 }).unwrap().expect("row landed");
     assert_eq!(second.event.as_str(), Some("db.timeout"));
     assert_eq!(second.status.as_str(), Some("error"));
     assert_ne!(
@@ -551,7 +554,7 @@ fn save_with_prev_into_interns_inside_the_batch() {
     );
 
     // And the first row still names both of its own labels.
-    let again = c.get_row(&k).expect("row still there");
+    let again = c.get_row(&k).unwrap().expect("row still there");
     assert_eq!(again.event.as_str(), Some("http.request"));
     assert_eq!(again.status.as_str(), Some("warn"));
 }

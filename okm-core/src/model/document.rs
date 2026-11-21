@@ -749,7 +749,7 @@ impl<S: VirtualStorage, K: KeyEncode, R: Document<Key = K>> Collection<S, K, R> 
     /// multi-writer future (optimistic CAS) triggers only if multiple
     /// live writers over one store become a real requirement.
     pub fn upsert_with(&self, key: &K, f: impl FnOnce(Option<R>) -> R) -> crate::error::Result<R> {
-        let new = f(self.row_opt(key)?);
+        let new = f(self.get_row(key)?);
         self.put(key, &new)?;
         Ok(new)
     }
@@ -911,23 +911,18 @@ impl<S: VirtualStorage, K: KeyEncode, R: Document<Key = K>> Collection<S, K, R> 
 
     /// Point lookup, the row alone: decode key payload + TLV payload.
     ///
-    /// Sugar for `get::<(parts::Row,)>` — the common case where the typed
-    /// payload is the whole question. A key that holds only a dynamic segment
-    /// (ADR-0035's slot-1-only document) answers [`Error::RowAbsent`]; ask for the
-    /// [`Value`](crate::model::parts::Value) part to see that half.
+    /// Sugar for `get::<(parts::Row,)>` — the common case where the typed payload is the
+    /// whole question. A key that holds only a dynamic segment (ADR-0035's slot-1-only
+    /// document) answers `Ok(None)`; ask for the [`Value`](crate::model::parts::Value) part
+    /// to see that half.
     ///
-    /// One layer, one answer: the row, or why there is none. "Is there a row" is
-    /// [`has_row`](Self::has_row) — it does not build a payload to throw away, and it is what
-    /// an existence check means.
-    pub fn get_row(&self, key: &K) -> crate::error::Result<R> {
-        self.row_opt(key)?.ok_or(crate::error::Error::RowAbsent)
-    }
-
-    /// The row, or nothing. The second door on the same read: [`get_row`](Self::get_row)
-    /// answers `RowAbsent` because a verb that merges or deletes treats a missing row as a
-    /// fault, and a caller asking a question with a legitimate "no" reads this instead of
-    /// re-deriving the conversion. Both are one engine point read and one payload decode.
-    pub fn row_opt(&self, key: &K) -> crate::error::Result<Option<R>> {
+    /// Two layers, and they answer different questions: `Err` is the engine (the read
+    /// failed, the payload would not decode, a dereference had no target), `Ok(None)` is
+    /// "this store holds no such row". Absence is data, so it is a value — a caller that
+    /// treats it as a fault says so with `.ok_or_else(..)`, and one that asks a question
+    /// with a legitimate "no" says nothing. [`has_row`](Self::has_row) is the existence
+    /// check: same read, no payload decode.
+    pub fn get_row(&self, key: &K) -> crate::error::Result<Option<R>> {
         let k = self.primary_key(key);
         let v = match self.store.get(&k)? {
             Some(v) => v,
@@ -1334,7 +1329,7 @@ impl<S: VirtualStorage, K: KeyEncode, R: Document<Key = K>> Collection<S, K, R> 
         // nothing — this interface speaks about typed rows.
         let mut announced: Option<R> = None;
         if !typed.is_empty() {
-            let prev = self.row_opt(key)?;
+            let prev = self.get_row(key)?;
             let mut merged = prev.as_ref().map(|r| r.to_map()).unwrap_or_default();
             merged.extend(typed);
             let document = R::try_from_map(&merged)?;
@@ -1377,7 +1372,7 @@ impl<S: VirtualStorage, K: KeyEncode, R: Document<Key = K>> Collection<S, K, R> 
         // name is `purge`'s write, so it announces what `purge` announces.
         let mut announced: Option<(crate::subscribe::Op, R)> = None;
         if typed.is_empty() {
-            if let Some(prev) = self.row_opt(key)? {
+            if let Some(prev) = self.get_row(key)? {
                 self.delete_into(&mut batch, key, &prev)?;
                 announced = Some((crate::subscribe::Op::Delete, prev));
             }
@@ -1385,7 +1380,7 @@ impl<S: VirtualStorage, K: KeyEncode, R: Document<Key = K>> Collection<S, K, R> 
             // The stored row is the face-sweep source: without it the previous
             // values' entries would dangle, exactly what `put` is allowed to do
             // and a whole-document verb is not.
-            let prev = self.row_opt(key)?;
+            let prev = self.get_row(key)?;
             let document = R::try_from_map(&typed)?;
             self.save_with_prev_into(&mut batch, key, &document, prev.as_ref())?;
             announced = Some((crate::subscribe::Op::Put, document));
@@ -1773,7 +1768,7 @@ where
         &self,
         raw: &crate::model::index::RawHit,
     ) -> crate::error::Result<P::Output> {
-        let mut fetch = |key: &K| self.col.row_opt(key);
+        let mut fetch = |key: &K| self.col.get_row(key);
         let mut hit = crate::model::parts::Hit::new(raw, &mut fetch);
         P::take(&mut hit)
     }

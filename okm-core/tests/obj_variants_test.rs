@@ -100,7 +100,7 @@ fn view_projects_both_slots_and_leaves_the_typed_read_alone() {
     assert_eq!(got.len(), 4);
     assert_eq!(got.get("score"), Some(&Variant::U64(99)));
     assert_eq!(got.get("note"), Some(&Variant::Str("hello".into())));
-    assert_eq!(t.get_row(&key(1)).unwrap(), user(1, 2));
+    assert_eq!(t.get_row(&key(1)).unwrap().unwrap(), user(1, 2));
 
     // Vocabulary landed in the id family under the same ns, cursor included
     // (ADR-0032: the face holds its allocation cursor at the bare prefix).
@@ -151,7 +151,7 @@ fn a_point_read_answers_parts_apart() {
     // makes the two answers the same type AND the same value.
     assert_eq!(
         t.get::<(parts::Row,)>(&key(1)).unwrap(),
-        Some(t.get_row(&key(1)).unwrap())
+        Some(t.get_row(&key(1)).unwrap().unwrap())
     );
 
     // The dynamic half alone, without decoding the row.
@@ -212,7 +212,7 @@ fn merge_of_a_declared_field_is_an_rmw_and_cleans_the_old_face() {
     t.put(&key(1), &Variant::Map(dmap(&[("level", Variant::U64(30))])))
         .unwrap();
 
-    let row = t.get_row(&key(1)).unwrap();
+    let row = t.get_row(&key(1)).unwrap().unwrap();
     assert_eq!(
         (row.legacy, row.level),
         (1, 30),
@@ -251,7 +251,7 @@ fn replace_is_the_doc_of() {
         ])),),
     )
     .unwrap();
-    assert_eq!(t.get_row(&key(1)).unwrap(), user(0, 4));
+    assert_eq!(t.get_row(&key(1)).unwrap().unwrap(), user(0, 4));
     let got = doc_of(&t, &key(1)).unwrap().unwrap();
     assert!(
         !got.contains_key("gone"),
@@ -272,7 +272,7 @@ fn replace_is_the_doc_of() {
         (&Variant::Map(dmap(&[("legacy", Variant::U64(7))])),),
     )
     .unwrap();
-    assert_eq!(t.get_row(&key(3)).unwrap(), user(7, 0));
+    assert_eq!(t.get_row(&key(3)).unwrap().unwrap(), user(7, 0));
 
     // An empty map IS the empty document.
     t.put(&key(1), (&Variant::Map(Dict::new()),)).unwrap();
@@ -355,7 +355,7 @@ fn a_refused_merge_returns_the_error_and_writes_nothing() {
         "unexpected error: {err:?}"
     );
     assert_eq!(
-        t.get_row(&key(1)).unwrap(),
+        t.get_row(&key(1)).unwrap().unwrap(),
         user(3, 4),
         "a refused merge writes nothing"
     );
@@ -363,7 +363,7 @@ fn a_refused_merge_returns_the_error_and_writes_nothing() {
     // 同一个 API 上的成功路径不受影响。
     t.put(&key(1), &Variant::Map(dmap(&[("level", Variant::U64(9))])))
         .unwrap();
-    assert_eq!(t.get_row(&key(1)).unwrap(), user(3, 9));
+    assert_eq!(t.get_row(&key(1)).unwrap().unwrap(), user(3, 9));
 }
 
 /// Two handles on one engine allocate from the SAME cursor: the mirror must not

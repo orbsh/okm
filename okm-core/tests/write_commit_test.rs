@@ -198,7 +198,7 @@ fn put_is_one_engine_commit() {
     );
 
     // The commit really carried them: row, face and ledger are all visible.
-    assert_eq!(t.get_row(&LedgerKey { id: 1 }).unwrap(), row(7));
+    assert_eq!(t.get_row(&LedgerKey { id: 1 }).unwrap().unwrap(), row(7));
     assert_eq!(
         t.scan::<Ledger_ByAccount>(&7u64.to_be_bytes())
             .collect::<okm_core::error::Result<Vec<_>>>()
@@ -311,9 +311,9 @@ fn merge_of_a_declared_field_is_one_engine_commit() {
     assert_eq!(c.commits.get(), 1, "merge is one engine commit");
     assert_eq!(c.ops_committed.get(), 4, "unfold + primary + face + fold");
     assert_eq!((c.bare_puts.get(), c.bare_dels.get()), (0, 0));
-    assert_eq!(t.get_row(&k).unwrap().amount, 9);
+    assert_eq!(t.get_row(&k).unwrap().unwrap().amount, 9);
     assert_eq!(
-        t.get_row(&k).unwrap().account,
+        t.get_row(&k).unwrap().unwrap().account,
         7,
         "unnamed declared field kept"
     );
@@ -353,9 +353,9 @@ fn replace_is_one_engine_commit_across_both_slots() {
         "unfold + primary + face put + STALE face del + fold, then the slot-1 entry"
     );
     assert_eq!((c.bare_puts.get(), c.bare_dels.get()), (0, 0));
-    assert_eq!(t.get_row(&k).unwrap().account, 8);
+    assert_eq!(t.get_row(&k).unwrap().unwrap().account, 8);
     assert_eq!(
-        t.get_row(&k).unwrap().amount,
+        t.get_row(&k).unwrap().unwrap().amount,
         0,
         "unnamed declared field defaults"
     );

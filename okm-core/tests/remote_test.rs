@@ -82,6 +82,7 @@ fn table_semantics_over_remote() {
     // Point get via the table (full round trip: frame → host → engine → back).
     let document = t
         .get_row(&UserKey { id: 42 })
+        .unwrap()
         .expect("document round-tripped");
     assert_eq!(document.level, 3);
 

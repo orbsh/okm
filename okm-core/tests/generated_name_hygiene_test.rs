@@ -79,7 +79,7 @@ fn key() -> ShadowKey {
 fn payload_and_key_round_trip() {
     let col: Collection<_, ShadowKey, Shadow> = Collection::open(TestStore::default()).unwrap();
     col.put(&key(), &row()).unwrap();
-    assert_eq!(col.get_row(&key()).unwrap(), row());
+    assert_eq!(col.get_row(&key()).unwrap().unwrap(), row());
 
     // KeyEncode::decode binds one local per key field in the same scope.
     let encoded = key().encode();
@@ -130,7 +130,7 @@ fn the_dynamic_segment_still_takes_unknown_names() {
     patch.insert("b".to_string(), Variant::U64(99));
     col.put(&key(), &Variant::Map(patch)).unwrap();
 
-    let stored = col.get_row(&key()).unwrap();
+    let stored = col.get_row(&key()).unwrap().unwrap();
     assert_eq!(stored.b, 99, "a declared name routes to the row");
     assert_eq!(stored.name, "cold", "the rest of the row is untouched");
 }

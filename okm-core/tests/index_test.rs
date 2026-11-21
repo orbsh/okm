@@ -1171,7 +1171,7 @@ fn partial_index_flip_needs_delete_then_put() {
         t4.store().get(&e).unwrap().is_none(),
         "replace 扫掉存储行的面"
     );
-    assert_eq!(t4.get_row(&k).unwrap().status, 1, "map 就是文档");
+    assert_eq!(t4.get_row(&k).unwrap().unwrap().status, 1, "map 就是文档");
 }
 
 #[test]

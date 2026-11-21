@@ -174,6 +174,7 @@ fn parquet_roundtrip_with_string_columns() {
                 shard: 1,
                 id: i as u64,
             })
+            .unwrap()
             .expect("document");
         assert_eq!(&r.name, name);
         assert_eq!(r.note, format!("note-{i}"));

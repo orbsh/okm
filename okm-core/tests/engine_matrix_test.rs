@@ -100,6 +100,7 @@ fn engine_matrix_table_round_trip() {
         t.put(&MKey { id: 7 }, &MRow { score: 55 }).unwrap();
         let back = t
             .get_row(&MKey { id: 7 })
+            .unwrap()
             .expect("{name}: document round trip");
         assert_eq!(back.score, 55, "{name}");
         let keys: Vec<MKey> = t

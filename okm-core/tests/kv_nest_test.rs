@@ -56,6 +56,7 @@ fn nest_derive_end_to_end() {
 
     let document = t
         .get_row(&ItemKey { id: 1 })
+        .unwrap()
         .expect("document round-tripped");
     assert_eq!(document.kind, 7);
 

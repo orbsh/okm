@@ -358,7 +358,7 @@ fn point(c: &mut Criterion, f: &Fixture) {
         b.iter(|| black_box(f.col.store().get(black_box(&f.point_pk)).unwrap()))
     });
     g.bench_function("get_row", |b| {
-        b.iter(|| black_box(f.col.get_row(black_box(&f.point_key)).unwrap()))
+        b.iter(|| black_box(f.col.get_row(black_box(&f.point_key)).unwrap().unwrap()))
     });
     // The key encode `get_row` pays and the pre-encoded arm does not: it is part
     // of the delta above and it is measured here so the split is visible.
@@ -367,7 +367,7 @@ fn point(c: &mut Criterion, f: &Fixture) {
     });
     // The other half of the document layer, alone: the payload's TLV decode with
     // the key encode and the engine read both out of the picture.
-    let payload = f.col.get_row(&f.point_key).unwrap();
+    let payload = f.col.get_row(&f.point_key).unwrap().unwrap();
     let bytes = okm_core::Document::encode_payload(&payload);
     g.bench_function("decode_payload", |b| {
         b.iter(|| {
@@ -512,7 +512,7 @@ fn join(c: &mut Criterion, f: &Fixture) {
         b.iter(|| {
             let mut acc = 0u64;
             for k in join_streams(&f.col, PROBE_STATUS) {
-                acc += f.col.get_row(&k).map(|r| r.amount).unwrap_or(0);
+                acc += f.col.get_row(&k).unwrap().map(|r| r.amount).unwrap_or(0);
             }
             black_box(acc)
         })

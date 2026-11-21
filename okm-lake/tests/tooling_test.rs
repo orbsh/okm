@@ -97,7 +97,7 @@ fn parquet_export_import_roundtrip_restores_rows_and_indexes() {
             org_id: 1,
             user_id: i,
         };
-        let r = t2.get_row(&k).expect("document restored");
+        let r = t2.get_row(&k).unwrap().expect("document restored");
         assert_eq!(r.reputation, (i * 100) as u32);
         assert_eq!(r.level, (i as u16) + 7);
         assert_eq!(r.tag, [i as u8, 0, 0xFF, 0x42]);
@@ -256,7 +256,10 @@ fn parquet_roundtrip_carries_labels_not_ids() {
     let n = parquet_io::import_parquet(&mut t2, &path).unwrap();
     assert_eq!(n, 4);
     for (i, (s, c)) in statuses.iter().zip(colors.iter()).enumerate() {
-        let r = t2.get_row(&VKey { id: i as u64 }).expect("row restored");
+        let r = t2
+            .get_row(&VKey { id: i as u64 })
+            .unwrap()
+            .expect("row restored");
         assert_eq!(r.status.as_str(), Some(*s));
         assert_eq!(r.color.as_str(), Some(*c));
         assert_eq!(r.score, i as u32);
@@ -355,7 +358,10 @@ fn parquet_with_variant_restores_both_halves_and_segment_only_documents() {
     assert_eq!(n, 1, "one document has a row; the other is segment-only");
 
     assert_eq!(
-        t2.get_row(&with_row).expect("the row came back").reputation,
+        t2.get_row(&with_row)
+            .unwrap()
+            .expect("the row came back")
+            .reputation,
         100
     );
     assert_eq!(

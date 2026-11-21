@@ -100,7 +100,7 @@ fn a_name_may_live_in_the_key_and_in_the_payload() {
         )
         .unwrap();
 
-    let row = table.get_row(&key(101)).unwrap();
+    let row = table.get_row(&key(101)).unwrap().unwrap();
     assert_eq!(row.user_id, 999, "the payload copy is its own field");
     assert!(
         !table.has_row(&key(999)).unwrap(),
@@ -143,8 +143,8 @@ fn the_same_key_type_addresses_a_side_table() {
         "the key payload is the same bytes by construction"
     );
 
-    assert_eq!(main.get_row(&k).unwrap().bio, "hello");
-    assert_eq!(side.get_row(&k).unwrap().views, 3);
+    assert_eq!(main.get_row(&k).unwrap().unwrap().bio, "hello");
+    assert_eq!(side.get_row(&k).unwrap().unwrap().views, 3);
 }
 
 #[test]
@@ -168,7 +168,7 @@ fn a_map_name_that_matches_a_payload_field_writes_the_row() {
         .put(&k, &Variant::Map(map_of(&[("user_id", Variant::U64(50))])))
         .unwrap();
 
-    let row = table.get_row(&k).unwrap();
+    let row = table.get_row(&k).unwrap().unwrap();
     assert_eq!(row.user_id, 50);
     assert_eq!(row.bio, "a", "other payload fields are untouched");
 
