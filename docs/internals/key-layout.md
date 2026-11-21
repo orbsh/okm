@@ -30,7 +30,7 @@ current allocation: a fixed face is one byte, a counting family keeps the
 The derive (`okm-derive`) compiles `#[ok_ns(N)]` into
 `Document::NS_PREFIX: &'static [u8]` (big-endian `[hi, lo]`; empty slice when
 undeclared — a codec-only document that never materializes a collection).
-`Collection::new(store)` takes no ns argument — the assembly point chooses
+`Collection::open(store)` takes no ns argument — the assembly point chooses
 the engine, it never restates the ns (the ns vocabulary is code, ADR-0002;
 engine choice is per-assembly-point freedom, ADR-0010).
 

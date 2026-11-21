@@ -336,9 +336,10 @@ no node list and no schema: the assembly point has zero declaration content.
   refs whose width the declaration fixes (§2); traversal faces are built through the dynamic
   layer's `AccessMethod` construction. The handle takes the ns and the
   schema the declaration yielded as a PAIR, never a bare ns invented at the
-  call site; where the ns is still a separate argument (today's
-  `DynamicCollection::new(store, ns, schema, …)`), the export side provides
-  the pair and assembly REJECTS a disagreement instead of overriding it.
+  call site; where the ns is still a separate argument (`DynamicCollection::open(store,
+  ns)`), the export side provides the pair and assembly REJECTS a disagreement instead of
+  overriding it — and the declaration itself is read from the table's meta row, so the
+  pair cannot come from two different sources (ADR-0074).
   `CollectionSchema` carries `ns_prefix` (the
   declaration's own `[ns 2B]`, so the pair is checkable) and `members` (the
   member set, exported by `CollectionSchema::of_graph::<E>()` from

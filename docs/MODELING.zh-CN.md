@@ -146,7 +146,7 @@ pub struct User {
 
 - `#[ok_ref(UserKey)]`——行挂到哪个主键上；身份归 key，业务维度归行。
 - `#[ok_ns(1)]`——表的命名空间段，声明在**行上**（行是表的声明点：`#[ok_ref]`
-已把 key 类型钉死，行完全决定 `Collection<S, K, R>`）。key 类型不带 ns——同一个key 形状可以合法服务多个行/表，各挂各的 ns 号。`Collection::new(store)` 不收 ns参数，拼装点只选 engine。关系表自己声明 ns，和任何文档集合一样。它是**必需的**：不写就不编译，因为没有 ns 的表在键空间里没有自己的位置，它的键会落到别人写过的地方。而且**一个 ns 只对应一个行**：derive 会发出一个名字里带 ns 的标记常量，同模块里第二个行声明同一个 ns 就是编译错误（`the name __OKM_NS_7_IS_UNIQUE is defined multiple times`）。例外要写出来而不是默认——在第二处声明上加 `#[ok_shared_ns]`，用于代次对（同一张表在布局变更前后的两个声明，ADR-0056）。这项检查出不了模块，而表可以声明在另一个模块里，所以 store 也会查：首次触碰时在这个 ns 上记下表的 `#[ok_name]`，那里已经坐着另一个名字就点名拒绝（ADR-0043）。
+已把 key 类型钉死，行完全决定 `Collection<S, K, R>`）。key 类型不带 ns——同一个key 形状可以合法服务多个行/表，各挂各的 ns 号。`Collection::open(store)` 不收 ns 参数，拼装点只选 engine。关系表自己声明 ns，和任何文档集合一样。它是**必需的**：不写就不编译，因为没有 ns 的表在键空间里没有自己的位置，它的键会落到别人写过的地方。而且**一个 ns 只对应一个行**：derive 为每个 ns 发出一个静态量——`__OKM_NS_{ns}_ENTRY: OnceLock<TablePlan>`，编译好的 plan 也住在那里——同模块里第二个行声明同一个 ns 就是编译错误（`the name __OKM_NS_7_ENTRY is defined multiple times`）。唯一的例外要写出来而不是默认，而且它是**测试**用的——在第二处声明上加 `#[ok_shared_ns_in_tests]`。生产代码里每张表都有自己的地址：布局变更是一次迁移（ADR-0075），不是对同一个地址的第二次声明。这项检查出不了模块，而表可以声明在另一个模块里，所以 store 也会查：首次触碰时在这个 ns 上记下表的 `#[ok_name]`，那里已经坐着另一个名字就点名拒绝（ADR-0043）。
 - `fields(...)`——排序/分组的 payload 字段，按声明序，首位 = 分组维度。
 - `includes(...)`——覆盖索引，复制 payload 字段进 entry value（上文「覆盖索引克制」）。
 - `key(...)`——把 entry 尾部携带的主键截断到命名子集（默认取满）。截断改变的是行级唯一性，不是分组：`fields` 前缀驱动排序，key 尾段区分行；`key(user_id)` 仅在命名子集对每行唯一时才安全，否则行会互相覆盖 entry。
@@ -221,7 +221,7 @@ fn is_open(row: &Ticket) -> bool { row.status == 0 }
 动词对是 `put` / `purge`，作用在那对键上——没有 `link` / `unlink`，因为行与索引条目由同一个 batch 写出：
 
 ```rust
-let members: Collection<_, MembershipKey, Membership> = Collection::new(store);
+let members: Collection<_, MembershipKey, Membership> = Collection::open(store)?;
 
 // 写一条成员关系：行与 by_member 条目一起落地
 members.put(
@@ -313,7 +313,7 @@ let hits = t.scan::<ByToken>(b"rust")?;
 
 ### 引擎是装配点的选择
 
-`Collection::new(store)` 收的是一个 store，任何类型上都没有东西说自己跑在哪个引擎上（ADR-0010——装配点选引擎，声明只拥有 ns）。所以这个自由属于每一张表，不只属于副表：同一个应用里的表不必共用一个引擎。热的表可以待在小而快的引擎上，payload 表待在为容量调的 LSM 上，只读的导出表随便找个落盘便宜的。关系型里同样的愿望要以 foreign server 或链接表的形式出现；在这里它是模型的免费推论——一张表本来就是一个独立的键空间、配一个自己的句柄，换地方不需要为它架桥。
+`Collection::open(store)` 收的是一个 store，任何类型上都没有东西说自己跑在哪个引擎上（ADR-0010——装配点选引擎，声明只拥有 ns）。所以这个自由属于每一张表，不只属于副表：同一个应用里的表不必共用一个引擎。热的表可以待在小而快的引擎上，payload 表待在为容量调的 LSM 上，只读的导出表随便找个落盘便宜的。关系型里同样的愿望要以 foreign server 或链接表的形式出现；在这里它是模型的免费推论——一张表本来就是一个独立的键空间、配一个自己的句柄，换地方不需要为它架桥。
 
 自由度到一条线为止：**提交是按 store 的。** 同一个引擎上的两个 collection 写进一个 `Batch`、一次提交——父行与副表同时生效就靠这个；分在两个引擎上就是两次提交，所以必须同时生效的那一对要待在一个引擎里。按访问模式拆是免费的，按引擎拆是持久性和原子性的边界，而这条边界跟着 store 走、不跟着 ns 走：捕获与恢复同样是整 store 的，搬到别的引擎上的表由那个 store 的日志捕获。
 
@@ -537,7 +537,7 @@ payload 没有头。字节就是两段背靠背——`[hot segment][cold TLV]`�
 
 有三个名字属于运行时。`version` 是写入方所说的布局代次——一字节，声明的 `LAYOUT_VERSION`——而且是承重的那个：布局变更是一次割接，所以盖着这个构建不认识的号的库在挂载处就被拒绝（`LayoutMismatch { stored, current }`），而不是在一份从未写过它的声明下被逐行解码。这个名字是**必需**的，不是可选的：一个 `version` 都没记的行同样被拒绝（`LayoutUnstamped { current }`），因为这里没有更老的布局要容忍，本构建没盖过戳的库就不是这个布局的库。`faces` 是这份声明诸派生面的指纹——`#[ok_index]` 的槽住在它们自己的 ns 里，改动它们一个 payload 字节都不动（ADR-0048）——它从声明算出来，不是填出来的。`Collection::faces_status()` 比对它，答 `Match` / `Stale` / `Unknown`，而 `Collection::rebuild_faces(chunk)` / `Graph::reindex(chunk)` 是修复 `Stale` 的动词，提交按块切分；`ensure_layout` 绝不为**指纹**拒绝：在这个机制之前写的库会挂在一个它永远满足不了的检查上，而过期的面是可修复的漂移，不是读不懂的行。
 
-`Collection::ensure_layout()` 是首次接触动词，写的是运行时的布局名字：行缺席就种下 `version`（这个构建的号）与 `faces`（这份声明派生面的指纹）；行已在就拒绝不属于这个代次的行——记着别的号（`LayoutMismatch { stored, current }`）或者一个号都没记（`LayoutUnstamped { current }`）——否则原样返回那一行，因为去「修」指纹就会抹掉维护动词要据此动作的 `Stale` 信号。只有行缺席才豁免：那里没有可以和它不一致的东西，于是种子化、永不被拒。`set_meta(name, value)` 记录调用方自己的名字、用这个构建的号重新盖上 `version`（所以形状戳记无法被改掉），并且宁可拒绝也不给一个盖着别的代次、或者根本没盖号的行重新贴标签。在挂载处调 `ensure_layout`：每表一次点读，绝不是每行的成本——`Collection::new` 因此保持零 I/O。
+`Collection::ensure_layout()` 是首次接触动词，写的是运行时的布局名字：行缺席就种下 `version`（这个构建的号）与 `faces`（这份声明派生面的指纹）；行已在就拒绝不属于这个代次的行——记着别的号（`LayoutMismatch { stored, current }`）或者一个号都没记（`LayoutUnstamped { current }`）——否则原样返回那一行，因为去「修」指纹就会抹掉维护动词要据此动作的 `Stale` 信号。只有行缺席才豁免：那里没有可以和它不一致的东西，于是种子化、永不被拒。`set_meta(name, value)` 记录调用方自己的名字、用这个构建的号重新盖上 `version`（所以形状戳记无法被改掉），并且宁可拒绝也不给一个盖着别的代次、或者根本没盖号的行重新贴标签。在挂载处调 `ensure_layout`：每张表在每个 store、每个进程各一次点读，绝不是每行的成本——同一张表在同一 store 上的第二次及以后每次 `Collection::open` 都是快查命中（ADR-0078）。`open` 是唯一构造函数（ADR-0074），已经没有需要保护的零 I/O `new`。
 
 三条边界。它不是**行**：行扫描与导出按 slot 过滤，0x1F 要像 0x01/0x02 一样跳过。它**不进**导出与快照：它描述的是**写入方**的形状，导入方给自己的表盖自己的戳。而且它是**检测**装置，不是兼容承诺（ADR-0042）：把「形状不对的 store」变成挂载时的拒绝，而不是读到第一行才解码失败；它从不让旧形状变得可读。
 
@@ -1315,7 +1315,7 @@ okm_subscribe::SINK_ROWEVENT.register(move |ev: okm_subscribe::RowEvent| {
 ```rust
 // 调用方自己的 put 封装：行写入保持恰好一次，通知顺带发出、尽力而为、绝不重试
 fn save_config(store: &mut impl VirtualStorage, cfg: &Config) -> Result<()> {
-    let t = Collection::new(store.shared_handle());
+    let t = Collection::open(store.shared_handle())?;
     t.put(&cfg.key(), cfg)?;                       // 写：恰好一次
     let _ = METRICS_GAUGE.set(cfg.name(), cfg.ttl_secs()); // 旁路副作用：至多一次
     let _ = notifier.send(cfg.name());             // 旁路副作用：发后即忘

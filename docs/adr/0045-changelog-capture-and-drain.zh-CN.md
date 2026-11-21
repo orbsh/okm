@@ -47,7 +47,7 @@
 
 **10. 这不是第三种事件机制。** 事件层是 `reduce` 和 `subscribe`（ADR-0008）。这里是写集里的一个条目加一个文件：没有回调、没有声明面、除了 §6 的排序之外没有任何投递承诺。
 
-**11. 开关是 store，不在声明面。** `ChangelogStore::new(inner, config)` 让捕获对它上面的一切生效，`Collection::captured(store)` 是登记声明的可失败装配点（ADR-0056 §2）；`Collection::new` 保持无 I/O（ADR-0043）。derive 属性会把一个 per-instance 的策略变成破坏性的声明变更，而这个开关和引擎选择是同一类决定。不加 cargo feature：写者不需要依赖，关掉时每提交一次只多一个 `Option` 判断。
+**11. 开关是 store，不在声明面。** `ChangelogStore::new(inner, config)` 让捕获对它上面的一切生效；**哪些表豁免**是声明的属性——`Document::CAPTURED` 默认开、`#[ok_uncaptured]` 让一张表退出，这个选择作为数据写进表的 meta 行并在 attach 时比对（ADR-0074）。没有会被人忘掉的装配期登记动词：`Collection::open` 是唯一入口，而它就是 attach（ADR-0078）。给 store 级开关加 derive 属性，等于把部署策略变成破坏性的声明变更；这个开关和引擎选择是同一类决定。不加 cargo feature：写者不需要依赖，关掉时每提交一次只多一个 `Option` 判断。
 
 **12. 默认只记键，不记行。** 记录带 `(op, key)`；需要行的读者去读主键条目，键没了就是行没了。连 payload 一起存换来的是历史（每一版，而不只是最后一次写），代价是每次写多付一份行字节；那是另一个决定，不是一个开关。
 

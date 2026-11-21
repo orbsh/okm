@@ -11,7 +11,7 @@
 - document 是集合的声明点——它的 `#[ok_ref]` 已把 key 类型钉死，`Collection<S, K, R>` 三个参数由 document 完全决定，ns 是这个集合的身份的一部分；
 - key 类型不带 ns，意味着**同一个 key 形状可以合法服务多个 document / 多个集合**，各挂各的 ns 号。若 ns 挂 key，这个场景被编译期堵死，只能靠多声明一份同构 key 类型绕行。
 
-derive（`okm-derive`）把 `#[ok_ns(N)]` 编译成 `Document::NS_PREFIX: &'static [u8]`（大端 `[hi, lo]` 两字节，未声明 = 空切片，对应仅做 codec、不落表的 document）。`Collection::new(store)` 不收 ns 参数——拼装点只选 engine，不复述 ns（ns 词汇表是代码，ADR-0002；engine 选择是每拼装点的自由，ADR-0010）。
+derive（`okm-derive`）把 `#[ok_ns(N)]` 编译成 `Document::NS_PREFIX: &'static [u8]`（大端 `[hi, lo]` 两字节，未声明 = 空切片，对应仅做 codec、不落表的 document）。`Collection::open(store)` 不收 ns 参数——拼装点只选 engine，不复述 ns（ns 词汇表是代码，ADR-0002；engine 选择是每拼装点的自由，ADR-0010）。
 
 关系表自己声明 ns，和任何集合一样（ADR-0051）：那对身份就是键，反向方向是同一个 ns 里的一条声明索引。没有 junction 段，也没有双 ns 寄生要推理。
 

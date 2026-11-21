@@ -85,13 +85,13 @@ let rows: Vec<Users> = users.fetch(&target);
 
 ```rust
 // 生产：持久化 LSM
-let users: Collection<_, UserKey, User> = Collection::new(Fjall::open("data/users")?);
+let users: Collection<_, UserKey, User> = Collection::open(Fjall::open("data/users")?)?;
 
 // 不持久化：同一种声明，存储随句柄生灭
-let scratch: Collection<_, UserKey, User> = Collection::new(EphemeralStore::new());
+let scratch: Collection<_, UserKey, User> = Collection::open(EphemeralStore::new())?;
 
 // 归档：同一种声明，另一个引擎实例
-let archive: Collection<_, UserKey, User> = Collection::new(Fjall::open("data/archive")?);
+let archive: Collection<_, UserKey, User> = Collection::open(Fjall::open("data/archive")?)?;
 ```
 
 所有引擎实现同一套行为契约（见 `engine_matrix_test`，每个逻辑测试都对每一臂跑一遍），换引擎不改应用逻辑——存储在哪是实现细节，位置不在类型里。**持久性也是这类细节之一**：`EphemeralStore` 是同一套声明跑在一个「什么都收下、什么都不保证」的引擎上，于是一个模型可以被赋予存储而不被赋予持久性，不必为它长出第二份实现。
@@ -435,7 +435,7 @@ graph.incorporate(x)?;                                              // 行、面
 
 - **命名空间留在代码**——命名空间词汇表是编译期常量，永不落 KV。访问模式本身就在代码里（二进制 key、无分隔符、每段宽度由代码定义），ns 在代码里和整套 key 布局在代码里是同一件事。宏在编译期运行，那时没有 KV 可读——词汇表落 KV 是自举死锁。编号手动分配、append-only、永不复用；见 [ADR-0002](docs/adr/0002-namespace-dictionary.md)。
 - **两套布局 regime**——主键定宽（零解析、热路径）；二级索引变长（判别文本放最前，UTF-8 字节序 = 字典序扫描；主键 ID 挟带在 key 末尾，value 留空）。定宽是**结构**的属性不是**数据**的属性；判据是访问模式：纯点查可 hash 成定宽，需要前缀/范围扫描必须保留原始文本。变长字段用长度前缀 `[len: u16][bytes]` 而非 NUL 结尾（无转义负担）；变长字段**之后**的定长字段失去编译期偏移、退到运行期游标——「定宽前缀 + 变长尾缀」保留大部分零解析收益。hex 稳定性测试对变长 key 照常生效：锁的是**编码方案本身**（前缀布局、长度字节端序、上限），不是具体字节。姓名→id 索引是主流情形，且几乎必然变长——索引存在就是为了回答前缀/范围查询。完整论证见 [KV 存储引擎](https://github.com/orbsh/wiki/blob/main/kv-storage-engine.md)。
-- **宏层刻意无存储**——encode/decode 是纯 `Vec<u8>` 进出函数；引擎选择与生命周期归装配处（`Collection::new(store)`）。这是每个 derive 保持单 item 纯函数的前提。
+- **宏层刻意无存储**——encode/decode 是纯 `Vec<u8>` 进出函数；引擎选择与生命周期归装配处（`Collection::open(store)`）。这是每个 derive 保持单 item 纯函数的前提。
 - **可移植性**：范式作用在字节层、与宿主语言无关——Python dataclass 写同样的 `encode()` 可复现布局（SlateDB 的 Python 绑定经 UniFFI 提供所需原语：`get` / `scan_prefix` + `KeyRange` / `WriteBatch` / 事务）。但可移植有结构性代价：类型错误从编译期移到运行时（`assert` 兜底而非编译器）、编码是字节拼接而非 memcpy 级指针偏移（热路径慢 1–2 个数量级）、装饰器/元类是运行期注册而非编译期展开。范式相同，保障级别由宿主语言能力决定。
 
 

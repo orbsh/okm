@@ -85,13 +85,13 @@ Engine selection happens at the assembly site, one decision per collection:
 
 ```rust
 // production: persistent LSM
-let users: Collection<_, UserKey, User> = Collection::new(Fjall::open("data/users")?);
+let users: Collection<_, UserKey, User> = Collection::open(Fjall::open("data/users")?)?;
 
 // no persistence: the same model, storage that lives as long as the handle
-let scratch: Collection<_, UserKey, User> = Collection::new(EphemeralStore::new());
+let scratch: Collection<_, UserKey, User> = Collection::open(EphemeralStore::new())?;
 
 // archive: the same declaration, another engine instance
-let archive: Collection<_, UserKey, User> = Collection::new(Fjall::open("data/archive")?);
+let archive: Collection<_, UserKey, User> = Collection::open(Fjall::open("data/archive")?)?;
 ```
 
 Every engine implements the same behavioural contract (see `engine_matrix_test`, which runs every logic test against all of them); swapping engines does not touch application logic — where the bytes live is an implementation detail, and location is not in the type. **Durability is one of those details**: `EphemeralStore` is the same declarations over an engine that keeps everything and promises nothing, so a model can be given storage without being given persistence, instead of growing a second implementation of itself.
@@ -420,7 +420,7 @@ Decision records live in [docs/adr/](docs/adr/); implementation status is [docs/
 
 - **Namespace stays in code** — the namespace vocabulary is compile-time constants, never stored in KV. The access pattern itself lives in code (binary keys, no separators, per-segment widths defined by code), so putting ns in code is the same act as putting the whole key layout in code. Macros run at compile time, when there is no KV to read — a vocabulary in KV would be a bootstrap deadlock. Numbers are assigned by hand, append-only, never reused; see [ADR-0002](docs/adr/0002-namespace-dictionary.md).
 - **Two layout regimes** — primary keys are fixed-width (zero parsing, hot path); index entries are variable-length (discriminating text up front, so UTF-8 byte order = dictionary scan order; the primary-key ID rides at the key tail and the value is left empty). Width is a property of *structure*, not *data*; the test is access pattern: point lookups only may hash to fixed width, while anything needing prefix/range scan must keep raw text. Variable-length fields use a length prefix `[len: u16][bytes]` rather than NUL termination (no escaping burden); a fixed-width field *after* a variable-length one loses its compile-time offset and falls back to a run-time cursor — "fixed-width prefix + variable tail" keeps most of the zero-parsing benefit. Hex stability tests still apply to variable-length keys: what they lock is the **encoding scheme itself** (prefix layout, length byte order, limits), not specific bytes. The name→id index is the mainstream case and is almost always variable-length, since an index exists to answer prefix/range queries. The full argument is in [KV Storage Engine](https://github.com/orbsh/wiki/blob/main/kv-storage-engine-en.md).
-- **Macro layer is deliberately storage-free** — encode/decode are pure `Vec<u8>` in/out functions; engine choice and lifecycle belong to the assembly site (`Collection::new(store)`). This is what keeps each derive a single-item pure function.
+- **Macro layer is deliberately storage-free** — encode/decode are pure `Vec<u8>` in/out functions; engine choice and lifecycle belong to the assembly site (`Collection::open(store)`). This is what keeps each derive a single-item pure function.
 - **Portability**: the paradigm acts at the byte layer and is independent of the host language — a Python dataclass with the same `encode()` reproduces the layout (SlateDB's Python bindings via UniFFI provide the needed primitives: `get` / `scan_prefix` + `KeyRange` / `WriteBatch` / transactions). Portability has a structural cost, though: type errors move from compile time to run time (`assert` instead of the compiler), encoding is byte concatenation rather than memcpy-level pointer offsets (1–2 orders of magnitude slower on hot paths), and decorators/metaclasses register at run time instead of expanding at compile time. Same paradigm, guarantee level set by the host language's capability.
 
 ## Related docs

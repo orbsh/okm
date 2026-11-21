@@ -146,12 +146,14 @@ be built on the decode rather than beside it.
 callback, no declaration surface, no delivery promise beyond the ordering in §6.
 
 **11. The switch is the store, not the declaration.** `ChangelogStore::new(inner,
-config)` turns capture on for everything above it, and `Collection::captured(store)`
-is the fallible assembly point that registers a declaration (ADR-0056 §2);
-`Collection::new` stays I/O-free (ADR-0043). A derive attribute would make a
-store-wide policy a breaking declaration change, and the switch is the same kind of
-decision as engine choice. No cargo feature: the writer needs no dependency, and the
-cost when off is one `Option` check per commit.
+config)` turns capture on for everything above it; WHICH tables are exempt is a property
+of the declaration — `Document::CAPTURED` is true by default, `#[ok_uncaptured]` opts a
+table out, and the choice travels as data in the table's meta row, compared at attach
+(ADR-0074). There is no assembly-time registration verb to forget: `Collection::open` is
+the only way in, and it attaches (ADR-0078). A derive attribute for the store-wide switch
+would make a deployment policy a breaking declaration change, and the switch is the same
+kind of decision as engine choice. No cargo feature: the writer needs no dependency, and
+the cost when off is one `Option` check per commit.
 
 **12. Default is key-only. A payload copy is a different feature.** The record
 carries `(op, key)`; a reader that needs the row reads the primary entry, and a
