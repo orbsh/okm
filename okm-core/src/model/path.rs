@@ -41,7 +41,7 @@
 //! the path's identity); this encoding is the form paths take where they
 //! are DATA — a declaration carrier or an exported schema.
 
-use crate::Value;
+use okm_value::Variant as Value;
 
 /// One path component.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -204,7 +204,7 @@ impl Path {
     ///   an object resolves to NO values — never an error (the same
     ///   "absent attribute values are empty results" rule the attribute
     ///   faces carry).
-    pub fn resolve<'a>(&self, document: &'a crate::Dict) -> Vec<&'a Value> {
+    pub fn resolve<'a>(&self, document: &'a okm_value::Dict) -> Vec<&'a Value> {
         let mut out = Vec::new();
         walk_map(document, &self.components, &mut out);
         out
@@ -283,7 +283,7 @@ impl Path {
     }
 }
 
-fn walk_map<'a>(map: &'a crate::Dict, comps: &[Component], out: &mut Vec<&'a Value>) {
+fn walk_map<'a>(map: &'a okm_value::Dict, comps: &[Component], out: &mut Vec<&'a Value>) {
     let Some((head, rest)) = comps.split_first() else {
         return; // a document is not a value
     };
@@ -355,7 +355,7 @@ fn flatten_scalars(v: &Value) -> Vec<&Value> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::Dict;
+    use okm_value::Dict;
 
     fn obj(pairs: &[(&str, Value)]) -> Value {
         let mut m = Dict::new();
@@ -365,7 +365,7 @@ mod tests {
         Value::Map(m)
     }
 
-    fn doc(pairs: &[(&str, Value)]) -> crate::Dict {
+    fn doc(pairs: &[(&str, Value)]) -> okm_value::Dict {
         let mut m = Dict::new();
         for (k, v) in pairs {
             m.insert((*k).to_string(), v.clone());

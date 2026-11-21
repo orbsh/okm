@@ -11,8 +11,8 @@
 //! function) runs in the host language at registration time and returns
 //! ENCODED bytes; this module only manages the entry lifecycle.
 
-use crate::path::Path;
 use crate::{Dict, Value};
+use okm_core::model::path::Path;
 use okm_core::schema::CollectionSchema;
 use okm_core::storage::VirtualStorage;
 
@@ -140,15 +140,15 @@ impl AccessMethod {
                 for c in path.components() {
                     text.push('/');
                     match c {
-                        crate::path::Component::Field(n) => {
+                        okm_core::model::path::Component::Field(n) => {
                             text.push_str("f:");
                             text.push_str(n);
                         }
-                        crate::path::Component::Index(i) => {
+                        okm_core::model::path::Component::Index(i) => {
                             text.push_str("i:");
                             text.push_str(&i.to_string());
                         }
-                        crate::path::Component::Key(b) => {
+                        okm_core::model::path::Component::Key(b) => {
                             text.push_str("k:");
                             for byte in b {
                                 text.push_str(&format!("{byte:02x}"));

@@ -1,6 +1,6 @@
 # 0076 — The mechanism moves under the declaration; the query surface stays two
 
-Status: decided 2026-11-21, not yet implemented.
+Status: decided 2026-11-21. §1 and §2 implemented; §3 in progress — `encode` and `path` moved into core.
 
 ## Context
 

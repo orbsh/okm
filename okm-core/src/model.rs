@@ -20,6 +20,7 @@
 )]
 
 pub mod document;
+pub mod encode;
 pub mod entries;
 pub mod entry_layout;
 pub mod faces;
@@ -33,6 +34,7 @@ pub mod layout;
 pub mod meta;
 pub mod obj_vocab;
 pub mod parts;
+pub mod path;
 pub mod prefix;
 pub mod presets;
 pub mod reduce;

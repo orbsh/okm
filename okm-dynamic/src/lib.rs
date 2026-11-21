@@ -44,10 +44,8 @@
 pub mod arrow;
 mod cluster;
 mod collection;
-mod encode;
 mod graph;
 mod index;
-mod path;
 mod plan;
 mod plan_fields;
 mod reduce;
@@ -76,7 +74,6 @@ pub use cluster::{
     Selection, WriteReport, intern_kind, interned_kinds, interned_label,
 };
 pub use collection::DynamicCollection;
-pub use encode::{encode_fields, encode_key, encode_payload};
 pub use graph::{DynEdge, DynEdgeStream, Graph, edge_face_prefix, edge_step, predicate_id_in};
 pub use index::{
     AccessMethod, AccessMethodKind, Admits, FuncDerive, decode_includes, index_entries,
@@ -84,8 +81,9 @@ pub use index::{
     scan_access_method_keys,
 };
 pub use okm_core::decode::{decode_key, decode_payload, resolve_vocab_labels};
+pub use okm_core::model::encode::{encode_fields, encode_key, encode_payload};
 pub use okm_core::model::graph::{Direction, EdgeStep, HopHead};
-pub use path::{Component, Path};
+pub use okm_core::model::path::{Component, Path};
 pub use plan::{PlannedDelete, PlannedPut, PlannedWrite, Stored, decode_stored};
 pub use plan_fields::{
     PlannedFields, VocabMirror, fields_from_frames, fields_from_frames_probing, fields_key,
@@ -96,119 +94,3 @@ pub use reduce::{
     scan_reduces,
 };
 pub use write::WritePayload;
-
-/// Look up a field's value, rejecting unknown/missing names up front —
-/// both sides of every encode walk this gate, so byte layout and error
-/// reporting stay in one place.
-pub(crate) fn field_pair<'a>(
-    field: &okm_core::schema::FieldSchema,
-    map: &'a Dict,
-) -> Result<&'a Value, CodecError> {
-    let name = field.name.as_str();
-    let schema_ty = field.ty;
-    let v = map
-        .get(name)
-        .ok_or_else(|| CodecError::MissingField(name.to_string()))?;
-    let ok = match (schema_ty, v) {
-        (okm_core::field::FieldType::U8, Value::U8(_))
-        | (okm_core::field::FieldType::U16, Value::U16(_))
-        | (okm_core::field::FieldType::U32, Value::U32(_))
-        | (okm_core::field::FieldType::U64, Value::U64(_))
-        | (okm_core::field::FieldType::FixedBytes, Value::Bytes(_))
-        | (okm_core::field::FieldType::Str, Value::Str(_))
-        // Wrapper kinds carry their parameters in the schema (`Quant<P>`,
-        // `Offset<B>`) and the codec applies them, so the value tree holds the
-        // LOGICAL value — the same shape a decoded row has. A storage-form
-        // contract would make `Quant` indistinguishable from a plain integer.
-        | (okm_core::field::FieldType::Quant(_), Value::F64(_))
-        | (okm_core::field::FieldType::Offset(_), Value::I64(_))
-        | (okm_core::field::FieldType::VarInt, Value::U64(_))
-        // ADR-0032: the id, not the label. An id is BYTES of the field's declared
-        // width (`Vocab<N>`: one byte to sixteen), so `Bytes` of exactly that width
-        // is the general form and `U8` the one-byte convenience. Demanding `U8`
-        // alone made every `Vocab<u16>`-and-wider field unwritable through this
-        // path while the encoder below already accepted its id bytes.
-        | (okm_core::field::FieldType::Vocab(_), Value::U8(_)) => true,
-        (okm_core::field::FieldType::Vocab(_), Value::Bytes(b)) if b.len() == field.width => true,
-        _ => false,
-    };
-    if ok {
-        Ok(v)
-    } else {
-        Err(CodecError::TypeMismatch {
-            field: name.to_string(),
-            expected: schema_predicate_vocab_name(schema_ty),
-        })
-    }
-}
-
-fn schema_predicate_vocab_name(ty: okm_core::field::FieldType) -> &'static str {
-    match ty {
-        okm_core::field::FieldType::U8 => "U8",
-        okm_core::field::FieldType::U16 => "U16",
-        okm_core::field::FieldType::U32 => "U32",
-        okm_core::field::FieldType::U64 => "U64",
-        okm_core::field::FieldType::FixedBytes => "bytes",
-        okm_core::field::FieldType::Uuid4 | okm_core::field::FieldType::Uuid7 => "bytes (uuid)",
-        okm_core::field::FieldType::Str => "string",
-        okm_core::field::FieldType::Bytes => "bytes",
-        okm_core::field::FieldType::VarInt => "U64 (VarInt storage form)",
-        okm_core::field::FieldType::Quant(_) => "U64 (fixed-point storage form)",
-        okm_core::field::FieldType::Vocab(_) => {
-            "the vocab id (U8, or id bytes of the declared width)"
-        }
-        okm_core::field::FieldType::Offset(_) => "U64 (biased storage form)",
-        okm_core::field::FieldType::Vector(_) => "bytes (flat LE vector)",
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn field_pair_rejects_mismatches() {
-        let mut m = Dict::new();
-        m.insert("a".into(), Value::U32(1));
-        assert!(field_pair(&field("a", okm_core::field::FieldType::U32, 4), &m).is_ok());
-        assert!(matches!(
-            field_pair(&field("a", okm_core::field::FieldType::U64, 8), &m),
-            Err(CodecError::TypeMismatch { .. })
-        ));
-        assert!(matches!(
-            field_pair(&field("b", okm_core::field::FieldType::U32, 4), &m),
-            Err(CodecError::MissingField(_))
-        ));
-    }
-
-    fn field(
-        name: &str,
-        ty: okm_core::field::FieldType,
-        width: usize,
-    ) -> okm_core::schema::FieldSchema {
-        okm_core::schema::FieldSchema {
-            name: name.to_string(),
-            ty,
-            offset: 0,
-            width,
-            tag: None,
-            default: None,
-            expect_len: None,
-        }
-    }
-
-    /// A `Vocab<u16>` id is two bytes: the pair rule had to admit them, or a
-    /// categorical field wider than a byte could not be written at all.
-    #[test]
-    fn a_wide_vocab_id_is_admitted_by_its_width() {
-        let mut m = Dict::new();
-        m.insert("v".into(), Value::Bytes(vec![0, 7]));
-        let vocab = field("v", okm_core::field::FieldType::Vocab(0x21), 2);
-        assert!(field_pair(&vocab, &m).is_ok());
-        m.insert("v".into(), Value::Bytes(vec![0, 7, 0]));
-        assert!(matches!(
-            field_pair(&vocab, &m),
-            Err(CodecError::TypeMismatch { .. })
-        ));
-    }
-}
