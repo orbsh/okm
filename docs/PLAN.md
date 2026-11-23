@@ -22,6 +22,8 @@ Design decisions live in `docs/adr/`; this file is the index — what shipped, w
 - [x] Phase 10 — edge keys via slots: retire the direction-bit niche (high priority) — ADR-0001
 - [x] Slot shapes: fixed face / counting family — ADR-0030
 - [x] Graph edge: one declaration, a handle, a predicate vocabulary — ADR-0010, ADR-0017
+- [x] 2026-11-14 — a grouping of edges is a set of rows, not a node: a cluster is the hyperedge (`0x0C` cluster row, `0x0D` edge member, `0x0A`/`0x0B` kind vocabulary), one row per member, so an n-ary relation costs N rows instead of a star of reified nodes and keeps shared membership, set identity and per-edge position — ADR-0066, ADR-0067
+- [x] 2026-11-17 — a cluster can hold nodes: faces `0x12`/`0x13` give entity sets their own members, so an entity with no edge yet (and an empty community) can be a member, and "which groups is this entity in" stops costing one scan per incident edge — ADR-0068
 - [x] Embedded documents (2026-09-17, shipped)
 - [x] Terminology (2026-09-17, decided)
 - [x] Parquet Variant export (shipped, 2026-09-17) — ADR-0012, ADR-0022
@@ -99,7 +101,6 @@ Design decisions live in `docs/adr/`; this file is the index — what shipped, w
 - [ ] Optimistic CAS write (`save_with_cas`) — deferred 2026-10-31, no owner
 - [ ] `okm-series` has no caller inside the workspace: the engine never writes to it. Its one consumer is `bindings/okm-series-python`, which CI accepts through a wheel round trip (`series-wheel`), so the crate is exercised and shipped — just not used by anything the store runs — deferred 2026-10-31
 - [ ] A bitmap index for set membership (Roaring) — recorded, not designed; reopens on a measured reuse ratio — `docs/ideas/bitmap-index.md`
-- [ ] A native n-ary relation carrier — recorded, not designed; reopens on a query distribution where N≥3 relations are the normal case — `docs/ideas/hypergraph.md`
 
 ## Closed — decided against
 
