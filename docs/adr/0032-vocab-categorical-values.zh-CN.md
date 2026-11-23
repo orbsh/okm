@@ -3,6 +3,7 @@
 **状态**：已接受（2026-10-20）——**已实现**。`Vocab<N>` 端到端可用（derive 识别、写路径
 intern、读路径补名、每个声明字段一对词表），`Enum<T>` / `EnumTag` / `FieldType::Enum` 已
 删除：需要枚举语义的消费方自己包一层 Rust enum，在边界处转换。
+**2026-11-23 更新**：下面记的「欠 binding 一次 `Vocab` 暴露」撤回，不是补上了——binding 本来就依赖 `okm-core`（`okm-steel` 还通过 `obj_vocab` 读谓词词表），所以这里不需要任何导出机制；缺的只是一层「按名字进、按名字出」的面，而没有任何 binding 宿主声明 `Vocab` 字段。树里所有 `Vocab<N>` 都是 Rust 侧（`krystallizer` 的节点 kind、以及它日志的 event/source）。
 **日期**：2026-10-20
 **英文版**：[0032-vocab-categorical-values.md](0032-vocab-categorical-values.md)
 **依赖**：ADR-0012（字段名词汇表）、ADR-0017 §3（token 词汇表）、ADR-0030（固定面与计数族）
@@ -114,4 +115,4 @@ intern、读路径补名、每个声明字段一对词表），`Enum<T>` / `Enum
   名称表：搬面必须**复制**条目，忘了这一点动态段读取会静默丢字段（未知 id 丢字段）。
 - 因此迁移只剩分类值这一件事，而且**不可静默**：旧的一字节 `Enum` tag 解码不报错、但指向另一个
   分类，所以改写发生在 layout version 提升之后——一次布局变更，不做兼容垫片。
-- 欠：`okm-python` / `okm-steel` 对 `Vocab` 的暴露（binding 现在只看到存储形态）。
+- 2026-11-23 撤回：`okm-python` / `okm-steel` 对 `Vocab` 的暴露。binding 看到的是存储形态（`okm-python` 把一个 `Vocab` 字段按它的 `u8` id 收下，那本来就是文档写明的线上形态），并且保持这样，因为更好用的那层没有消费者：没有任何 binding 宿主声明分类字段。那是一层没有调用方的面——而面是便宜的那部分，它需要的 intern 动词才是活。

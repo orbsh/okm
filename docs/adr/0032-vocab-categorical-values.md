@@ -5,6 +5,7 @@
 declared field), and `Enum<T>` / `EnumTag` / `FieldType::Enum` are removed: a
 consumer that wants enum semantics wraps the field in its own Rust enum and
 converts at the edge.
+**Update 2026-11-23**: the `okm-python` / `okm-steel` exposure noted as owed below is withdrawn, not built — the bindings already depend on `okm-core` (and `okm-steel` reads the predicate vocabulary through `obj_vocab`), so nothing here needs an export mechanism; what was missing was a name-in/name-out surface for a `Vocab` field, and no binding host declares one. Every `Vocab<N>` in the tree is Rust (`krystallizer`'s node kind and its log's event/source).
 **Date**: 2026-10-20
 **Chinese**: [0032-vocab-categorical-values.zh-CN.md](0032-vocab-categorical-values.zh-CN.md)
 **Depends on**: ADR-0012 (field-name vocabulary), ADR-0017 §3 (token
@@ -167,5 +168,9 @@ use it today (field names 0x02/0x03, predicate/kind tokens 0x04/0x05).
   one-byte `Enum` tags decode without error into a DIFFERENT category, so the
   rewrite happens under a layout version bump — one layout change, no
   compatibility shim.
-- Owed: `okm-python` / `okm-steel` exposure of `Vocab` (the bindings currently
-  see the storage form).
+- Withdrawn 2026-11-23: `okm-python` / `okm-steel` exposure of `Vocab`. The
+  bindings see the storage form (`okm-python` takes a `Vocab` field as its `u8`
+  id, which is the documented wire form), and it stays that way because there is
+  no consumer for the friendlier one: no binding host declares a categorical
+  field. It would be a surface with no caller, and the surface is the cheap part —
+  the interning verb it would need is where the work would go.
