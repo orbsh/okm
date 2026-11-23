@@ -83,6 +83,7 @@ Design decisions live in `docs/adr/`; this file is the index — what shipped, w
 - [x] 2026-11-20 — the ephemeral engine is a packed B+tree over chunked tables and okm's non-persistent mode (the same declarations, durability chosen at assembly); it is an arm of the engine matrix — ADR-0072
 - [x] 2026-11-20 — the matrix's cheap zero-fs default is the ephemeral engine (`TestStore::default()`), slatedb stays as the arm that disagrees and is reached by asking for it or by running `matrix()`, and it stays evidence only while the suite asks `VirtualStorage` rather than the fixture — ADR-0073
 - [x] 2026-11-21 — a generation change moves one table without stopping it: the generation is one bit of the address (`LAYOUT_VERSION`'s parity in the high bit of the ns, `ns < 0x8000`, so offsets and slots do not move), each generation keeps its own record row at `[ns|parity][0x1F]` and attach takes the larger version as current — no pointer row, no seal, the flip is one put; the old generation serves every read while the migrator copies its range under the new declaration and replays the old log's tail into it, then a microsecond quiesce, then the vacuum. Work it needs: the derive's `ns < 0x8000` assertion and the parity in the const header, `TablePlan::compile` deriving the bit from `schema.layout_version`, attach probing both parities, and the subcommand (copy → replay → flip → vacuum) — ADR-0075. Landed as `okm-log migrate` (verdict, copy, tail, flip) and `okm-log vacuum` (the old range, its record and its log directory); the quiesce is the caller's — `--root` given means the tail is replayed, absent means the caller quiesced the table itself
+- [x] 2026-11-23 — the migrated table is verified before the flip: `compare_generations` reads both ranges through their own declarations and refuses a row the new one lacks, a field whose value differs, or a field the new declaration dropped; it runs in `migrate` before the record is written and in `vacuum` before the first key is deleted, so both irreversible steps sit behind a comparison that already passed. `vacuum --dry-run` answers the same question without deleting anything — ADR-0075
 
 ## Packaging and gates
 
@@ -98,8 +99,12 @@ Design decisions live in `docs/adr/`; this file is the index — what shipped, w
 - [ ] Optimistic CAS write (`save_with_cas`) — deferred 2026-10-31, no owner
 - [ ] Interning exposed to the bindings — deferred 2026-10-31 — ADR-0032
 - [ ] `okm-series` has no caller inside the workspace: the engine never writes to it. Its one consumer is `bindings/okm-series-python`, which CI accepts through a wheel round trip (`series-wheel`), so the crate is exercised and shipped — just not used by anything the store runs — deferred 2026-10-31
-- [x] A schema-aware index layer (block index or custom ART) — closed 2026-11-23: the ceiling on a 200 000-row fjall corpus is 1.20× end to end with the search itself at 0.3 % of a query, and every option owns the engine — ADR-0080
 - [ ] A bitmap index for set membership (Roaring) — recorded, not designed; reopens on a measured reuse ratio — `docs/ideas/bitmap-index.md`
 - [ ] A native n-ary relation carrier — recorded, not designed; reopens on a query distribution where N≥3 relations are the normal case — `docs/ideas/hypergraph.md`
+
+## Closed — decided against
+
+Kept because the reasons are the useful part: each of these was measured or argued to a verdict, and the verdict does not need re-deriving. They are not a backlog — nothing here is waiting for a slot.
+
+- [x] A schema-aware index layer (block index or custom ART) — closed 2026-11-23: the ceiling on a 200 000-row fjall corpus is 1.20× end to end with the search itself at 0.3 % of a query, and every option owns the engine — ADR-0080
 - [x] SurrealKV as an `okm-async` backend — closed 2026-11-23: the capabilities that distinguish it are the ones nothing here asks for (engine MVCC snapshots belong to the changelog, in-engine encryption belongs to the volume), while it costs +2.86 MB, 150 transitive crates and a Tokio-only commit — ADR-0064
-- [x] A migrated table is verified before the flip: `compare_generations` reads both ranges through their own declarations and refuses a row the new one lacks, a field whose value differs, or a field the new declaration dropped — it runs in `migrate` before the record is written and in `vacuum` before the first key is deleted, so both irreversible steps sit behind a comparison that already passed — ADR-0075
