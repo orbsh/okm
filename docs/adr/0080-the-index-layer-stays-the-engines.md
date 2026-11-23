@@ -2,7 +2,7 @@
 
 # ADR-0080 — The index layer stays the engine's, because the cost is the engine
 
-**Status:** Decided 2026-11-23 (no code). Closes the two proposals recorded 2026-11-12. **Update 2026-11-23, the variable-width side:** the split this ADR could not answer when it closed now has a shape — the improved encoding for keys whose layout is predictable from the address, the present framing for keys whose trailing field is variable. It is a per-declaration split known at compile time, not a runtime branch, and it removes the premise objection while moving neither number (§1, §3).
+**Status:** Decided 2026-11-23 (no code). Closes the two proposals recorded 2026-11-12. **Update 2026-11-23, the variable-width side:** the split this ADR could not answer when it closed now has a shape — the improved encoding for keys whose layout is predictable from the address, the present framing for keys whose trailing field is variable. It is a per-declaration split known at compile time, not a runtime branch, and it removes the premise objection while moving neither number (§1, §3). The census is in `docs/ideas/schema-aware-index.md`: across five repos, 78 index declarations, 13 (16.7 %) carry a variable-width field in their segment, none in their key, and the workload this ADR's measurement used is entirely on the improved side — so the hybrid narrows coverage and leaves the 1.20× ceiling where it was.
 
 ## 1. What was proposed
 
