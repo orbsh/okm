@@ -2,13 +2,15 @@
 
 # ADR-0080 — The index layer stays the engine's, because the cost is the engine
 
-**Status:** Decided 2026-11-23 (no code). Closes the two proposals recorded 2026-11-12.
+**Status:** Decided 2026-11-23 (no code). Closes the two proposals recorded 2026-11-12. **Update 2026-11-23, the variable-width side:** the split this ADR could not answer when it closed now has a shape — the improved encoding for keys whose layout is predictable from the address, the present framing for keys whose trailing field is variable. It is a per-declaration split known at compile time, not a runtime branch, and it removes the premise objection while moving neither number (§1, §3).
 
 ## 1. What was proposed
 
 Two external proposals, one premise, two layers: an in-process schema-aware prefix tree, and a schema-aware block index inside the SSTable. Both argue that OKM locks its key layout at compile time — `ns` is constant, index field widths are known per access method, `segment_start` / `key_prefix_width` are already measuring the layout rather than assuming it — so an index need not pay the generality tax of "I do not know what a key looks like".
 
 The premise holds for fixed-width keys and weakens for the variable-width trailing `Str` field: that field is bare UTF-8 with no framing, and a truncated `key(...)` prefix carries only part of the primary key (`PrefixKey` has `taken < KEY_LEN` for exactly this). For such entries the path no longer reproduces the key, and everything argued underneath "the bytes are known from the address" weakens to "roughly known". The proposals do not say what happens on that side.
+
+The split itself is available, and it is per declaration rather than per row: the derive knows the field widths, so an index either has `key_prefix_width() == KEY_LEN` (fully predictable) or it does not, and `model/index.rs` already reads exactly that number when it splits an entry into `segment` + a `tail` of `taken` bytes. So the encoding can be chosen where the declaration is: fully predictable keys take the improved layout, keys with a variable `Str` tail keep today's framing. There is no lower KV to hand the second case to — an index entry is a key in the same keyspace, written through the same `VirtualStorage`, so "keep the present scheme" *is* the delegation. What this does not do is move either number: the improved set is a subset of what §2 measured, so the ceiling stays at or below 1.20×, and none of the block-layout items become OKM's to change.
 
 ## 2. What was measured
 
