@@ -99,7 +99,6 @@ Design decisions live in `docs/adr/`; this file is the index — what shipped, w
 ## Open
 
 - [ ] Optimistic CAS write (`save_with_cas`) — deferred 2026-10-31, no owner
-- [ ] `okm-series` has no caller inside the workspace: the engine never writes to it. Its one consumer is `bindings/okm-series-python`, which CI accepts through a wheel round trip (`series-wheel`), so the crate is exercised and shipped — just not used by anything the store runs — deferred 2026-10-31
 - [ ] A bitmap index for set membership (Roaring) — recorded, not designed; reopens on a measured reuse ratio — `docs/ideas/bitmap-index.md`
 
 ## Closed — decided against

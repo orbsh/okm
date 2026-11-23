@@ -6,6 +6,11 @@
 //! without a schema. A log may declare ONE partition field, whose value becomes a
 //! directory between the bucket and the parts.
 //!
+//! Who uses it: `bindings/okm-series-python` — the PyO3 extension CI builds a wheel from,
+//! installs into a venv and accepts with `accept_embedded.py`. Nothing in this workspace
+//! depends on the crate: the engine never writes here, so a change to it cannot reach the
+//! store by accident, and its own tests plus that wheel round trip are the whole gate.
+//!
 //! What this crate is NOT: a queue (no ack, no redelivery, no per-consumer cursor), a
 //! table (no keys, faces, reduces or changelog), or a time-series database (no
 //! aggregation). It is the append-and-read half, and the reason it can be a file
