@@ -119,10 +119,11 @@ fn migrate(args: &[String]) -> Result<i32, String> {
     let report =
         okm_core::changelog::migrate::migrate_table(&store, root.as_deref(), &table, &target)?;
     println!(
-        "layout v{} → v{}: {} rows copied, {} segments replayed\n  from {}\n  to   {}",
+        "layout v{} → v{}: {} rows copied, {} verified, {} segments replayed\n  from {}\n  to   {}",
         report.from,
         report.to,
         report.copied,
+        report.verified,
         report.replayed,
         hex_of(&report.from_address),
         hex_of(&report.to_address)
@@ -180,8 +181,8 @@ fn vacuum(args: &[String]) -> Result<i32, String> {
         return Ok(0);
     }
     println!(
-        "vacuumed layout v{}: {} keys, {} segments retired — v{} stays",
-        report.removed, report.keys, report.log_segments, report.kept
+        "vacuumed layout v{}: {} keys, {} segments retired, {} rows verified — v{} stays",
+        report.removed, report.keys, report.log_segments, report.verified, report.kept
     );
     Ok(0)
 }

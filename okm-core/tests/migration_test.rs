@@ -16,6 +16,7 @@
 
 use okm_core::changelog::migrate::{migrate_table, vacuum_generation};
 use okm_core::model::dynamic_collection::DynamicCollection;
+use okm_core::okm_value::{Dict, Variant};
 use okm_core::schema::CollectionSchema;
 use okm_core::testing::TestStore;
 use okm_core::{Collection, Document, DocumentEncode, KeyEncode};
@@ -76,6 +77,7 @@ fn a_table_moves_to_the_next_generation_in_place() {
 
     assert_eq!((report.from, report.to), (1, 2));
     assert_eq!(report.copied, 2, "both rows came across");
+    assert_eq!(report.verified, 2, "and both were compared before the flip");
     assert_ne!(
         report.from_address, report.to_address,
         "one bit of the address separates the two ranges"
@@ -186,4 +188,37 @@ fn a_second_vacuum_is_the_same_answer() {
     let again = vacuum_generation(&store, None, &moved.to_address).expect("re-run");
     assert_eq!(again.removed, 0, "nothing older is left to remove");
     assert_eq!(again.kept, 2);
+}
+
+#[test]
+fn the_vacuum_refuses_when_the_old_range_holds_a_row_the_new_one_lacks() {
+    let store = seeded();
+    let target = CollectionSchema::of::<K, Gen2>();
+    let moved = migrate_table(&store, None, <Gen1 as Document>::NS_PREFIX, &target)
+        .expect("migrate generation 1 to 2");
+
+    // A row written into the OLD range after the migration — the case where deleting that range
+    // would be the one irreversible way to lose data.
+    let old = DynamicCollection::new(
+        store.clone(),
+        120,
+        CollectionSchema::of::<K, Gen1>(),
+        Vec::new(),
+    );
+    let mut late = Dict::new();
+    late.insert("level".to_string(), Variant::U32(9));
+    old.put(&K { id: 3 }.encode(), &late)
+        .expect("write into the old range");
+
+    let err = vacuum_generation(&store, None, &moved.to_address).expect_err("the gate holds");
+    assert!(
+        err.contains("not in the new one") && err.contains("vacuum refused"),
+        "the refusal names what is missing and what it refused: {err}"
+    );
+
+    // And the old range is untouched by the refusal.
+    assert!(
+        old.fetch(&K { id: 3 }.encode()).expect("fetch").is_some(),
+        "a refused vacuum deletes nothing"
+    );
 }
