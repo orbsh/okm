@@ -1,7 +1,7 @@
-# ADR-0064: SurrealKV is not a backend, for now
+# ADR-0064: SurrealKV is not a backend
 
 Date: 2026-11-12
-Status: DEFERRED 2026-11-12
+Status: DEFERRED 2026-11-12; **closed 2026-11-23**. The deferral became a closure once the four capabilities that distinguish this engine were each put against an okm surface: engine-level MVCC snapshots and in-engine encryption have no consumer here (§4), correctness of the coverage was never in question (§2, §4 third point), and the two triggers that remain (§6) are new workload decisions, not a queue this ADR is waiting in.
 
 **Depends on:** ADR-0056 (the segment is the migration path — where `surrealkv` is qualified as a candidate engine), ADR-0059 (the async face is a crate — the boundary any non-core engine has to live behind), ADR-0028 (the in-browser `VirtualStorage` family, whose §Withdrawal settled the browser half)
 
@@ -50,7 +50,7 @@ Caveats, because they bound the table: one machine (Zen 5), single process, no c
 
 ## 3. Decision
 
-SurrealKV is not integrated at this time. No dependency, no feature flag, no adapter: a flag that exists is a flag that has to be built, tested and kept building. It remains what ADR-0056 recorded — an engine that qualifies on capability — and nothing is built against that qualification.
+SurrealKV is not part of this project's plans. No dependency, no feature flag, no adapter: a flag that exists is a flag that has to be built, tested and kept building. It remains what ADR-0056 recorded — an engine that qualifies on capability — and nothing is built against that qualification, on the same reasoning that keeps any other qualified capability out of the tree: qualifying is not the same as being wanted.
 
 ## 4. Why
 
@@ -74,7 +74,7 @@ Three things stay closed whatever happens next:
 
 ## 6. What would reopen it
 
-Any one of these, with a measurement in hand:
+Reopening means a new decision with a measurement, not the resumption of a standing deferral — this ADR is closed, and the terms below are what a future proposal would have to clear. Any one of them, with a measurement in hand:
 
 1. **A multi-process or multi-instance reader that needs a snapshot while another process writes.** That is the one capability nothing else in the stack provides and changelog watermarks cannot synthesize.
 2. **Encryption at rest that has to live inside the engine** — a platform that will not encrypt volumes but will let the application hold a key.
@@ -83,8 +83,8 @@ Any one of these, with a measurement in hand:
 
 The first is a shape question for ADR-0056 before it is an engine question: a snapshot API is a new surface, and it would be asked of the store contract either way.
 
-## 7. This is a deferral, not a rejection of the design
+## 7. Not a rejection of the design, and no longer a deferral
 
-Nothing here says the engine is wrong. Its design is the reason it is the one candidate recorded in ADR-0056, its commit/read split is what makes it pleasant behind `VirtualStorageAsync`, and its browser story is the only real answer to that question among the four. The record argues about cost and about filled slots: 2.3× fjall's link cost and 60 more crates are a reason not to add it before a workload wants what only it has, which is not the same as a reason to refuse it.
+Nothing here says the engine is wrong. Its design is the reason it was the one candidate recorded in ADR-0056, its commit/read split is what would make it pleasant behind `VirtualStorageAsync`, and its browser story is the only real answer to that question among the four. What is closed is the expectation that okm will spend on it: 2.3× fjall's link cost and 60 more crates buy four capabilities, two of which no okm surface asks for (versioned snapshots that the changelog already owns, encryption that the volume already owns) and two of which are already held by engines that are cheaper at it (§2).
 
-So the decision is dated and revisitable on the four triggers above, and the measurements stay in this ADR so the next round starts from them rather than from the vendor's table.
+The measurements stay in this ADR so the next round starts from them rather than from the vendor's table — that is what this record is for now: the price list, not a pending decision.
