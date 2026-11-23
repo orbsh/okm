@@ -98,7 +98,7 @@ Design decisions live in `docs/adr/`; this file is the index — what shipped, w
 - [ ] Optimistic CAS write (`save_with_cas`) — deferred 2026-10-31, no owner
 - [ ] Interning exposed to the bindings — deferred 2026-10-31 — ADR-0032
 - [ ] `okm-series` has no caller inside the workspace: the engine never writes to it. Its one consumer is `bindings/okm-series-python`, which CI accepts through a wheel round trip (`series-wheel`), so the crate is exercised and shipped — just not used by anything the store runs — deferred 2026-10-31
-- [ ] A schema-aware index layer (block index or custom ART) — recorded and measured, not designed; the ceiling on a 200 000-row fjall corpus is 1.20× — `docs/ideas/schema-aware-index.md`
+- [x] A schema-aware index layer (block index or custom ART) — closed 2026-11-23: the ceiling on a 200 000-row fjall corpus is 1.20× end to end with the search itself at 0.3 % of a query, and every option owns the engine — ADR-0080
 - [ ] A bitmap index for set membership (Roaring) — recorded, not designed; reopens on a measured reuse ratio — `docs/ideas/bitmap-index.md`
 - [ ] A native n-ary relation carrier — recorded, not designed; reopens on a query distribution where N≥3 relations are the normal case — `docs/ideas/hypergraph.md`
 - [ ] SurrealKV as an `okm-async` backend — measured, not started: +2.86 MB, 150 transitive crates, and `commit()` panics without a Tokio runtime — ADR-0064
