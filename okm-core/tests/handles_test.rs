@@ -76,8 +76,6 @@ pub struct Employment {
     pub weight: u64,
 }
 
-const NS: u16 = 0x0194;
-
 /// The graph's ADDRESS: the ns bytes with the layout generation's parity in the high bit
 /// (ADR-0075 §2). Every raw-byte check in this file asks for the header this way, so a
 /// generation bump moves the address and the test moves with it.
