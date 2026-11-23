@@ -257,17 +257,40 @@ pub struct Vacuum {
     pub verified: usize,
 }
 
+/// What a vacuum would do — the same gate, the same counts, and not one key deleted.
+///
+/// This is the pre-flight: an operator reads it before the run that removes data, and it
+/// answers the only two questions that matter in that order — does the gate pass, and what
+/// exactly would go.
+pub fn vacuum_preview<S: VirtualStorage + Clone>(
+    store: &S,
+    root: Option<&Path>,
+    table: &[u8],
+) -> Result<Vacuum, String> {
+    vacuum_inner(store, root, table, false)
+}
+
 /// Retire the older generation a migration left behind (ADR-0075 §"a migrated table keeps its
 /// old range and record until the vacuum").
+pub fn vacuum_generation<S: VirtualStorage + Clone>(
+    store: &S,
+    root: Option<&Path>,
+    table: &[u8],
+) -> Result<Vacuum, String> {
+    vacuum_inner(store, root, table, true)
+}
+
+/// The body both verbs share: the gate, then the deletion the caller asked for.
 ///
 /// Two things go, and only when the store says which one is older: every key under the old
 /// address — the data, the index entries and the old record are all in that range — and, when a
 /// log root is given, the old generation's directory. The second is not cosmetic: a log left
 /// behind would be replayed into a range that has no record, which is a table nobody can open.
-pub fn vacuum_generation<S: VirtualStorage + Clone>(
+fn vacuum_inner<S: VirtualStorage + Clone>(
     store: &S,
     root: Option<&Path>,
     table: &[u8],
+    delete: bool,
 ) -> Result<Vacuum, String> {
     let (kept, kept_address, kept_row) = crate::model::meta::current(store, table, 0)
         .map_err(|e| e.to_string())?
@@ -338,14 +361,18 @@ pub fn vacuum_generation<S: VirtualStorage + Clone>(
         .map(|item| item.map(|(key, _)| key))
         .collect::<crate::error::Result<Vec<_>>>()
         .map_err(|e| e.to_string())?;
-    for key in &doomed {
-        store.del(key).map_err(|e| e.to_string())?;
+    if delete {
+        for key in &doomed {
+            store.del(key).map_err(|e| e.to_string())?;
+        }
     }
     // The record row sits inside that range, but a store that recorded it elsewhere would leave
     // a record pointing at nothing — so it is named once, explicitly.
-    store
-        .del(&crate::model::meta::meta_key(&old_address))
-        .map_err(|e| e.to_string())?;
+    if delete {
+        store
+            .del(&crate::model::meta::meta_key(&old_address))
+            .map_err(|e| e.to_string())?;
+    }
 
     let mut log_segments = 0usize;
     if let Some(root) = root {
@@ -364,7 +391,9 @@ pub fn vacuum_generation<S: VirtualStorage + Clone>(
                         .count()
                 })
                 .unwrap_or(0);
-            std::fs::remove_dir_all(&dir).map_err(|e| format!("{}: {e}", dir.display()))?;
+            if delete {
+                std::fs::remove_dir_all(&dir).map_err(|e| format!("{}: {e}", dir.display()))?;
+            }
         }
     }
 

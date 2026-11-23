@@ -14,7 +14,7 @@
     clippy::panic_in_result_fn
 )]
 
-use okm_core::changelog::migrate::{migrate_table, vacuum_generation};
+use okm_core::changelog::migrate::{migrate_table, vacuum_generation, vacuum_preview};
 use okm_core::model::dynamic_collection::DynamicCollection;
 use okm_core::okm_value::{Dict, Variant};
 use okm_core::schema::CollectionSchema;
@@ -210,6 +210,11 @@ fn the_vacuum_refuses_when_the_old_range_holds_a_row_the_new_one_lacks() {
     old.put(&K { id: 3 }.encode(), &late)
         .expect("write into the old range");
 
+    // The pre-flight answers the same way, and it answers first: an operator reads it before the
+    // run that removes data.
+    let preview = vacuum_preview(&store, None, &moved.to_address).expect_err("the gate holds");
+    assert!(preview.contains("vacuum refused"), "{preview}");
+
     let err = vacuum_generation(&store, None, &moved.to_address).expect_err("the gate holds");
     assert!(
         err.contains("not in the new one") && err.contains("vacuum refused"),
@@ -220,5 +225,34 @@ fn the_vacuum_refuses_when_the_old_range_holds_a_row_the_new_one_lacks() {
     assert!(
         old.fetch(&K { id: 3 }.encode()).expect("fetch").is_some(),
         "a refused vacuum deletes nothing"
+    );
+}
+
+#[test]
+fn a_dry_run_reports_what_would_go_and_deletes_nothing() {
+    let store = seeded();
+    let target = CollectionSchema::of::<K, Gen2>();
+    let moved = migrate_table(&store, None, <Gen1 as Document>::NS_PREFIX, &target)
+        .expect("migrate generation 1 to 2");
+
+    let preview = vacuum_preview(&store, None, &moved.to_address).expect("the gate passes");
+    assert_eq!((preview.kept, preview.removed), (2, 1));
+    assert_eq!(preview.verified, 2, "the gate read both ranges");
+    assert!(
+        preview.keys >= 2,
+        "the two rows and the old record: {} keys",
+        preview.keys
+    );
+
+    // Nothing was deleted: the old range still answers its own declaration.
+    let old = DynamicCollection::new(
+        store.clone(),
+        120,
+        CollectionSchema::of::<K, Gen1>(),
+        Vec::new(),
+    );
+    assert!(
+        old.fetch(&K { id: 1 }.encode()).expect("fetch").is_some(),
+        "a dry run deletes nothing"
     );
 }

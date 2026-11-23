@@ -145,6 +145,7 @@ fn vacuum(args: &[String]) -> Result<i32, String> {
     let mut store_dir: Option<PathBuf> = None;
     let mut root: Option<PathBuf> = None;
     let mut table: Option<String> = None;
+    let mut dry_run = false;
 
     let mut it = args.iter();
     while let Some(arg) = it.next() {
@@ -157,9 +158,11 @@ fn vacuum(args: &[String]) -> Result<i32, String> {
             "--store" | "--data" => store_dir = Some(PathBuf::from(value()?)),
             "--root" | "--log" => root = Some(PathBuf::from(value()?)),
             "--table" => table = Some(value()?),
+            "--dry-run" => dry_run = true,
             "-h" | "--help" => {
                 println!(
-                    "okm-log vacuum --store <data dir> --table <hex header> [--root <log dir>]"
+                    "okm-log vacuum --store <data dir> --table <hex header> [--root <log dir>] \
+                     [--dry-run]"
                 );
                 return Ok(0);
             }
@@ -172,7 +175,11 @@ fn vacuum(args: &[String]) -> Result<i32, String> {
         &table.ok_or("--table is required (the header hex a table directory is named by)")?,
     )?;
     let store = open_store(&store_dir)?;
-    let report = okm_core::changelog::migrate::vacuum_generation(&store, root.as_deref(), &table)?;
+    let report = if dry_run {
+        okm_core::changelog::migrate::vacuum_preview(&store, root.as_deref(), &table)?
+    } else {
+        okm_core::changelog::migrate::vacuum_generation(&store, root.as_deref(), &table)?
+    };
     if report.removed == 0 {
         println!(
             "layout v{} is the only generation here: nothing to vacuum",
@@ -180,8 +187,14 @@ fn vacuum(args: &[String]) -> Result<i32, String> {
         );
         return Ok(0);
     }
+    let verb = if dry_run { "would vacuum" } else { "vacuumed" };
+    let tail = if dry_run {
+        " (dry run: nothing was deleted)"
+    } else {
+        ""
+    };
     println!(
-        "vacuumed layout v{}: {} keys, {} segments retired, {} rows verified — v{} stays",
+        "{verb} layout v{}: {} keys, {} segments, {} rows verified — v{} stays{tail}",
         report.removed, report.keys, report.log_segments, report.verified, report.kept
     );
     Ok(0)

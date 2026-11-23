@@ -99,6 +99,19 @@ fn an_operator_migrates_and_then_vacuums() {
         drop(two);
     }
 
+    // The pre-flight first, the way an operator would run it: it must report and delete nothing.
+    let (ok, stdout, stderr) = run(&[
+        "vacuum",
+        "--store",
+        store_dir.to_str().expect("utf-8"),
+        "--table",
+        &header,
+        "--dry-run",
+    ]);
+    assert!(ok, "the dry run failed: {stderr}");
+    assert!(stdout.contains("would vacuum layout v1"), "{stdout}");
+    assert!(stdout.contains("nothing was deleted"), "{stdout}");
+
     let (ok, stdout, stderr) = run(&[
         "vacuum",
         "--store",
