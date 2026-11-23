@@ -5,7 +5,6 @@ edition = "2024"
 description = "An append-only log of timestamped records: buckets by the hour, blocks, an index, and a dictionary that earns its place."
 
 [dependencies]
-okm-wire = { path = "../okm-wire" }
 zstd = "0.13"
 xxhash-rust = { version = "0.8", features = ["xxh64"] }
 

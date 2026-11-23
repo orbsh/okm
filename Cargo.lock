@@ -2234,7 +2234,6 @@ name = "okm-series"
 version = "0.1.0"
 dependencies = [
  "arrow",
- "okm-wire",
  "parquet",
  "tempfile",
  "xxhash-rust",
