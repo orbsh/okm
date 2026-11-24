@@ -97,9 +97,7 @@ are two frames, and another writer fits between them.
 
 Four debts, all at the semantic layer:
 
-1. **A row version** — something in the entry a writer can compare against what it
-   read, so a lost update is detected instead of committed. (Today: nothing; the
-   entry is the payload.)
+1. **A row version** — something in the entry a writer can compare against what it read, so a lost update is detected instead of committed. (Today: nothing; the entry is the payload.) One working shape, from an engine this project refused for other reasons (ADR-0082): FeOxDB 0.6.0's `json_patch` reads the whole record, decodes, applies, and writes it back only if the record is still the one it read (`replace_record_if_current`), retrying on a mismatch — and the two costs not to copy are that retry loop (no backoff, no attempt bound) and a wall-clock timestamp standing in for a version.
 2. **Reduces that survive interleaving** — either provably commutative folds, or
    versioned accumulators checked like the row. `Count`/`Sum` are reversible but
    not order-free across an unfold/fold pair.
