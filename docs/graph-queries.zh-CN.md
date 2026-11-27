@@ -160,6 +160,8 @@ for _ in 0..2 {
 
 `out_nodes` 是把每个 step 都解析掉的便捷形式。原始形态让 walk 留在句柄空间：`for step in g.walk(n) { … step.far_handle … }` 一个都不解析，所以答案只是计数、谓词判断或成员判断的 walk 根本不碰登记册；而要引用的 walk 按访问节点解析一次（`g.node`），或按调用把整个答案一次解析（`g.nodes`）。从句柄起一个流要花一次 `g.node(handle)` 点查，因为 `walk` 收的是地址，不是号。
 
+答案接着要进集合步骤（`a ∩ b` 这类）时，visited 集可以换成 `okm_core::KeySet<NodeRef>`：`insert` 保持有序，walk 的产出直接就是算子输入，不用收尾再排一次。它付的是 sorted `Vec` 的账——扫描顺序上的键各是一次 push，乱序键搬一次尾段——所以只做计数或判断的 walk 仍留在 `HashSet` 上。
+
 walk 成为热路径时，把边 collection 的热谓词提升为声明的 `#[ok_index]`（见组合一节）——walk 的每跳扫描已经是物理 where，剩下的内存工作只有 visited 集。
 
 ## 按社区召回：采样节点，给它们的社区排序

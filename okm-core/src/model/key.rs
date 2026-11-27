@@ -249,17 +249,20 @@ pub struct PrefixKey<A> {
 /// container that keeps a set step a TWO-STEP semantics (`op(set, set)` inside
 /// one call, then read the surviving keys) instead of a per-key round trip.
 ///
-/// Deliberately ALGEBRA-FREE. Construction (sort + dedupe once), iteration, the
-/// slice, `len` / `is_empty` / `contains`, and the keys themselves are the whole
-/// surface: the operators over ordered keys are `okm-query`'s (`OrderedSets`
-/// over streams, the held-set trait over two of these), and a container that
-/// carried them would make this crate depend on the query layer — the
-/// dependency points the other way. Nothing here reads a store either: a fetch
-/// needs an engine, which is a binding's business, not a key type's.
+/// Deliberately ALGEBRA-FREE. Construction (sort + dedupe once), insertion
+/// (order-keeping), iteration, the slice, `len` / `is_empty` / `contains`, and
+/// the keys themselves are the whole surface: the operators over ordered keys
+/// are `okm-query`'s (`OrderedSets` over streams, the held-set trait over two of
+/// these), and a container that carried them would make this crate depend on the
+/// query layer — the dependency points the other way. Nothing here reads a store
+/// either: a fetch needs an engine, which is a binding's business, not a key
+/// type's.
 ///
 /// The one thing it guarantees is what makes a `Vec` acceptable ORDERED input to
-/// those operators: [`new`](Self::new) sorts and dedupes once, so iteration is
-/// ascending by key and no key comes back twice. Keys are opaque bytes in both
+/// those operators: order and uniqueness hold for every `KeySet` a caller can
+/// hold — [`new`](Self::new) sorts and dedupes once, [`insert`](Self::insert)
+/// keeps the order incrementally — so iteration is ascending by key and no key
+/// comes back twice. Keys are opaque bytes in both
 /// bindings, which is why the type is generic over them rather than concrete
 /// over `Vec<u8>`: the container's rule (`Ord` + owned) is the same for a byte
 /// key, a `u32` test key, or a decoded tuple, and the bindings pay nothing for
@@ -274,8 +277,8 @@ pub struct KeySet<K = Vec<u8>> {
 }
 
 impl<K: Ord> KeySet<K> {
-    /// A set from any key sequence — the ONLY constructor, because sorting and
-    /// deduplicating exactly once is what makes the result ordered input.
+    /// A set from any key sequence — the BATCH path: sorting and deduplicating
+    /// once is the cheapest way in when the keys are already in hand.
     ///
     /// Input order and duplicates are dropped: a `Vec` off a scan, a list of
     /// keys a binding decoded, and an already-ordered set all land in the same
@@ -285,6 +288,39 @@ impl<K: Ord> KeySet<K> {
         keys.sort_unstable();
         keys.dedup();
         Self { keys }
+    }
+
+    /// One key, kept in order — the ACCUMULATE path, with the invariant `new`
+    /// establishes: a frontier that grows as the caller discovers keys, so a
+    /// walk that must not revisit a node can insert-and-ask in one call.
+    ///
+    /// `true` when the key was new. That return is the shape a breadth-first
+    /// walk wants — `if visited.insert(key) { frontier.push(key) }` decides
+    /// "already seen" and "expand it" together.
+    ///
+    /// The set is a sorted `Vec`, not a tree: a key greater than the last one
+    /// is a push (`O(1)`, and the shape a face scan hands over), an
+    /// out-of-order key costs a binary search plus a memmove of the tail. Past
+    /// the size where that memmove dominates, `BTreeSet` is the container to
+    /// reach for; what this type buys over it is that the ordered answer needs
+    /// no second pass.
+    pub fn insert(&mut self, key: K) -> bool {
+        match self.keys.last() {
+            Some(last) if key > *last => {
+                self.keys.push(key);
+                true
+            }
+            Some(last) if key == *last => false,
+            // Empty, or somewhere in the middle: the search is the only way to
+            // answer "where", and the memmove is what a sorted `Vec` charges.
+            _ => match self.keys.binary_search(&key) {
+                Ok(_) => false,
+                Err(at) => {
+                    self.keys.insert(at, key);
+                    true
+                }
+            },
+        }
     }
 
     /// The keys, ascending, once each — the iteration surface.
@@ -366,6 +402,29 @@ mod keyset_tests {
         assert!(!set.contains(&9));
         assert_eq!(set.into_keys(), vec![1, 2, 3]);
         assert!(KeySet::<u32>::new(Vec::new()).is_empty());
+    }
+
+    /// The accumulate path and the batch path are one set: `insert` keeps the
+    /// order `new` establishes, including on the monotone (tail-push) run and
+    /// the out-of-order (memmove) run, so a frontier built by walking and a set
+    /// built from a scan are interchangeable as operator input.
+    #[test]
+    fn keyset_insert_keeps_the_order_new_establishes() {
+        let mut set = KeySet::<u32>::default();
+        assert!(set.insert(8)); // empty: the search path
+        assert!(set.insert(3)); // lower than the last: the memmove path
+        assert!(set.insert(5)); // between two
+        assert!(!set.insert(3)); // a repeat answers false and lands nowhere
+        assert!(set.insert(9)); // higher than the last: the tail push
+        assert!(!set.insert(9)); // a repeat on the fast path, too
+        assert_eq!(set.as_slice(), [3, 5, 8, 9]);
+        assert_eq!(set.len(), 4);
+        assert_eq!(
+            set.as_slice(),
+            KeySet::new(vec![8u32, 3, 5, 3, 9]).as_slice()
+        );
+        assert!(set.contains(&5));
+        assert!(!set.contains(&6));
     }
 
     /// Bytes are the bindings' key type, and the sorted order of byte vectors

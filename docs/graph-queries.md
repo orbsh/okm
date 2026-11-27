@@ -164,6 +164,8 @@ for _ in 0..2 {
 
 `out_nodes` is the convenience that resolves each step. The raw form keeps the walk in handles: `for step in g.walk(n) { … step.far_handle … }` resolves nothing, so a walk whose answer is a count, a predicate test or a membership test never touches the registry at all — and a walk that needs refs resolves once per node visited (`g.node`) or once per call for the whole answer (`g.nodes`). Starting a stream from a handle costs one `g.node(handle)` point read, because `walk` takes the address, not the number.
 
+When the answer continues into a set step (`a ∩ b` and friends), the visited set can be `okm_core::KeySet<NodeRef>` instead: `insert` keeps it ordered, so the walk's output is already operator input and needs no final sort. It pays the sorted `Vec`'s bill — a push per key in scan order, a memmove of the tail for an out-of-order key — which is why a walk that only counts or tests a node keeps the `HashSet`.
+
 When a walk becomes a hot path, promote the edge collection's hot predicate into a declared `#[ok_index]` (see the composition section) — the walk's per-hop scan is already the physical WHERE; the only in-memory work left is the visited set.
 
 ## Community recall: sample nodes, rank their communities
